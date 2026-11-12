@@ -119,6 +119,25 @@ $('#logout').addEventListener('click', async () => {
 
 const renderers = {};
 
+// 分组列表在账号页与分组页都要用，放这里避免两次请求
+let groupCache = [];
+
+async function loadGroups(force) {
+  if (!force && groupCache.length) return groupCache;
+  const payload = await api('/api/proxy-groups');
+  groupCache = payload.data || [];
+  return groupCache;
+}
+
+async function assignGroup(accountId, groupId) {
+  await api('/api/accounts/' + accountId + '/proxy-group', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group_id: groupId || null })
+  });
+  groupCache = [];
+}
+
 async function openTab(name) {
   $$('#tabs button').forEach((button) => button.classList.toggle('active', button.dataset.tab === name));
   $$('#views section').forEach((section) => { section.hidden = section.dataset.view !== name; });
@@ -168,22 +187,46 @@ renderers.overview = async () => {
 };
 
 renderers.accounts = async () => {
-  const payload = await api('/api/accounts');
+  const [payload, groups] = await Promise.all([api('/api/accounts'), loadGroups(true)]);
   const items = payload.items || payload.data || [];
   const body = $('#accounts tbody');
   body.textContent = '';
   items.forEach((item) => {
+    const select = document.createElement('select');
+    const none = document.createElement('option');
+    none.value = '';
+    none.textContent = '(不属于任何组)';
+    select.appendChild(none);
+    groups.forEach((group) => {
+      const option = document.createElement('option');
+      option.value = group.id;
+      option.textContent = group.name;
+      select.appendChild(option);
+    });
+    select.value = item.proxy_group_id || '';
+    select.addEventListener('change', async () => {
+      try {
+        await assignGroup(item.id, select.value);
+        toast('已更新分组');
+        await renderers.accounts();
+      } catch (failure) { toast(failure.message, true); }
+    });
+    const holder = document.createElement('td');
+    holder.appendChild(select);
     body.appendChild(row([
       item.email || '(无邮箱)',
       item.plan,
       item.status_label || item.status,
       item.quota,
       (item.success_count || 0) + ' / ' + (item.fail_count || 0),
-      item.proxy || '(直连)'
+      item.proxy || '(直连)',
+      holder
     ]));
   });
-  if (!items.length) body.appendChild(row(['（池子为空，去导入账号）', '', '', '', '', '']));
-  $('#accounts-hint').textContent = '共 ' + items.length + ' 个账号';
+  if (!items.length) {
+    body.appendChild(row(['（池子为空，去导入账号）', '', '', '', '', '', '']));
+  }
+  $('#accounts-hint').textContent = '共 ' + items.length + ' 个账号 · ' + groups.length + ' 个分组';
 };
 
 $('#sync-accounts').addEventListener('click', async () => {
@@ -216,6 +259,66 @@ renderers.logs = async () => {
 
 $('#refresh-logs').addEventListener('click', () => renderers.logs().catch((failure) => toast(failure.message, true)));
 $('#log-status').addEventListener('change', () => renderers.logs().catch((failure) => toast(failure.message, true)));
+
+renderers.proxies = async () => {
+  const groups = await loadGroups(true);
+  const body = $('#groups tbody');
+  body.textContent = '';
+  groups.forEach((group) => {
+    const url = document.createElement('input');
+    url.value = group.url || '';
+    url.placeholder = '(直连)';
+    const save = document.createElement('button');
+    save.textContent = '保存';
+    save.addEventListener('click', async () => {
+      try {
+        const result = await api('/api/proxy-groups/' + group.id, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: group.name, url: url.value.trim() })
+        });
+        toast('已保存，同步了 ' + (result.synced_accounts || 0) + ' 个账号');
+        await renderers.proxies();
+      } catch (failure) { toast(failure.message, true); }
+    });
+    const remove = document.createElement('button');
+    remove.textContent = '删除';
+    remove.className = 'danger';
+    remove.addEventListener('click', async () => {
+      if (!confirm('删除分组「' + group.name + '」？组内账号会被摘出（保留当前代理）。')) return;
+      try {
+        const result = await api('/api/proxy-groups/' + group.id, { method: 'DELETE' });
+        toast('已删除，摘出 ' + (result.detached_accounts || 0) + ' 个账号');
+        await renderers.proxies();
+      } catch (failure) { toast(failure.message, true); }
+    });
+    const urlCell = document.createElement('td');
+    urlCell.appendChild(url);
+    const actionCell = document.createElement('td');
+    actionCell.appendChild(save);
+    actionCell.appendChild(document.createTextNode(' '));
+    actionCell.appendChild(remove);
+    body.appendChild(row([group.name, urlCell, group.members, actionCell]));
+  });
+  if (!groups.length) body.appendChild(row(['（还没有分组）', '', '', '']));
+};
+
+$('#group-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const name = $('#group-name').value.trim();
+  if (!name) return;
+  try {
+    await api('/api/proxy-groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name, url: $('#group-url').value.trim() })
+    });
+    $('#group-name').value = '';
+    $('#group-url').value = '';
+    groupCache = [];
+    await renderers.proxies();
+  } catch (failure) { toast(failure.message, true); }
+});
 
 renderers.images = async () => {
   const [stats, payload] = await Promise.all([api('/api/images/stats'), api('/api/images?limit=60')]);
