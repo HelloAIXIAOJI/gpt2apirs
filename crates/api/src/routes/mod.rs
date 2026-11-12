@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod admin;
 pub mod image_flow;
+pub mod images;
 pub mod logs;
 pub mod rich_text;
 pub mod settings;

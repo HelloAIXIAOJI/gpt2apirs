@@ -194,6 +194,8 @@ pub async fn edit_images(
             images.push(image);
         }
     }
+    crate::routes::image_flow::record_assets(&state, &slots, &prompt).await;
+
     tracing::info!(
         slots = slots.len(),
         images = images.len(),

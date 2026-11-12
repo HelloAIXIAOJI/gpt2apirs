@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use gpt2apirs_core::settings::RuntimeSettings;
-use gpt2apirs_storage::repo::CallRecordRepo;
+use gpt2apirs_storage::repo::{CallRecordRepo, ImageAssetRepo};
 
 /// 清理间隔。
 const INTERVAL: Duration = Duration::from_secs(3600);
@@ -51,10 +51,13 @@ pub fn purge_dir(dir: &Path, hours: i64, now: SystemTime) -> (u64, u64) {
 }
 
 /// 执行一轮清理。
+///
+/// 顺序：先按库里的记录删图片（连同文件），再扫目录兜住「有文件没记录」的历史遗留。
 pub async fn run_once(
     settings: &RuntimeSettings,
     repo: &CallRecordRepo,
-    images_dir: &Path,
+    images: &ImageAssetRepo,
+    data_dir: &Path,
 ) -> (u64, u64, u64) {
     let log_hours = settings.get_i64("log_retention_hours");
     let image_hours = settings.get_i64("image_retention_hours");
@@ -66,7 +69,27 @@ pub async fn run_once(
             0
         }
     };
-    let (images_removed, images_freed) = purge_dir(images_dir, image_hours, SystemTime::now());
+    let mut images_removed = 0u64;
+    let mut images_freed = 0u64;
+    match images.purge_older_than(image_hours).await {
+        Ok(paths) => {
+            for rel_path in paths {
+                let absolute = data_dir.join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+                if let Ok(metadata) = std::fs::metadata(&absolute) {
+                    images_freed += metadata.len();
+                }
+                if std::fs::remove_file(&absolute).is_ok() {
+                    images_removed += 1;
+                }
+            }
+        }
+        Err(error) => tracing::warn!(%error, "清理图片记录失败"),
+    }
+    // 兜底：库里没有记录、但磁盘上过期的文件（历史数据）
+    let (orphans_removed, orphans_freed) =
+        purge_dir(&data_dir.join("images"), image_hours, SystemTime::now());
+    images_removed += orphans_removed;
+    images_freed += orphans_freed;
 
     if logs_removed > 0 || images_removed > 0 {
         tracing::info!(
@@ -82,11 +105,12 @@ pub async fn run_once(
 }
 
 /// 启动后台清理任务。
-pub fn spawn(settings: Arc<RuntimeSettings>, pool: sqlx::PgPool, images_dir: std::path::PathBuf) {
+pub fn spawn(settings: Arc<RuntimeSettings>, pool: sqlx::PgPool, data_dir: std::path::PathBuf) {
     tokio::spawn(async move {
-        let repo = CallRecordRepo::new(pool);
+        let repo = CallRecordRepo::new(pool.clone());
+        let images = ImageAssetRepo::new(pool);
         loop {
-            let _ = run_once(&settings, &repo, &images_dir).await;
+            let _ = run_once(&settings, &repo, &images, &data_dir).await;
             tokio::time::sleep(INTERVAL).await;
         }
     });

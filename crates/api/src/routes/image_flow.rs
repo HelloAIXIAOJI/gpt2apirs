@@ -197,6 +197,29 @@ pub async fn run_generation(
     collect(set, total).await
 }
 
+/// 把生成结果写进 `image_assets`，供后台按账号/时间查询。
+///
+/// 失败只记日志：元数据写不进去不该让用户拿不到图。
+pub async fn record_assets(state: &Arc<AppState>, slots: &[SlotOutcome], prompt: &str) {
+    let repo = gpt2apirs_storage::repo::ImageAssetRepo::new(state.db.clone());
+    for slot in slots {
+        for image in &slot.images {
+            let asset = gpt2apirs_storage::repo::NewImageAsset {
+                rel_path: image.rel_path.clone(),
+                mime: image.mime.to_string(),
+                bytes: image.bytes.len() as i64,
+                width: image.width as i32,
+                height: image.height as i32,
+                account_id: if slot.account_id.is_nil() { None } else { Some(slot.account_id) },
+                prompt: Some(prompt.to_string()),
+            };
+            if let Err(error) = repo.insert(&asset).await {
+                tracing::warn!(%error, path = %image.rel_path, "写图片元数据失败");
+            }
+        }
+    }
+}
+
 /// 图生图：上传参考图后并行 + 换号重试。
 ///
 /// 参考图的上传与账号绑定，所以**每次换号都要重新上传**。
