@@ -74,6 +74,19 @@ async fn run() -> Result<()> {
     run_migrations(&pool).await.context("数据库迁移失败")?;
     tracing::info!("数据库迁移已完成");
 
+    // 登录口令与调用 key 分离：库里的 API key 才是调用凭据。
+    // 老部署只有 AUTH_KEY，这里一次性迁成名为 legacy 的 key，避免升级即断流。
+    let api_keys = gpt2apirs_storage::repo::ApiKeyStore::Postgres(
+        gpt2apirs_storage::repo::ApiKeyRepo::new(pool.clone()),
+    );
+    match api_keys.import_legacy(&config.auth_key).await {
+        Ok(true) => tracing::warn!(
+            "已把旧的 AUTH_KEY 迁移为名为 legacy 的 API key；请到后台创建新 key 并吊销它"
+        ),
+        Ok(false) => tracing::info!("API key 已存在，跳过旧口令迁移"),
+        Err(error) => tracing::warn!("迁移旧 AUTH_KEY 失败：{error}"),
+    }
+
     // ---- 6. 运行层设置 ----
     let repo = PgSettingsRepo::new(pool.clone());
     let snapshot = repo.load().await.context("读取运行层设置失败")?;
@@ -122,6 +135,7 @@ async fn run() -> Result<()> {
         );
     }
 
+    let api_keys = Arc::new(api_keys);
     let progress = Arc::new(ProgressStore::new());
     let oauth = Arc::new(OAuthSessions::new());
 
@@ -145,6 +159,7 @@ async fn run() -> Result<()> {
         accounts.clone(),
         progress,
         oauth,
+        api_keys,
     ));
     let app = build_router(state);
 

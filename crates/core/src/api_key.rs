@@ -7,6 +7,9 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 /// 明文前缀，便于在日志/列表里辨认这是本项目的 key。
+///
+/// 注意：**校验不依赖前缀**。旧部署迁移来的 key 是任意形态，
+/// 用格式做前置过滤会把它们全部拒之门外。
 pub const KEY_PREFIX: &str = "sk-g2a-";
 
 /// 随机部分的字节数（编码成 48 个 hex 字符）。
@@ -47,16 +50,6 @@ pub fn hash(plaintext: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// 形态是否像本项目的 key。
-///
-/// 只做快速拒绝，真正的校验靠哈希比对。
-pub fn looks_valid(plaintext: &str) -> bool {
-    let trimmed = plaintext.trim();
-    trimmed.starts_with(KEY_PREFIX)
-        && trimmed.len() == KEY_PREFIX.len() + RANDOM_BYTES * 2
-        && trimmed[KEY_PREFIX.len()..].chars().all(|c| c.is_ascii_hexdigit())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,22 +61,11 @@ mod tests {
         assert_eq!(key.sha256, hash(&key.plaintext));
         assert_eq!(key.sha256.len(), 64);
         assert!(key.plaintext.starts_with(&key.prefix));
-        assert!(looks_valid(&key.plaintext));
     }
 
     #[test]
     fn two_keys_differ() {
         assert_ne!(generate().plaintext, generate().plaintext);
-    }
-
-    #[test]
-    fn rejects_wrong_shape() {
-        assert!(!looks_valid(""));
-        assert!(!looks_valid("sk-g2a-short"));
-        assert!(!looks_valid("sk-other-0000000000000000000000000000000000000000000000"));
-        let mut weird = generate().plaintext;
-        weird.pop();
-        assert!(!looks_valid(&weird), "长度不足应拒绝");
     }
 
     #[test]

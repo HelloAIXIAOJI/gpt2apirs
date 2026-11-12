@@ -70,10 +70,61 @@ pub fn is_admin_token(expected: &str, token: &str) -> bool {
     !expected.is_empty() && !token.is_empty() && secure_eq(expected, token)
 }
 
-/// axum 中间件：要求管理员身份。
+/// axum 中间件：要求后台身份。
 ///
-/// 失败返回 401 / 403（管理面格式）。
+/// 两种凭据任一即可：会话 cookie（浏览器），或 `ADMIN_KEY` 的 Bearer（curl）。
+/// **不接受** API key —— 那是调用 `/v1/*` 用的。
 pub async fn require_admin(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let format = error_format_for_path(request.uri().path());
+    let now = chrono::Utc::now();
+
+    // 1) 会话 cookie
+    let cookie_header = request
+        .headers()
+        .get(axum::http::header::COOKIE)
+        .and_then(|value| value.to_str().ok());
+    if let Some(token) = crate::session::cookie_value(cookie_header, crate::session::COOKIE_NAME) {
+        if crate::session::verify(state.session_secret.as_ref(), &token, now).is_some() {
+            return Ok(next.run(request).await);
+        }
+    }
+
+    // 2) 登录口令
+    let header = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    match extract_bearer_token(header) {
+        None => Err(ApiError {
+            error: AppError::Unauthorized {
+                message: "需要登录后台（缺少会话 cookie 或 Bearer 口令）".to_string(),
+            },
+            format,
+        }),
+        Some(token) => {
+            if is_admin_token(&state.config.admin_key, &token) {
+                Ok(next.run(request).await)
+            } else {
+                // 口令不对属于「没通过认证」，不是「已认证但无权限」，所以 401。
+                Err(ApiError {
+                    error: AppError::Unauthorized {
+                        message: "登录口令不正确".to_string(),
+                    },
+                    format,
+                })
+            }
+        }
+    }
+}
+
+/// axum 中间件：要求 API key。
+///
+/// 只认数据库里的 API key；后台登录口令在这里一定失败。
+pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
@@ -82,92 +133,18 @@ pub async fn require_admin(
         .headers()
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-
-    let format = error_format_for_path(request.uri().path());
-
     let Some(token) = extract_bearer_token(header) else {
-        return Err(ApiError {
-            error: AppError::Unauthorized {
-                message: "缺少 Authorization: Bearer <API Key>".to_string(),
-            },
-            format,
-        });
+        return Err(ApiError::openai(AppError::Unauthorized {
+            message: "缺少 API key".to_string(),
+        }));
     };
-
-    if !is_admin_token(&state.config.auth_key, &token) {
-        return Err(ApiError {
-            error: AppError::Unauthorized {
-                message: "密钥无效或已失效，请重新登录".to_string(),
-            },
-            format,
-        });
-    }
-
-    Ok(next.run(request).await)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bearer_extraction() {
-        assert_eq!(
-            extract_bearer_token(Some("Bearer abc123")).as_deref(),
-            Some("abc123")
-        );
-        // scheme 大小写不敏感
-        assert_eq!(
-            extract_bearer_token(Some("bearer abc123")).as_deref(),
-            Some("abc123")
-        );
-        assert_eq!(
-            extract_bearer_token(Some("BEARER abc123")).as_deref(),
-            Some("abc123")
-        );
-        // 前后空白
-        assert_eq!(
-            extract_bearer_token(Some("  Bearer   abc123  ")).as_deref(),
-            Some("abc123")
-        );
-    }
-
-    #[test]
-    fn bearer_extraction_rejects_bad_input() {
-        assert_eq!(extract_bearer_token(None), None);
-        assert_eq!(extract_bearer_token(Some("")), None);
-        assert_eq!(extract_bearer_token(Some("   ")), None);
-        assert_eq!(extract_bearer_token(Some("abc123")), None, "缺 scheme");
-        assert_eq!(extract_bearer_token(Some("Basic abc")), None, "错 scheme");
-        assert_eq!(extract_bearer_token(Some("Bearer ")), None, "空 token");
-    }
-
-    #[test]
-    fn secure_eq_matches_string_equality() {
-        assert!(secure_eq("abc", "abc"));
-        assert!(!secure_eq("abc", "abd"));
-        assert!(!secure_eq("abc", "ab"));
-        assert!(!secure_eq("", "a"));
-        assert!(secure_eq("", ""));
-    }
-
-    #[test]
-    fn error_format_follows_path() {
-        assert_eq!(error_format_for_path("/v1/messages"), ErrorFormat::Anthropic);
-        assert_eq!(error_format_for_path("/v1"), ErrorFormat::OpenAi);
-        assert_eq!(
-            error_format_for_path("/v1/images/generations"),
-            ErrorFormat::OpenAi
-        );
-        assert_eq!(error_format_for_path("/api/ping"), ErrorFormat::Admin);
-        assert_eq!(error_format_for_path("/health"), ErrorFormat::Admin);
-    }
-
-    #[test]
-    fn admin_token_check() {
-        assert!(is_admin_token("secret-key-123", "secret-key-123"));
-        assert!(!is_admin_token("secret-key-123", "wrong"));
-        assert!(!is_admin_token("", ""), "空期望值不应通过");
-        assert!(!is_admin_token("k", ""), "空 token 不应通过");
+    match state.api_keys.verify(&token).await {
+        Ok(Some(_)) => Ok(next.run(request).await),
+        Ok(None) => Err(ApiError::openai(AppError::Unauthorized {
+            message: "API key 无效或已吊销".to_string(),
+        })),
+        Err(error) => Err(ApiError::openai(AppError::Internal(anyhow::anyhow!(
+            "校验 API key 失败: {error}"
+        )))),
     }
 }

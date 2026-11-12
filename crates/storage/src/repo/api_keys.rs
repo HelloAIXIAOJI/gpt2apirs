@@ -91,9 +91,6 @@ impl ApiKeyRepo {
 
     /// 校验一把明文 key。命中则刷新 `last_used_at`。
     pub async fn verify(&self, plaintext: &str) -> Result<Option<ApiKeyRow>, StorageError> {
-        if !gpt2apirs_core::api_key::looks_valid(plaintext) {
-            return Ok(None);
-        }
         let digest = gpt2apirs_core::api_key::hash(plaintext.trim());
         let row = sqlx::query_as::<_, ApiKeyRow>(
             r#"update api_keys set last_used_at = now()
