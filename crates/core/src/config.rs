@@ -31,7 +31,11 @@ pub const MIN_AUTH_KEY_LEN: usize = 8;
 pub struct BootstrapConfig {
     /// PostgreSQL 连接串。
     pub database_url: String,
-    /// 管理面 API Key。
+    /// 登录后台与管理面的口令（`ADMIN_KEY`）。
+    ///
+    /// 与调用 `/v1/*` 的 API key 完全分离：把登录口令发给客户端是错的。
+    pub admin_key: String,
+    /// 旧的单口令。仅用于把它一次性迁成 API key（见 `ApiKeyRepo::import_legacy`）。
     pub auth_key: String,
     /// 监听地址。
     pub host: String,
@@ -74,6 +78,23 @@ impl BootstrapConfig {
              postgres://user:pass@host:5432/dbname?sslmode=disable",
         )?;
         env::validate_postgres_url(&database_url)?;
+
+        // ---- 登录口令：ADMIN_KEY，缺失时回退旧的 AUTH_KEY ----
+        let admin_key = match lookup("ADMIN_KEY").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+            Some(value) => value,
+            None => {
+                warnings.push(
+                    "未设置 ADMIN_KEY，暂时沿用 AUTH_KEY 作为后台登录口令；请尽快拆开".to_string(),
+                );
+                String::new()
+            }
+        };
+        let admin_key = if admin_key.is_empty() {
+            // 由下面 AUTH_KEY 的读取结果补齐（保持「缺 AUTH_KEY 就报错」的旧行为）
+            String::new()
+        } else {
+            admin_key
+        };
 
         // ---- 必填：AUTH_KEY ----
         let auth_key = env::required_from(
@@ -148,6 +169,11 @@ impl BootstrapConfig {
 
         Ok(Self {
             database_url,
+            admin_key: if admin_key.is_empty() {
+                auth_key.clone()
+            } else {
+                admin_key
+            },
             auth_key,
             host,
             port,
@@ -198,7 +224,11 @@ mod tests {
     }
 
     fn base() -> HashMap<&'static str, &'static str> {
-        HashMap::from([("DATABASE_URL", GOOD_URL), ("AUTH_KEY", "a-good-key-123")])
+        HashMap::from([
+            ("DATABASE_URL", GOOD_URL),
+            ("AUTH_KEY", "a-good-key-123"),
+            ("ADMIN_KEY", "an-admin-key-456"),
+        ])
     }
 
     #[test]
@@ -208,6 +238,7 @@ mod tests {
         let cfg = BootstrapConfig::from_lookup(&l).expect("应成功");
         assert_eq!(cfg.database_url, GOOD_URL);
         assert_eq!(cfg.auth_key, "a-good-key-123");
+        assert_eq!(cfg.admin_key, "an-admin-key-456", "登录口令应独立于 API key");
         assert_eq!(cfg.host, DEFAULT_HOST);
         assert_eq!(cfg.port, DEFAULT_PORT);
         assert_eq!(cfg.pool_max_connections, DEFAULT_POOL_MAX_CONNECTIONS);
@@ -237,6 +268,18 @@ mod tests {
     }
 
     #[test]
+    fn admin_key_falls_back_to_auth_key_with_warning() {
+        let map = HashMap::from([("DATABASE_URL", GOOD_URL), ("AUTH_KEY", "a-good-key-123")]);
+        let l = lookup(map);
+        let cfg = BootstrapConfig::from_lookup(&l).expect("配置");
+        assert_eq!(cfg.admin_key, "a-good-key-123", "缺 ADMIN_KEY 时暂时沿用旧口令");
+        assert!(
+            cfg.warnings.iter().any(|w| w.contains("ADMIN_KEY")),
+            "回退必须告警，否则没人会去拆开"
+        );
+    }
+
+    #[test]
     fn missing_auth_key_fails() {
         let map = HashMap::from([("DATABASE_URL", GOOD_URL)]);
         let l = lookup(map);
@@ -257,6 +300,7 @@ mod tests {
     fn placeholder_auth_key_warns() {
         let mut map = base();
         map.insert("AUTH_KEY", PLACEHOLDER_AUTH_KEY);
+        map.insert("ADMIN_KEY", "an-admin-key-456");
         let l = lookup(map);
         let cfg = BootstrapConfig::from_lookup(&l).expect("应成功");
         assert_eq!(cfg.warnings.len(), 1);
