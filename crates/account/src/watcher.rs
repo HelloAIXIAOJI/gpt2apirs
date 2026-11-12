@@ -201,6 +201,7 @@ mod tests {
             quota_confirmed: true,
             restore_at: None,
             proxy: String::new(),
+            proxy_group_id: None,
             success_count: 0,
             fail_count: 0,
             invalid_count: 0,

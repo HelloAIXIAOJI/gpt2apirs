@@ -13,6 +13,7 @@ pub mod pool;
 pub mod progress;
 pub mod refresh;
 pub mod remote;
+pub mod proxy_groups;
 pub mod repo;
 pub mod sync;
 pub mod watcher;
@@ -31,6 +32,7 @@ pub use pool::{
 pub use progress::{OperationError, OperationKind, OperationProgress, ProgressStore};
 pub use refresh::{RefreshError, RefreshOutcome, refresh_tokens};
 pub use remote::{RemoteError, RemoteInfo, fetch_remote_info};
+pub use proxy_groups::{ProxyGroup, ProxyGroupRepo, ProxyGroupView};
 pub use repo::{
     AccountError, AccountFilter, AccountPatch, AccountPoolStats, AccountRepo, NewAccount,
     UpsertOutcome, UpsertReport,

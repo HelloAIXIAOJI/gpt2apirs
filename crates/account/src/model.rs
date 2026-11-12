@@ -188,8 +188,10 @@ pub struct Account {
     /// 限流恢复时间。
     pub restore_at: Option<DateTime<Utc>>,
 
-    /// 账号级代理。
+    /// 账号级代理（加入分组时是组地址的副本）。
     pub proxy: String,
+    /// 所属代理分组。
+    pub proxy_group_id: Option<Uuid>,
 
     /// 成功次数。
     pub success_count: i64,
