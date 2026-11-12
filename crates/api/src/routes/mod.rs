@@ -1,6 +1,7 @@
 //! `/v1/*` 与 `/api/*` 路由。
 
 pub mod accounts;
+pub mod admin;
 pub mod image_flow;
 pub mod rich_text;
 pub mod settings;

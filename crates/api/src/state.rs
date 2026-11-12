@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use gpt2apirs_account::{AccountPool, OAuthSessions, ProgressStore};
 use gpt2apirs_core::{BootstrapConfig, RuntimeSettings};
 use gpt2apirs_http::Client;
+use gpt2apirs_storage::repo::ApiKeyStore;
 use sqlx::PgPool;
 
 /// 所有 handler 共享的依赖。
@@ -25,6 +26,10 @@ pub struct AppState {
     pub progress: Arc<ProgressStore>,
     /// OAuth 授权会话。
     pub oauth: Arc<OAuthSessions>,
+    /// 调用 `/v1/*` 的 API key 存储。
+    pub api_keys: Arc<ApiKeyStore>,
+    /// 后台会话签名密钥（由 `ADMIN_KEY` 派生）。
+    pub session_secret: Arc<[u8; 32]>,
     /// 进程启动时间（用于 uptime）。
     pub started_at: DateTime<Utc>,
 }
@@ -39,7 +44,9 @@ impl AppState {
         pool: Arc<AccountPool>,
         progress: Arc<ProgressStore>,
         oauth: Arc<OAuthSessions>,
+        api_keys: Arc<ApiKeyStore>,
     ) -> Self {
+        let session_secret = Arc::new(crate::session::derive_secret(&config.admin_key));
         Self {
             config,
             settings,
@@ -48,6 +55,8 @@ impl AppState {
             pool,
             progress,
             oauth,
+            api_keys,
+            session_secret,
             started_at: Utc::now(),
         }
     }

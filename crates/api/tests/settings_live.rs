@@ -46,6 +46,8 @@ async fn state() -> Option<Arc<AppState>> {
     let _ = AUTH_KEY.set(config.auth_key.clone());
     let pool = gpt2apirs_storage::pool::build_pool(&config).await.ok()?;
     let repo = PgSettingsRepo::new(pool.clone());
+    // 预置一把与配置里 AUTH_KEY 同值的 API key，供 /v1/* 调用
+    let test_key = config.auth_key.clone();
     let snapshot = repo.load().await.ok()?;
     let settings = Arc::new(RuntimeSettings::new(snapshot.data));
     Some(Arc::new(AppState::new(
@@ -61,6 +63,10 @@ async fn state() -> Option<Arc<AppState>> {
         )),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把与 AUTH_KEY 相同的 key
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(&test_key, "test"),
+        )),
     )))
 }
 

@@ -47,6 +47,10 @@ fn state_without_db() -> Arc<AppState> {
         account_pool(&pool),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把与 AUTH_KEY 相同的 key
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(AUTH_KEY, "test"),
+        )),
     ))
 }
 
@@ -178,6 +182,10 @@ async fn health_reports_ok_with_real_database() {
         account_pool(&pool),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把与 AUTH_KEY 相同的 key
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(AUTH_KEY, "test"),
+        )),
     ));
 
     let (status, body) = send(build_router(state), "GET", "/health", None).await;
