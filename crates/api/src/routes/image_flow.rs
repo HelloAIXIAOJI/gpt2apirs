@@ -72,7 +72,7 @@ fn acquire_error(error: PoolError) -> ApiError {
 /// `op` 收到账号 token，返回成功值或分类错误。
 async fn with_retry<F, Fut>(state: &Arc<AppState>, deadline: Deadline, op: F) -> SlotResult
 where
-    F: Fn(String) -> Fut,
+    F: Fn(String, String) -> Fut,
     Fut: std::future::Future<Output = std::result::Result<SlotOutcome, GenerateError>>,
 {
     let max_attempts = attempts_limit(state);
@@ -98,9 +98,11 @@ where
             }
         };
         let account_id = lease.id();
+        crate::call_log::note_account(account_id);
         let token = lease.access_token().to_string();
+        let proxy = lease.account().proxy.trim().to_string();
 
-        let result = op(token).await;
+        let result = op(token, proxy).await;
         match result {
             Ok(mut outcome) => {
                 outcome.account_id = account_id;
@@ -166,11 +168,14 @@ pub async fn run_generation(
         single.n = 1; // 每个槽位只产 1 张，张数由任务数决定
         set.spawn(async move {
             let inner = outer.clone();
-            with_retry(&outer, deadline, move |token| {
+            with_retry(&outer, deadline, move |token, proxy| {
                 let state = inner.clone();
                 let single = single.clone();
                 async move {
-                    let (result, diag) = generate_images(&state.client, &token, &single, deadline)
+                    let client = state.client_for(&proxy).map_err(|error| {
+                        GenerateError::new(FailureKind::Network, format!("代理客户端构建失败：{error}"))
+                    })?;
+                    let (result, diag) = generate_images(&client, &token, &single, deadline)
                         .await?;
                     if result.images.is_empty() {
                         return Err(GenerateError::new(
@@ -211,16 +216,19 @@ pub async fn run_edit(
         single.n = 1;
         set.spawn(async move {
             let inner = outer.clone();
-            with_retry(&outer, deadline, move |token| {
+            with_retry(&outer, deadline, move |token, proxy| {
                 let state = inner.clone();
                 let single = single.clone();
                 let prepared = prepared.clone();
                 async move {
+                    let client = state.client_for(&proxy).map_err(|error| {
+                        GenerateError::new(FailureKind::Network, format!("代理客户端构建失败：{error}"))
+                    })?;
                     let mut references: Vec<gpt2apirs_protocol::conversation::ImageReference> =
                         Vec::with_capacity(prepared.len());
                     for (bytes, filename) in &prepared {
                         let uploaded: UploadedFile = gpt2apirs_generate::upload::upload_image(
-                            &state.client,
+                            &client,
                             &token,
                             gpt2apirs_http::DEFAULT_USER_AGENT,
                             bytes,
@@ -237,7 +245,7 @@ pub async fn run_edit(
                         references.push(uploaded.as_reference());
                     }
                     let single = single.with_images(references);
-                    let (result, diag) = generate_images(&state.client, &token, &single, deadline)
+                    let (result, diag) = generate_images(&client, &token, &single, deadline)
                         .await?;
                     if result.images.is_empty() {
                         return Err(GenerateError::new(

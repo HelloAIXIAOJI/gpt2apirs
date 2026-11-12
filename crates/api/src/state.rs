@@ -1,6 +1,7 @@
 //! 应用共享状态。
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
 use gpt2apirs_account::{AccountPool, OAuthSessions, ProgressStore};
@@ -30,6 +31,8 @@ pub struct AppState {
     pub api_keys: Arc<ApiKeyStore>,
     /// 后台会话签名密钥（由 `ADMIN_KEY` 派生）。
     pub session_secret: Arc<[u8; 32]>,
+    /// 按代理串缓存的客户端（空串代表直连）。
+    client_cache: Arc<RwLock<HashMap<String, Arc<Client>>>>,
     /// 进程启动时间（用于 uptime）。
     pub started_at: DateTime<Utc>,
 }
@@ -57,8 +60,34 @@ impl AppState {
             oauth,
             api_keys,
             session_secret,
+            client_cache: Arc::new(RwLock::new(HashMap::new())),
             started_at: Utc::now(),
         }
+    }
+
+    /// 取该账号要用的客户端。
+    ///
+    /// 账号配了 `proxy` 就按代理串缓存一个客户端，没配就用共享的那个。
+    /// 缓存是必要的：每次新建客户端都要重建 TLS 配置。
+    pub fn client_for(&self, proxy: &str) -> anyhow::Result<Arc<Client>> {
+        let key = proxy.trim().to_string();
+        if key.is_empty() {
+            return Ok(self.client.clone());
+        }
+        if let Ok(guard) = self.client_cache.read() {
+            if let Some(client) = guard.get(&key) {
+                return Ok(client.clone());
+            }
+        }
+        let client = Arc::new(Client::new(gpt2apirs_http::ClientOptions {
+            emulation: Some(gpt2apirs_http::Emulation::Chrome110),
+            proxy: Some(key.clone()),
+            timeout_secs: Some(180),
+        })?);
+        if let Ok(mut guard) = self.client_cache.write() {
+            guard.insert(key, client.clone());
+        }
+        Ok(client)
     }
 
     /// 已运行秒数。
