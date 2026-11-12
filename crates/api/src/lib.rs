@@ -64,6 +64,18 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/images/{id}",
             delete(routes::images::delete_image),
         )
+        .route(
+            "/api/proxy-groups",
+            get(routes::proxy_groups::list_groups).post(routes::proxy_groups::create_group),
+        )
+        .route(
+            "/api/proxy-groups/{id}",
+            put(routes::proxy_groups::update_group).delete(routes::proxy_groups::delete_group),
+        )
+        .route(
+            "/api/accounts/{id}/proxy-group",
+            post(routes::proxy_groups::assign_group),
+        )
         .route("/api/logs", get(routes::logs::list_logs))
         .route("/api/metrics", get(routes::logs::metrics))
         .route("/api/settings", get(routes::settings::get_settings))

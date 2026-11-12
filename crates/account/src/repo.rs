@@ -492,6 +492,63 @@ impl AccountRepo {
     }
 
     /// 批量删除。返回删除数量。
+    // ---- 代理分组 ----
+
+    /// 把账号加入分组：组地址同时写进 `proxy`。
+    pub async fn assign_proxy_group(
+        &self,
+        account_id: Uuid,
+        group_id: Uuid,
+        url: &str,
+    ) -> Result<Account, AccountError> {
+        let row = sqlx::query(&format!(
+            "update accounts set proxy_group_id = $2, proxy = $3, updated_at = now() where id = $1 \
+             returning {COLUMNS}"
+        ))
+        .bind(account_id)
+        .bind(group_id)
+        .bind(url)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row_to_account(&row))
+    }
+
+    /// 把账号移出分组（保留当前生效的代理串，不突然改路由）。
+    pub async fn clear_proxy_group(&self, account_id: Uuid) -> Result<Account, AccountError> {
+        let row = sqlx::query(&format!(
+            "update accounts set proxy_group_id = null, updated_at = now() where id = $1 \
+             returning {COLUMNS}"
+        ))
+        .bind(account_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row_to_account(&row))
+    }
+
+    /// 组地址变了：同步组内账号。返回受影响条数。
+    pub async fn sync_proxy_group(&self, group_id: Uuid, url: &str) -> Result<u64, AccountError> {
+        let result = sqlx::query(
+            "update accounts set proxy = $2, updated_at = now() where proxy_group_id = $1",
+        )
+        .bind(group_id)
+        .bind(url)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// 删组前摘掉成员。
+    pub async fn detach_proxy_group(&self, group_id: Uuid) -> Result<u64, AccountError> {
+        let result = sqlx::query(
+            "update accounts set proxy_group_id = null, updated_at = now() where proxy_group_id = $1",
+        )
+        .bind(group_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// 批量删除。返回删除数量。
     pub async fn delete_many(&self, ids: &[Uuid]) -> Result<u64, AccountError> {
         if ids.is_empty() {
             return Ok(0);
@@ -613,7 +670,7 @@ const MIN_TOKEN_LOOKUP_LEN: usize = 32;
 /// 列清单（保持与 [`row_to_account`] 对齐）。
 const COLUMNS: &str = "\
     id, access_token, refresh_token, id_token, email, upstream_account_id, \
-    plan, source, status, quota, quota_confirmed, restore_at, proxy, \
+    plan, source, status, quota, quota_confirmed, restore_at, proxy, proxy_group_id, \
     success_count, fail_count, invalid_count, \
     last_used_at, last_invalid_at, last_error, last_error_at, \
     last_checked_at, last_refresh_at, created_at, updated_at";
@@ -633,6 +690,7 @@ fn row_to_account(row: &PgRow) -> Account {
         quota_confirmed: row.get("quota_confirmed"),
         restore_at: row.get("restore_at"),
         proxy: row.get("proxy"),
+        proxy_group_id: row.get("proxy_group_id"),
         success_count: row.get("success_count"),
         fail_count: row.get("fail_count"),
         invalid_count: row.get("invalid_count"),
