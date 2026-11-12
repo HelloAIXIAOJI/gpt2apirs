@@ -6,6 +6,7 @@
 #![warn(missing_docs)]
 
 pub mod auth;
+pub mod call_log;
 pub mod error;
 pub mod routes;
 pub mod session;
@@ -50,6 +51,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(routes::admin::list_keys).post(routes::admin::create_key),
         )
         .route("/api/keys/{id}", delete(routes::admin::revoke_key))
+        .route("/api/logs", get(routes::logs::list_logs))
+        .route("/api/metrics", get(routes::logs::metrics))
         .route("/api/settings", get(routes::settings::get_settings))
         .route("/api/settings", put(routes::settings::update_settings))
         .route(
@@ -105,6 +108,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(admin)
         .merge(login)
         .fallback(not_found)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            call_log::record_call,
+        ))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

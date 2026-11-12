@@ -18,11 +18,17 @@ use tower::ServiceExt;
 
 const KEYWORD: &str = "gpt2apirs-粗筛测试词";
 
-/// 从真实 env 文件读出的管理面 key（不写死，否则和运行配置不一致就 401）。
-static AUTH_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// 从真实 env 读出的登录口令（后台接口用它；与调用 /v1 的 API key 不同）。
+static ADMIN_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// 预置给 /v1 用的 API key（与 AUTH_KEY 同值，模拟旧部署迁移后的 legacy key）。
+static API_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-fn auth_key() -> &'static str {
-    AUTH_KEY.get().map(String::as_str).unwrap_or("")
+fn admin_key() -> &'static str {
+    ADMIN_KEY.get().map(String::as_str).unwrap_or("")
+}
+
+fn api_key() -> &'static str {
+    API_KEY.get().map(String::as_str).unwrap_or("")
 }
 
 fn prepare_env() -> bool {
@@ -43,11 +49,12 @@ fn prepare_env() -> bool {
 
 async fn state() -> Option<Arc<AppState>> {
     let config = Arc::new(BootstrapConfig::from_env().ok()?);
-    let _ = AUTH_KEY.set(config.auth_key.clone());
+    let _ = ADMIN_KEY.set(config.admin_key.clone());
     let pool = gpt2apirs_storage::pool::build_pool(&config).await.ok()?;
     let repo = PgSettingsRepo::new(pool.clone());
     // 预置一把与配置里 AUTH_KEY 同值的 API key，供 /v1/* 调用
     let test_key = config.auth_key.clone();
+    let _ = API_KEY.set(test_key.clone());
     let snapshot = repo.load().await.ok()?;
     let settings = Arc::new(RuntimeSettings::new(snapshot.data));
     Some(Arc::new(AppState::new(
@@ -80,7 +87,13 @@ async fn call(
         .method(method)
         .uri(path)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", auth_key()));
+                .header(
+            "authorization",
+            format!(
+                "Bearer {}",
+                if path.starts_with("/v1/") { api_key() } else { admin_key() }
+            ),
+        );
     let body = match body {
         Some(value) => Body::from(serde_json::to_vec(&value).expect("序列化")),
         None => Body::empty(),

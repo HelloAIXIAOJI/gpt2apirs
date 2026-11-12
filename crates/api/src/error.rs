@@ -97,6 +97,10 @@ impl From<AppError> for ApiError {
     }
 }
 
+/// 挂在响应上的错误码，供调用日志中间件读取。
+#[derive(Debug, Clone)]
+pub struct ErrorCodeTag(pub String);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.error.status())
@@ -112,7 +116,11 @@ impl IntoResponse for ApiError {
             );
         }
 
-        (status, Json(payload)).into_response()
+        let code = self.error.error_code().to_string();
+        let mut response = (status, Json(payload)).into_response();
+        // 中间件据此把错误码写进调用日志
+        response.extensions_mut().insert(ErrorCodeTag(code));
+        response
     }
 }
 
