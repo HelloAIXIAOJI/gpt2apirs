@@ -7,6 +7,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod backup;
 pub mod migrate;
 pub mod pool;
 pub mod repo;

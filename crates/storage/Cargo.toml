@@ -9,6 +9,8 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+tar = { workspace = true }
+flate2 = { workspace = true }
 gpt2apirs-core = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

@@ -30,6 +30,7 @@
     <button data-tab="images">图片</button>
     <button data-tab="settings">设置</button>
     <button data-tab="keys">API Keys</button>
+    <button data-tab="backup">备份</button>
   </nav>
 
   <main id="views" hidden>
@@ -91,6 +92,15 @@
       </form>
       <p id="new-key" class="secret" hidden></p>
       <table id="keys"><thead><tr><th>名称</th><th>前缀</th><th>创建</th><th>最后使用</th><th>状态</th><th></th></tr></thead><tbody></tbody></table>
+    </section>
+    <section data-view="backup" class="panel" hidden>
+      <h2>备份与恢复</h2>
+      <p class="muted">备份写到 data/backups/，包含账号、设置、API key 哈希与图片字节；恢复是合并语义，只补缺失。</p>
+      <p>
+        <button id="make-backup">立即备份</button>
+        <span id="backup-hint" class="muted"></span>
+      </p>
+      <table id="backups"><thead><tr><th>文件</th><th>大小</th><th>时间</th><th></th></tr></thead><tbody></tbody></table>
     </section>
   </main>
 

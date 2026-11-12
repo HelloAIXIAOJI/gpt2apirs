@@ -57,6 +57,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(routes::images::list_images),
         )
         .route("/api/images/stats", get(routes::images::image_stats))
+        .route("/api/backup", post(routes::backup::create_backup))
+        .route("/api/backups", get(routes::backup::list_backups))
+        .route("/api/restore", post(routes::backup::restore))
         .route(
             "/api/images/{id}",
             delete(routes::images::delete_image),

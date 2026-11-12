@@ -68,7 +68,44 @@ $('#login-form').addEventListener('submit', async (event) => {
       body: JSON.stringify({ key: key })
     });
     $('#login-key').value = '';
-    await checkSession();
+    await renderers.backup = async () => {
+  const payload = await api('/api/backups');
+  const body = $('#backups tbody');
+  body.textContent = '';
+  (payload.data || []).forEach((item) => {
+    const restore = document.createElement('button');
+    restore.textContent = '恢复';
+    restore.addEventListener('click', async () => {
+      if (!confirm('合并恢复 ' + item.file + '？只补库中缺失的数据。')) return;
+      try {
+        const stats = await api('/api/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: item.file })
+        });
+        toast('恢复完成：账号 +' + stats.accounts_inserted + '，文件 +' + stats.files_written);
+        await renderers.backup();
+      } catch (failure) { toast(failure.message, true); }
+    });
+    body.appendChild(row([
+      item.file,
+      Math.round(item.bytes / 1024) + ' KB',
+      (item.modified_at || '').slice(0, 19).replace('T', ' '),
+      restore
+    ]));
+  });
+  if (!(payload.data || []).length) body.appendChild(row(['（还没有备份）', '', '', '']));
+};
+
+$('#make-backup').addEventListener('click', async () => {
+  try {
+    const made = await api('/api/backup', { method: 'POST' });
+    $('#backup-hint').textContent = '已生成 ' + made.file + '（' + Math.round(made.bytes / 1024) + ' KB，账号 ' + made.accounts + '，图片 ' + made.images + '）';
+    await renderers.backup();
+  } catch (failure) { toast(failure.message, true); }
+});
+
+checkSession();
   } catch (failure) {
     error.textContent = '登录失败：' + failure.message;
     error.hidden = false;
