@@ -1,0 +1,43 @@
+{
+ "config": [
+  4000,
+  "Tue Nov 10 2026 08:30:31 GMT-0500 (Eastern Standard Time)",
+  4294705152,
+  1,
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+  "https://chatgpt.com/backend-api/sentinel/sdk.js",
+  "c/x/_",
+  "en-US",
+  "en-US,es-US,en,es",
+  0.9407154292549156,
+  "vibrate−function vibrate() { [native code] }",
+  "_reactListening5dehydibo78",
+  "scrollY",
+  35796226.4849,
+  "50e1a28a-a7c6-4f35-964a-d00b449683e9",
+  "",
+  24,
+  1794281635243.9707,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "results": [
+  {
+   "difficulty": "0f",
+   "avg_ms": 0.11
+  },
+  {
+   "difficulty": "00ff",
+   "avg_ms": 0.16
+  },
+  {
+   "difficulty": "000fff",
+   "avg_ms": 15.43
+  }
+ ]
+}

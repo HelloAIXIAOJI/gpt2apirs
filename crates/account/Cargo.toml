@@ -1,0 +1,36 @@
+[package]
+name = "gpt2apirs-account"
+description = "账号池：模型 / 凭证投影 / 仓储 / 选号 / 刷新"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+gpt2apirs-core = { workspace = true }
+gpt2apirs-storage = { workspace = true }
+gpt2apirs-http = { workspace = true }
+gpt2apirs-protocol = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+dashmap = { workspace = true }
+rand = { workspace = true }
+
+[features]
+default = []
+tls = ["gpt2apirs-http/tls"]
+
+[dev-dependencies]
+tokio = { workspace = true }
+dotenvy = { workspace = true }

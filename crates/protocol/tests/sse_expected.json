@@ -1,0 +1,13 @@
+{
+ "conversationId": "6af329ce-5a14-83ee-a906-4927ae2adff4",
+ "fileIds": [
+  "file_0000000028a48209897e753c161fbf5a"
+ ],
+ "sedimentIds": [
+  "file_0000000028a48209897e753c161fbf5a"
+ ],
+ "blocked": false,
+ "toolInvoked": true,
+ "turnUseCase": "image gen",
+ "eventCount": 31
+}

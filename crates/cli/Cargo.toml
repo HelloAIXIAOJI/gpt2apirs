@@ -1,0 +1,37 @@
+[package]
+name = "gpt2apirs-cli"
+description = "命令行入口、服务启动"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# 启用上游 TLS 指纹客户端（需要 BoringSSL；Windows 还需 NASM）
+tls = ["gpt2apirs-http/tls", "gpt2apirs-api/tls", "gpt2apirs-account/tls"]
+
+[[bin]]
+name = "gpt2apirs"
+path = "src/main.rs"
+
+[dependencies]
+gpt2apirs-core = { workspace = true }
+gpt2apirs-account = { workspace = true }
+gpt2apirs-api = { workspace = true }
+gpt2apirs-storage = { workspace = true }
+gpt2apirs-http = { workspace = true }
+axum = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

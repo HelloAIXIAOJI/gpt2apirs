@@ -1,0 +1,84 @@
+{
+ "timeCases": [
+  {
+   "epochSeconds": 0.0,
+   "expected": "Wed Dec 31 1969 19:00:00 GMT-0500 (Eastern Standard Time)"
+  },
+  {
+   "epochSeconds": 1762500000.0,
+   "expected": "Fri Nov 07 2025 02:20:00 GMT-0500 (Eastern Standard Time)"
+  },
+  {
+   "epochSeconds": 1767225599.0,
+   "expected": "Wed Dec 31 2025 18:59:59 GMT-0500 (Eastern Standard Time)"
+  },
+  {
+   "epochSeconds": 1794281635.0,
+   "expected": "Mon Nov 09 2026 22:33:55 GMT-0500 (Eastern Standard Time)"
+  },
+  {
+   "epochSeconds": 946684800.5,
+   "expected": "Fri Dec 31 1999 19:00:00 GMT-0500 (Eastern Standard Time)"
+  },
+  {
+   "epochSeconds": 4102444800.0,
+   "expected": "Thu Dec 31 2099 19:00:00 GMT-0500 (Eastern Standard Time)"
+  }
+ ],
+ "configSample": [
+  2340,
+  "Tue Nov 10 2026 08:55:27 GMT-0500 (Eastern Standard Time)",
+  4294705152,
+  1,
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+  "https://chatgpt.com/backend-api/sentinel/sdk.js",
+  "c/abcdef12/_",
+  "en-US",
+  "en-US,es-US,en,es",
+  0.8195636450072712,
+  "presentation−[object Presentation]",
+  "location",
+  "visualViewport",
+  37292525.637600005,
+  "3a29ff57-8953-45e4-b0b3-2a15750d83c4",
+  "",
+  24,
+  1794281635243.9707,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "configSampleJson": "[2340,\"Tue Nov 10 2026 08:55:27 GMT-0500 (Eastern Standard Time)\",4294705152,1,\"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36\",\"https://chatgpt.com/backend-api/sentinel/sdk.js\",\"c/abcdef12/_\",\"en-US\",\"en-US,es-US,en,es\",0.8195636450072712,\"presentation−[object Presentation]\",\"location\",\"visualViewport\",37292525.637600005,\"3a29ff57-8953-45e4-b0b3-2a15750d83c4\",\"\",24,1794281635243.9707,0,0,0,0,0,0,0]",
+ "crossCheckConfig": [
+  4000,
+  "Tue Nov 10 2026 08:55:27 GMT-0500 (Eastern Standard Time)",
+  4294705152,
+  1,
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+  "https://chatgpt.com/backend-api/sentinel/sdk.js",
+  "c/abcdef12/_",
+  "en-US",
+  "en-US,es-US,en,es",
+  0.9417312278104214,
+  "keyboard−[object Keyboard]",
+  "_reactListening5dehydibo78",
+  "innerHeight",
+  37292525.7119,
+  "3f654bed-6b29-40dd-8b21-a9ab82a17c92",
+  "",
+  16,
+  1794281635243.9707,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "crossCheckLegacyToken": "gAAAAACWzQwMDAsIlR1ZSBOb3YgMTAgMjAyNiAwODo1NToyNyBHTVQtMDUwMCAoRWFzdGVybiBTdGFuZGFyZCBUaW1lKSIsNDI5NDcwNTE1MiwxLCJNb3ppbGxhLzUuMCAoWDExOyBMaW51eCB4ODZfNjQpIEFwcGxlV2ViS2l0LzUzNy4zNiAoS0hUTUwsIGxpa2UgR2Vja28pIENocm9tZS8xNDMuMC4wLjAgU2FmYXJpLzUzNy4zNiIsImh0dHBzOi8vY2hhdGdwdC5jb20vYmFja2VuZC1hcGkvc2VudGluZWwvc2RrLmpzIiwiYy9hYmNkZWYxMi9fIiwiZW4tVVMiLCJlbi1VUyxlcy1VUyxlbixlcyIsMC45NDE3MzEyMjc4MTA0MjE0LCJrZXlib2FyZOKIkltvYmplY3QgS2V5Ym9hcmRdIiwiX3JlYWN0TGlzdGVuaW5nNWRlaHlkaWJvNzgiLCJpbm5lckhlaWdodCIsMzcyOTI1MjUuNzExOSwiM2Y2NTRiZWQtNmIyOS00MGRkLThiMjEtYTlhYjgyYTE3YzkyIiwiIiwxNiwxNzk0MjgxNjM1MjQzLjk3MDcsMCwwLDAsMCwwLDAsMF0="
+}

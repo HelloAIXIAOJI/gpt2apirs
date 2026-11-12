@@ -1,0 +1,63 @@
+[
+ {
+  "name": "fixture_chatgpt",
+  "html": "<!DOCTYPE html>\n<html lang=\"en\" data-build=\"c/9f2e1a4b7c/_\">\n<head>\n  <meta charset=\"utf-8\">\n  <title>ChatGPT</title>\n  <script src=\"/cdn/assets/root-abc123.js\" nonce=\"xyz\"></script>\n  <script src=\"/backend-api/sentinel/sdk.js\"></script>\n  <script src=\"https://cdn.oaistatic.com/assets/app-def456.js\"></script>\n  <script>window.__NEXT_DATA__ = {};</script>\n</head>\n<body><div id=\"__next\"></div></body>\n</html>\n",
+  "scriptSources": [
+   "/cdn/assets/root-abc123.js",
+   "/backend-api/sentinel/sdk.js",
+   "https://cdn.oaistatic.com/assets/app-def456.js"
+  ],
+  "dataBuild": "c/9f2e1a4b7c/_"
+ },
+ {
+  "name": "fixture_singlequote",
+  "html": "<!DOCTYPE html>\n<html>\n<head>\n  <script src='/cdn/assets/only-single-quote.js'></script>\n  <script src=\"/cdn/assets/build-c/7d3b9e0f12/_/chunk.js\"></script>\n</head>\n<body></body>\n</html>\n",
+  "scriptSources": [
+   "/cdn/assets/only-single-quote.js",
+   "/cdn/assets/build-c/7d3b9e0f12/_/chunk.js"
+  ],
+  "dataBuild": "c/7d3b9e0f12/_"
+ },
+ {
+  "name": "fixture_htmlattr",
+  "html": "<!DOCTYPE html>\n<html data-build=\"c/aaaa1111bb/_\">\n<head><meta charset=\"utf-8\"><title>no scripts</title></head>\n<body></body>\n</html>\n",
+  "scriptSources": [
+   "https://chatgpt.com/backend-api/sentinel/sdk.js"
+  ],
+  "dataBuild": "c/aaaa1111bb/_"
+ },
+ {
+  "name": "fixture_bare",
+  "html": "<!DOCTYPE html>\n<html>\n<head><title>bare</title></head>\n<body><p>no script no data-build</p></body>\n</html>\n",
+  "scriptSources": [
+   "https://chatgpt.com/backend-api/sentinel/sdk.js"
+  ],
+  "dataBuild": ""
+ },
+ {
+  "name": "fixture_multi_match",
+  "html": "<!DOCTYPE html>\n<html>\n<head>\n  <script src=\"/a/c/first111/__/x.js\"></script>\n  <script src=\"/b/c/second222/_/y.js\"></script>\n  <script src=\"/d/c/third333/_/z.js\"></script>\n</head>\n<body></body>\n</html>\n",
+  "scriptSources": [
+   "/a/c/first111/__/x.js",
+   "/b/c/second222/_/y.js",
+   "/d/c/third333/_/z.js"
+  ],
+  "dataBuild": "c/third333/_"
+ },
+ {
+  "name": "fixture_comment",
+  "html": "<!DOCTYPE html>\n<html data-build=\"c/real999/_\">\n<head>\n  <!-- <script src=\"/should/not/count.js\"></script> -->\n  <script src=\"/real/one.js\"></script>\n</head>\n<body>\n  <!-- <script src=\"/should/not/count2.js\"></script> -->\n</body>\n</html>\n",
+  "scriptSources": [
+   "/real/one.js"
+  ],
+  "dataBuild": "c/real999/_"
+ },
+ {
+  "name": "fixture_attr_order",
+  "html": "<!DOCTYPE html>\n<html>\n<head>\n  <script nonce=\"abc\" defer src=\"/x/c/ordered444/_/a.js\" type=\"module\"></script>\n</head>\n</html>\n",
+  "scriptSources": [
+   "/x/c/ordered444/_/a.js"
+  ],
+  "dataBuild": "c/ordered444/_"
+ }
+]

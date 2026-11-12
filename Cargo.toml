@@ -1,0 +1,90 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/http",
+    "crates/protocol",
+    "crates/account",
+    "crates/generate",
+    "crates/storage",
+    "crates/api",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/yourname/gpt2apirs"
+authors = ["gpt2apirs contributors"]
+
+[workspace.dependencies]
+# 内部 crate
+gpt2apirs-core = { path = "crates/core" }
+gpt2apirs-http = { path = "crates/http" }
+gpt2apirs-protocol = { path = "crates/protocol" }
+gpt2apirs-account = { path = "crates/account" }
+gpt2apirs-generate = { path = "crates/generate" }
+gpt2apirs-storage = { path = "crates/storage" }
+gpt2apirs-api = { path = "crates/api" }
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# HTTP 客户端（TLS 指纹）
+wreq = { version = "0.16", features = ["json", "stream", "cookies", "gzip", "brotli", "deflate", "socks", "charset"] }
+wreq-util = "0.2"
+
+# Web 框架
+axum = { version = "0.8", features = ["multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip"] }
+
+# 数据库
+# 只支持 PostgreSQL（ADR-008 修订：放弃 SQLite 双后端）
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-none", "postgres", "macros", "migrate", "chrono", "uuid", "json", "bigdecimal"] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+# float_roundtrip: 保证 JSON 浮点解析精确往返，避免 1 ULP 误差
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# 图片
+image = { version = "0.25", features = ["png", "jpeg", "webp", "gif"] }
+base64 = "0.22"
+
+# 错误
+thiserror = "2"
+anyhow = "1"
+
+# 工具
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+sha2 = "0.10"
+sha3 = "0.10"
+hex = "0.4"
+regex = "1"
+once_cell = "1"
+# 流式处理（SSE 增量读取 / 改造 Stream）
+futures-util = "0.3"
+dashmap = "6"
+
+# 文本 token 计数（ADR-010：真实计算，不估算）
+# 词表在编译期嵌入，运行时不下载
+tiktoken-rs = "0.9"
+
+# 配置
+# .env 加载（与可执行文件同目录）
+dotenvy = "0.15"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true
