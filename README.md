@@ -146,7 +146,7 @@ curl -X POST http://127.0.0.1:8000/v1/images/generations \
 浏览器打开 `http://127.0.0.1:8000/admin`，用 `.env` 里的 `ADMIN_KEY` 登录。
 
 页面是手写 HTML/CSS/JS，**编译期打进二进制**：不需要 Node、不需要额外静态目录，部署仍只有一个可执行文件。
-六个标签页：概览（成功率 / P50 / P95 / 错误 Top 5）、账号池、调用日志、图片、设置、API Keys。
+八个标签页：概览（成功率 / P50 / P95 / 错误 Top 5）、账号池、调用日志、代理分组、图片、设置、API Keys、备份。
 
 ### 登录口令与 API key 是两套
 
@@ -213,6 +213,12 @@ python tools\account_gui.py
 | GET | `/api/images` | 图片列表（含账号、提示词、尺寸）|
 | GET | `/api/images/stats` | 张数与总字节 |
 | DELETE | `/api/images/{id}` | 删记录并删磁盘文件 |
+| GET / POST | `/api/proxy-groups` | 代理分组列表 / 新建 |
+| PUT / DELETE | `/api/proxy-groups/{id}` | 改组地址（同步组内账号）/ 删组（先摘成员）|
+| POST | `/api/accounts/{id}/proxy-group` | 账号加入分组（`group_id: null` 表示移出）|
+| POST | `/api/backup` | 打备份包到 `data/backups/`（含账号、设置、key 哈希、图片）|
+| GET | `/api/backups` | 已有备份列表 |
+| POST | `/api/restore` | 合并恢复（只补缺失，不覆盖已有行）|
 
 ### 运行设置
 
