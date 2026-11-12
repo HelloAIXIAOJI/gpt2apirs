@@ -1,0 +1,27 @@
+[package]
+name = "gpt2apirs-core"
+description = "基础设施：配置 / 错误 / 日志脱敏 / 图片 token 估算 / 通用工具"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+tiktoken-rs = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+image = { workspace = true }
+
+[dev-dependencies]

@@ -1,0 +1,21 @@
+# 构建产物
+/target
+
+# 运行数据（图片、日志、数据库）
+/data
+*.db
+*.db-shm
+*.db-wal
+
+# 密钥与本地配置
+.env
+
+# 规划文档不纳入版本控制
+/docs
+
+# 临时构建日志
+_*.log
+
+# Python 字节码缓存
+__pycache__/
+*.pyc

@@ -1,0 +1,32 @@
+[package]
+name = "gpt2apirs-protocol"
+description = "上游协议逆向：PoW/Sentinel/SSE/24 端点"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha3 = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+
+[[bin]]
+name = "pow-demo"
+path = "src/bin/pow_demo.rs"
+
+[dev-dependencies]
+tokio = { workspace = true }
+hex = { workspace = true }
+sha3 = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

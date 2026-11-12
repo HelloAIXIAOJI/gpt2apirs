@@ -1,0 +1,747 @@
+//! 图片生成流水线：把 protocol 与 http 两个 crate 串起来。
+
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
+
+pub mod conversation;
+pub mod error;
+pub mod format;
+pub mod inputs;
+pub mod mask;
+pub mod search;
+pub mod text;
+pub mod models;
+pub mod upload;
+
+use anyhow::{Context, Result};
+
+use crate::error::{FailureKind, GenerateError, classify_http};
+use chrono::Utc;
+use gpt2apirs_core::paths;
+use gpt2apirs_core::Deadline;
+use gpt2apirs_http::{Client, browser_headers};
+use gpt2apirs_protocol::conversation::{
+    DEFAULT_MODEL, build_conversation_payload, build_conversation_prepare_payload,
+    parse_conduit_token,
+};
+use gpt2apirs_protocol::download::{
+    attachment_download_path, file_download_path, is_same_origin, parse_download_url,
+    plan_download_targets,
+};
+use gpt2apirs_protocol::endpoints::{
+    BASE_URL, CONVERSATION, CONVERSATION_PREPARE, HOME, SENTINEL_FINALIZE, SENTINEL_PREPARE,
+};
+use gpt2apirs_protocol::pow::{build_legacy_requirements_token, build_proof_token};
+use gpt2apirs_protocol::pow_config::build_pow_config;
+use gpt2apirs_protocol::pow_config::parse_pow_resources;
+use gpt2apirs_protocol::sentinel::{
+    build_finalize_payload, build_prepare_payload, parse_finalize, parse_prepare,
+};
+use gpt2apirs_protocol::sse::parse_conversation_stream;
+use serde_json::Value;
+
+/// 各阶段的**上限**（实际取 min(上限, 剩余总时间)）。
+pub mod stage_caps {
+    use std::time::Duration;
+    /// bootstrap 取首页。
+    pub const BOOTSTRAP: Duration = Duration::from_secs(30);
+    /// sentinel prepare/finalize。
+    pub const SENTINEL: Duration = Duration::from_secs(30);
+    /// conversation/prepare。
+    pub const CONVERSATION_PREPARE: Duration = Duration::from_secs(60);
+    /// SSE 流。
+    pub const SSE: Duration = Duration::from_secs(80);
+    /// 解析下载地址。
+    pub const RESOLVE_URL: Duration = Duration::from_secs(60);
+    /// 下载图片。
+    pub const DOWNLOAD: Duration = Duration::from_secs(120);
+}
+
+/// 一次请求的总时限：`stream(80) + poll(60) + 30 = 170s`。
+pub fn default_request_deadline(settings: &gpt2apirs_core::RuntimeSettings) -> Deadline {
+    let stream = settings.get_i64("image_stream_timeout_secs").max(1);
+    let poll = settings.get_i64("image_poll_timeout_secs").max(1);
+    Deadline::in_secs((stream + poll + 30) as f64)
+}
+
+/// 默认 User-Agent（指纹与 PoW 配置构造都依赖它，不要随意改）。
+pub use gpt2apirs_http::DEFAULT_USER_AGENT;
+
+/// 生成请求。
+#[derive(Debug, Clone)]
+pub struct ImageRequest {
+    /// 提示词。
+    pub prompt: String,
+    /// 对外模型名（透传记录用）。
+    pub model: String,
+    /// 上游模型 slug。
+    pub upstream_model: String,
+    /// User-Agent。
+    pub user_agent: String,
+    /// 生成张数（1..=4）。
+    pub n: u32,
+    /// 输出格式。`None` 表示调用方没指定 —— 此时不发格式指令，行为与旧版一致。
+    pub output_format: Option<crate::format::OutputFormat>,
+    /// 动图帧数（仅 GIF 有意义；不填就不给上游）。
+    pub frame_count: Option<u32>,
+    /// 动图每帧时长（毫秒，仅 GIF 有意义）。
+    pub frame_duration_ms: Option<u32>,
+    /// 参考图（**已上传到上游**）。非空即图生图。
+    ///
+    /// 上传必须在拿到账号 token 之后做，所以由调用方先上传再填这里 ——
+    /// generate 不负责上传，它只管「怎么用」。
+    pub images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
+}
+
+impl ImageRequest {
+    /// 用提示词构造默认请求。
+    pub fn new(prompt: impl Into<String>) -> Self {
+        Self {
+            prompt: prompt.into(),
+            model: "gpt-image-2".to_string(),
+            upstream_model: DEFAULT_MODEL.to_string(),
+            user_agent: DEFAULT_USER_AGENT.to_string(),
+            n: 1,
+            output_format: None,
+            frame_count: None,
+            frame_duration_ms: None,
+            images: Vec::new(),
+        }
+    }
+
+    /// 带上参考图（图生图）。
+    pub fn with_images(
+        mut self,
+        images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
+    ) -> Self {
+        self.images = images;
+        self
+    }
+
+    /// 真正发给上游的提示词：原文 + 格式/帧指令。
+    pub fn effective_prompt(&self) -> String {
+        let Some(format) = self.output_format else {
+            // 没指定格式就不该改动提示词；帧参数单独给也只追加帧行。
+            if self.frame_count.is_none() && self.frame_duration_ms.is_none() {
+                return self.prompt.clone();
+            }
+            let mut lines = Vec::new();
+            if let Some(count) = self.frame_count {
+                lines.push(format!("frame_count: {count}"));
+            }
+            if let Some(duration) = self.frame_duration_ms {
+                lines.push(format!("frame_duration_ms: {duration}"));
+            }
+            return crate::format::with_prompt_hints(&self.prompt, &lines.join("\n"));
+        };
+        let hints = crate::format::prompt_hints(format, self.frame_count, self.frame_duration_ms);
+        crate::format::with_prompt_hints(&self.prompt, &hints)
+    }
+
+    /// 指定输出格式。
+    pub fn with_output_format(mut self, format: crate::format::OutputFormat) -> Self {
+        self.output_format = Some(format);
+        self
+    }
+
+    /// 是否图生图。
+    pub fn is_edit(&self) -> bool {
+        !self.images.is_empty()
+    }
+
+    /// 设置张数（自动钳到 1..=4）。
+    pub fn with_n(mut self, n: u32) -> Self {
+        self.n = n.clamp(1, 4);
+        self
+    }
+}
+
+/// 已落盘的一张图片。
+#[derive(Debug, Clone)]
+pub struct GeneratedImage {
+    /// 图片字节。
+    pub bytes: Vec<u8>,
+    /// 相对 `DATA_DIR` 的路径，例如 `images/2026/11/11/<uuid>.png`。
+    pub rel_path: String,
+    /// MIME 类型，例如 `image/png`。
+    pub mime: &'static str,
+    /// 宽。
+    pub width: u32,
+    /// 高。
+    pub height: u32,
+}
+
+impl GeneratedImage {
+    /// base64 内容（`response_format=b64_json` 用）。
+    pub fn to_base64(&self) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(&self.bytes)
+    }
+}
+
+/// 生成结果。
+#[derive(Debug, Clone, Default)]
+pub struct ImageResult {
+    /// 生成的图片。
+    pub images: Vec<GeneratedImage>,
+    /// 对话 ID。
+    pub conversation_id: String,
+    /// 解析出的 sediment ID。
+    pub sediment_ids: Vec<String>,
+    /// 解析出的 file ID。
+    pub file_ids: Vec<String>,
+    /// 原始 SSE（排错用）。
+    pub sse_raw: String,
+}
+
+/// 各阶段诊断信息。
+#[derive(Debug, Clone, Default)]
+pub struct FlowDiagnostics {
+    /// bootstrap 状态码。
+    pub bootstrap_status: u16,
+    /// HTML 长度。
+    pub html_len: usize,
+    /// 脚本数量。
+    pub script_count: usize,
+    /// data-build。
+    pub data_build: String,
+    /// prepare 状态码。
+    pub prepare_status: u16,
+    /// PoW 是否被要求。
+    pub pow_required: bool,
+    /// PoW 难度。
+    pub pow_difficulty: String,
+    /// Turnstile 是否被要求。
+    pub turnstile_required: bool,
+    /// finalize 状态码。
+    pub finalize_status: u16,
+    /// conversation/prepare 状态码。
+    pub conv_prepare_status: u16,
+    /// SSE 状态码。
+    pub sse_status: u16,
+    /// SSE 字节数。
+    pub sse_bytes: usize,
+}
+
+/// 执行完整生图流水线（`n` 张）。
+pub async fn generate_images(
+    client: &Client,
+    token: &str,
+    request: &ImageRequest,
+    deadline: Deadline,
+) -> std::result::Result<(ImageResult, FlowDiagnostics), GenerateError> {
+    if token.trim().is_empty() {
+        return Err(GenerateError::new(
+            FailureKind::TokenInvalid,
+            "access_token 为空",
+        ));
+    }
+    let mut combined = ImageResult::default();
+    let mut diagnostics = FlowDiagnostics::default();
+
+    for index in 0..request.n.clamp(1, 4) {
+        let (result, diag) = generate_one(client, token, request, deadline).await?;
+        if index == 0 {
+            diagnostics = diag;
+        }
+        combined.conversation_id = result.conversation_id;
+        combined.sediment_ids.extend(result.sediment_ids);
+        combined.file_ids.extend(result.file_ids);
+        combined.sse_raw = result.sse_raw;
+        combined.images.extend(result.images);
+    }
+
+    Ok((combined, diagnostics))
+}
+
+/// 生成一张。
+/// 一次握手的产物。
+pub struct Handshake {
+    /// sentinel 最终确认拿到的 requirements token。
+    pub requirements_token: String,
+    /// PoW 证明 token（没有 PoW 时为空串）。
+    pub proof_token: String,
+    /// 过程诊断。
+    pub diag: FlowDiagnostics,
+}
+
+/// 执行握手：bootstrap  sentinel prepare  PoW  sentinel finalize。
+///
+/// 图片与文本链路共用这一段，所以抽出来避免两份实现漂移。
+pub async fn handshake(
+    client: &Client,
+    token: &str,
+    user_agent: &str,
+    deadline: Deadline,
+) -> std::result::Result<Handshake, GenerateError> {
+    let mut diag = FlowDiagnostics::default();
+    let mut headers = browser_headers(user_agent);
+    headers.push((
+        "Accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8".to_string(),
+    ));
+
+    // ---- 1. bootstrap ----
+    let budget = stage_budget(deadline, "bootstrap", stage_caps::BOOTSTRAP)?;
+    let home = client
+        .get_text(&format!("{BASE_URL}{HOME}"), &headers, Some(budget))
+        .await?;
+    diag.bootstrap_status = home.status;
+    diag.html_len = home.body.len();
+    if home.status != 200 {
+        return Err(GenerateError::new(
+            classify_http(home.status, &home.body),
+            format!("bootstrap 失败，状态 {}", home.status),
+        ));
+    }
+    let (scripts, data_build) = parse_pow_resources(&home.body);
+    diag.script_count = scripts.len();
+    diag.data_build = data_build.clone();
+
+    // ---- 2. sentinel prepare ----
+    let config = build_pow_config(user_agent, Some(&scripts), &data_build);
+    let p_token = build_legacy_requirements_token(&config);
+
+    let budget = stage_budget(deadline, "sentinel_prepare", stage_caps::SENTINEL)?;
+    let prepare = client
+        .post_json(
+            &format!("{BASE_URL}{SENTINEL_PREPARE}"),
+            &gpt2apirs_http::api_headers(user_agent, token, SENTINEL_PREPARE),
+            &build_prepare_payload(&p_token),
+            Some(budget),
+        )
+        .await?;
+    diag.prepare_status = prepare.status;
+    if prepare.status != 200 {
+        return Err(GenerateError::new(
+            classify_http(prepare.status, &prepare.body),
+            format!("sentinel prepare 失败，状态 {}: {}", prepare.status, clip(&prepare.body)),
+        ));
+    }
+    let prepare_json: Value =
+        serde_json::from_str(&prepare.body).context("prepare 响应不是 JSON")?;
+    let prepared = parse_prepare(&prepare_json);
+
+    if prepared.arkose_required {
+        return Err(GenerateError::new(
+            FailureKind::ArkoseRequired,
+            "上游要求 arkose 验证码，本项目未实现",
+        ));
+    }
+    diag.pow_required = prepared.pow.is_some();
+    diag.turnstile_required = prepared.turnstile_required;
+
+    let proof_token = match &prepared.pow {
+        Some(challenge) if challenge.is_usable() => {
+            diag.pow_difficulty = challenge.difficulty.clone();
+            build_proof_token(&challenge.seed, &challenge.difficulty, &config)
+                .context("PoW 求解失败")?
+        }
+        _ => String::new(),
+    };
+
+    // ---- 3. sentinel finalize ----
+    let budget = stage_budget(deadline, "sentinel_finalize", stage_caps::SENTINEL)?;
+    let finalize = client
+        .post_json(
+            &format!("{BASE_URL}{SENTINEL_FINALIZE}"),
+            &gpt2apirs_http::api_headers(user_agent, token, SENTINEL_FINALIZE),
+            &build_finalize_payload(&prepared.prepare_token, &proof_token, ""),
+            Some(budget),
+        )
+        .await?;
+    diag.finalize_status = finalize.status;
+    let finalize_json: Value =
+        serde_json::from_str(&finalize.body).context("finalize 响应不是 JSON")?;
+    let finalized = parse_finalize(&finalize_json);
+    if finalized.token.is_empty() {
+        return Err(GenerateError::new(
+            FailureKind::Protocol,
+            format!("finalize 未返回 token: {}", clip(&finalize.body)),
+        ));
+    }
+
+    Ok(Handshake {
+        requirements_token: finalized.token,
+        proof_token,
+        diag,
+    })
+}
+
+async fn generate_one(
+    client: &Client,
+    token: &str,
+    request: &ImageRequest,
+    deadline: Deadline,
+) -> std::result::Result<(ImageResult, FlowDiagnostics), GenerateError> {
+    // ---- 1~3. bootstrap + sentinel ----
+    let Handshake {
+        requirements_token,
+        proof_token,
+        mut diag,
+    } = handshake(client, token, &request.user_agent, deadline).await?;
+    let auth = format!("Bearer {token}");
+
+    // ---- 4. conversation/prepare ----
+    let budget = stage_budget(deadline, "conversation_prepare", stage_caps::CONVERSATION_PREPARE)?;
+    let prep = client
+        .post_json(
+            &format!("{BASE_URL}{CONVERSATION_PREPARE}"),
+            &image_headers(
+                &request.user_agent,
+                token,
+                CONVERSATION_PREPARE,
+                &requirements_token,
+                &proof_token,
+                None,
+                "application/json",
+            ),
+            &build_conversation_prepare_payload(&request.effective_prompt(), &request.upstream_model),
+            Some(budget),
+        )
+        .await?;
+    diag.conv_prepare_status = prep.status;
+    if prep.status != 200 {
+        return Err(GenerateError::new(
+            classify_http(prep.status, &prep.body),
+            format!(
+                "conversation/prepare 失败，状态 {}: {}",
+                prep.status,
+                clip(&prep.body)
+            ),
+        ));
+    }    let prep_json: Value = serde_json::from_str(&prep.body).context("prepare 响应不是 JSON")?;
+    let Some(conduit_token) = parse_conduit_token(&prep_json) else {
+        return Err(GenerateError::new(
+            FailureKind::Protocol,
+            format!(
+                "conversation/prepare 未返回 conduit_token: {}",
+                clip(&prep.body)
+            ),
+        ));
+    };
+
+    // ---- 5. SSE ----
+    let budget = stage_budget(deadline, "sse", stage_caps::SSE)?;
+    let sse = client
+        .post_sse(
+            &format!("{BASE_URL}{CONVERSATION}"),
+            &image_headers(
+                &request.user_agent,
+                token,
+                CONVERSATION,
+                &requirements_token,
+                &proof_token,
+                Some(&conduit_token),
+                "text/event-stream",
+            ),
+            &build_conversation_payload(
+                &request.effective_prompt(),
+                &request.upstream_model,
+                gpt2apirs_protocol::util::now_unix_secs_f64(),
+                &request.images,
+            ),
+            Some(budget),
+        )
+        .await?;
+    diag.sse_status = sse.status;
+    diag.sse_bytes = sse.body.len();
+    if sse.status != 200 {
+        return Err(GenerateError::new(
+            classify_http(sse.status, &sse.body),
+            format!("生图 SSE 请求失败，状态 {}: {}", sse.status, clip(&sse.body)),
+        ));
+    }
+
+    let (_, state) = parse_conversation_stream(&sse.body);
+    let mut result = ImageResult {
+        conversation_id: state.conversation_id.clone(),
+        sediment_ids: state.sediment_ids.clone(),
+        file_ids: state.file_ids.clone(),
+        sse_raw: sse.body.clone(),
+        images: Vec::new(),
+    };
+
+    // ---- 6/7. 解析下载地址 + 下载 + 落盘 ----
+    let (attachments, files) =
+        plan_download_targets(&state.conversation_id, &state.file_ids, &state.sediment_ids);
+
+    let mut urls: Vec<String> = Vec::new();
+    for (conversation_id, sediment_id) in &attachments {
+        let path = attachment_download_path(conversation_id, sediment_id);
+        if let Ok(Some(url)) = resolve_url(client, &auth, &request.user_agent, &path, deadline).await {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+    }
+    for file_id in &files {
+        let path = file_download_path(file_id);
+        if let Ok(Some(url)) = resolve_url(client, &auth, &request.user_agent, &path, deadline).await {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+        }
+    }
+
+    for url in &urls {
+        let mut headers = vec![("User-Agent", request.user_agent.clone())];
+        if is_same_origin(BASE_URL, url) {
+            headers.push(("Authorization", auth.clone()));
+        }
+        let Ok(budget) = stage_budget(deadline, "download", stage_caps::DOWNLOAD) else {
+            continue;
+        };
+        let Ok(response) = client.get_bytes(url, &headers, Some(budget)).await else {
+            continue;
+        };
+        if response.status != 200 {
+            continue;
+        }
+        let target = request.output_format.unwrap_or_default();
+        if let Some(saved) = save_image_as(&response.body, target)? {
+            result.images.push(saved);
+        }
+    }
+
+    Ok((result, diag))
+}
+
+/// 把图片字节落盘，返回落盘后的元信息。
+///
+/// 路径：`DATA_DIR/images/YYYY/MM/DD/<uuid>.<ext>`
+///
+/// 无法识别的格式返回 `Ok(None)`。
+pub fn save_image(bytes: &[u8]) -> Result<Option<GeneratedImage>> {
+    save_image_as(bytes, crate::format::OutputFormat::Png)
+}
+
+/// 按目标格式落盘：先转码，再用目标格式的扩展名与 MIME。
+///
+/// 已是目标格式时不做无谓重编码（见 `format::convert`）。
+pub fn save_image_as(
+    bytes: &[u8],
+    format: crate::format::OutputFormat,
+) -> Result<Option<GeneratedImage>> {
+    if image::guess_format(bytes).is_err() {
+        return Ok(None);
+    }
+    let converted = crate::format::convert(bytes, format)?;
+    // 扩展名与 MIME 一律取**实际字节**：GIF 会被原样透传，
+    // 这时若按请求格式写扩展名，就会得到「名叫 .png 的 GIF」。
+    let Some((mime, ext)) = sniff_mime(&converted) else {
+        return Ok(None);
+    };
+    let (width, height) = gpt2apirs_core::tokens::image_size_from_bytes(&converted).unwrap_or((0, 0));
+
+    let date = Utc::now().format("%Y/%m/%d").to_string();
+    let rel_path = format!("images/{date}/{}.{ext}", gpt2apirs_core::util::new_uuid());
+
+    let root = paths::data_dir()?;
+    let absolute = root.join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+    if let Some(parent) = absolute.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建图片目录失败: {}", parent.display()))?;
+    }
+    // 先写临时文件再改名，避免半截文件
+    let temp = absolute.with_extension(format!("{ext}.part"));
+    std::fs::write(&temp, &converted)
+        .with_context(|| format!("写入图片失败: {}", temp.display()))?;
+    std::fs::rename(&temp, &absolute)
+        .with_context(|| format!("重命名图片失败: {}", absolute.display()))?;
+
+    Ok(Some(GeneratedImage {
+        bytes: converted,
+        rel_path,
+        mime,
+        width,
+        height,
+    }))
+}
+
+/// 识别图片格式，返回 `(mime, 扩展名)`。
+pub fn sniff_mime(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some(("image/png", "png"));
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some(("image/jpeg", "jpg"));
+    }
+    if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return Some(("image/webp", "webp"));
+    }
+    if bytes.starts_with(b"GIF8") {
+        return Some(("image/gif", "gif"));
+    }
+    None
+}
+
+/// 兼容旧接口：只判断是不是图片。
+pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
+    sniff_mime(bytes).map(|(_, ext)| ext)
+}
+
+/// 图片元信息：MIME、扩展名、宽高。
+///
+/// 上游申请上传时要报 `width` / `height` / `file_size`，所以要真的解一次图头。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageMeta {
+    /// MIME。
+    pub mime: &'static str,
+    /// 扩展名（不含点）。
+    pub ext: &'static str,
+    /// 宽。
+    pub width: u32,
+    /// 高。
+    pub height: u32,
+}
+
+/// 读取图片元信息。不是受支持的图片则返回 `None`。
+///
+/// 复用 `core::tokens::image_size_from_bytes`，不额外引 `image` 依赖。
+pub fn image_meta(bytes: &[u8]) -> Option<ImageMeta> {
+    let (mime, ext) = sniff_mime(bytes)?;
+    let (width, height) = gpt2apirs_core::tokens::image_size_from_bytes(bytes)?;
+    Some(ImageMeta {
+        mime,
+        ext,
+        width,
+        height,
+    })
+}
+
+async fn resolve_url(
+    client: &Client,
+    auth: &str,
+    user_agent: &str,
+    path: &str,
+    deadline: Deadline,
+) -> Result<Option<String>> {
+    let budget = stage_budget(deadline, "resolve_url", stage_caps::RESOLVE_URL)?;
+    let headers = vec![
+        ("User-Agent", user_agent.to_string()),
+        ("Accept", "application/json".to_string()),
+        ("Authorization", auth.to_string()),
+        ("Origin", BASE_URL.to_string()),
+        ("Referer", format!("{BASE_URL}/")),
+        ("X-OpenAI-Target-Path", path.to_string()),
+        ("X-OpenAI-Target-Route", path.to_string()),
+    ];
+    let response = client
+        .get_text(&format!("{BASE_URL}{path}"), &headers, Some(budget))
+        .await?;
+    if response.status != 200 {
+        return Ok(None);
+    }
+    let body: Value = serde_json::from_str(&response.body).unwrap_or(Value::Null);
+    Ok(parse_download_url(&body))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn image_headers(
+    user_agent: &str,
+    token: &str,
+    path: &str,
+    requirements_token: &str,
+    proof_token: &str,
+    conduit_token: Option<&str>,
+    accept: &str,
+) -> Vec<(&'static str, String)> {
+    let mut headers = gpt2apirs_http::api_headers(user_agent, token, path);
+    for entry in headers.iter_mut() {
+        if entry.0 == "Accept" {
+            entry.1 = accept.to_string();
+        }
+    }
+    headers.push((
+        "OpenAI-Sentinel-Chat-Requirements-Token",
+        requirements_token.to_string(),
+    ));
+    if !proof_token.is_empty() {
+        headers.push(("OpenAI-Sentinel-Proof-Token", proof_token.to_string()));
+    }
+    if let Some(conduit) = conduit_token {
+        headers.push(("X-Conduit-Token", conduit.to_string()));
+    }
+    if accept == "text/event-stream" {
+        headers.push((
+            "X-Oai-Turn-Trace-Id",
+            gpt2apirs_core::util::new_uuid(),
+        ));
+    }
+    headers
+}
+
+/// 取阶段预算，超时则转成 `anyhow` 错误（带阶段名）。
+pub(crate) fn stage_budget(
+    deadline: Deadline,
+    stage: &'static str,
+    cap: std::time::Duration,
+) -> Result<std::time::Duration> {
+    deadline
+        .budget(stage, cap)
+        .map_err(|_| anyhow::anyhow!("请求总时限已耗尽（阶段 {stage}）"))
+}
+
+fn clip(text: &str) -> String {
+    let one_line = text.replace('\n', " ");
+    if one_line.chars().count() > 200 {
+        format!("{}…", one_line.chars().take(200).collect::<String>())
+    } else {
+        one_line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sniff_recognises_formats() {
+        assert_eq!(sniff_mime(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).map(|(m, _)| m), Some("image/png"));
+        assert_eq!(sniff_mime(&[0xFF, 0xD8, 0xFF, 0xE0]).map(|(m, _)| m), Some("image/jpeg"));
+        assert_eq!(sniff_mime(b"GIF89a....").map(|(m, _)| m), Some("image/gif"));
+        assert_eq!(sniff_mime(b"not an image"), None);
+    }
+
+    #[test]
+    fn save_image_rejects_non_image() {
+        let saved = save_image(b"hello").expect("不应报错");
+        assert!(saved.is_none(), "非图片应返回 None");
+    }
+
+    #[test]
+    fn request_n_is_clamped() {
+        assert_eq!(ImageRequest::new("x").with_n(0).n, 1);
+        assert_eq!(ImageRequest::new("x").with_n(99).n, 4);
+        assert_eq!(ImageRequest::new("x").with_n(3).n, 3);
+    }
+
+    #[test]
+    fn prompt_not_mutated_without_format() {
+        // 关键回归：没指定输出格式时，提示词必须与旧版完全一致
+        let request = ImageRequest::new("画一只猫");
+        assert_eq!(request.effective_prompt(), "画一只猫");
+    }
+
+    #[test]
+    fn prompt_gets_format_hint_when_requested() {
+        let request = ImageRequest::new("画一只猫")
+            .with_output_format(crate::format::OutputFormat::Jpeg);
+        let prompt = request.effective_prompt();
+        assert!(prompt.starts_with("画一只猫"));
+        assert!(prompt.contains("生成格式为 jpeg。"), "实际: {prompt}");
+    }
+
+    #[test]
+    fn gif_hint_carries_frame_options() {
+        let mut request = ImageRequest::new("旋转立方体")
+            .with_output_format(crate::format::OutputFormat::Gif);
+        request.frame_count = Some(20);
+        request.frame_duration_ms = Some(120);
+        let prompt = request.effective_prompt();
+        assert!(prompt.contains("生成格式为 gif。"));
+        assert!(prompt.contains("frame_count: 20"));
+        assert!(prompt.contains("frame_duration_ms: 120"));
+    }
+}

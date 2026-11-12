@@ -1,0 +1,38 @@
+[package]
+name = "gpt2apirs-generate"
+description = "生成能力：生图、文本、搜索、PPT/PSD"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# 透传 TLS 指纹能力；需要 BoringSSL（Windows 还需 NASM）
+tls = ["gpt2apirs-http/tls"]
+
+[dependencies]
+gpt2apirs-core = { workspace = true }
+gpt2apirs-http = { workspace = true }
+gpt2apirs-protocol = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+# mask 合成（alpha 通道合并）需要图像编解码
+image = { workspace = true }
+
+[dev-dependencies]
+# 仅测试用：真机上传测试需要从库里取一个真实账号的 token
+gpt2apirs-storage = { workspace = true }
+sqlx = { workspace = true }
+dotenvy = { workspace = true }
+tokio = { workspace = true }

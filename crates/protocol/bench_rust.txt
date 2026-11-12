@@ -1,0 +1,3 @@
+real	difficulty=06e75e	iters=45	median_ms=0.303	us_per_iter=6.736
+mid	difficulty=000fff	iters=1808	median_ms=9.557	us_per_iter=5.286
+high	difficulty=0000ffff	iters=23484	median_ms=129.238	us_per_iter=5.503

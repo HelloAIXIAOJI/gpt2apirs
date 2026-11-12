@@ -1,0 +1,160 @@
+{
+  "conversation_id": "6af5ce42-dbcc-83ee-9ea3-f7a119e0c67f",
+  "title": "生成纯色圆点\n",
+  "create_time": 1794494019.362457,
+  "current_node": "6786e55d-f7e0-456a-8b49-38234714c62a",
+  "mapping": {
+    "c07fd955-515f-4c0a-9400-10f9f417a496": {
+      "id": "c07fd955-515f-4c0a-9400-10f9f417a496",
+      "parent": null,
+      "children": [
+        "3125ce44-b749-4243-a6a7-03825fd42559"
+      ],
+      "message": null
+    },
+    "3125ce44-b749-4243-a6a7-03825fd42559": {
+      "id": "3125ce44-b749-4243-a6a7-03825fd42559",
+      "parent": "c07fd955-515f-4c0a-9400-10f9f417a496",
+      "children": [
+        "f14799bc-e6df-44ed-bce0-401f3006c7c2"
+      ],
+      "message": {
+        "id": "3125ce44-b749-4243-a6a7-03825fd42559",
+        "author": {
+          "role": "user",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1794494015.5074039,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "一个红色的圆点，纯色背景"
+          ]
+        },
+        "metadata": {}
+      }
+    },
+    "f14799bc-e6df-44ed-bce0-401f3006c7c2": {
+      "id": "f14799bc-e6df-44ed-bce0-401f3006c7c2",
+      "parent": "3125ce44-b749-4243-a6a7-03825fd42559",
+      "children": [
+        "5fae6ea8-644a-48c6-92f8-6625b691a5c0"
+      ],
+      "message": {
+        "id": "f14799bc-e6df-44ed-bce0-401f3006c7c2",
+        "author": {
+          "role": "assistant",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1794494020.281067,
+        "content": {
+          "content_type": "code",
+          "language": "json",
+          "response_format_name": null,
+          "text": "{\"size\":\"1024x1024\",\"n\":1,\"transparent_background\":false}"
+        },
+        "metadata": {}
+      }
+    },
+    "5fae6ea8-644a-48c6-92f8-6625b691a5c0": {
+      "id": "5fae6ea8-644a-48c6-92f8-6625b691a5c0",
+      "parent": "f14799bc-e6df-44ed-bce0-401f3006c7c2",
+      "children": [
+        "6786e55d-f7e0-456a-8b49-38234714c62a"
+      ],
+      "message": {
+        "id": "5fae6ea8-644a-48c6-92f8-6625b691a5c0",
+        "author": {
+          "role": "tool",
+          "name": "t2uay3k.sj1i4kz",
+          "metadata": {}
+        },
+        "create_time": 1794494027.477217,
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            {
+              "content_type": "image_asset_pointer",
+              "asset_pointer": "sediment://file_0000000027588206976ce989885ecccf",
+              "mime_type": "image/png",
+              "size_bytes": 1059401,
+              "width": 1254,
+              "height": 1254,
+              "fovea": null,
+              "metadata": {
+                "dalle": {
+                  "gen_id": "fb9331c8-a49c-4dd2-8d9a-a00fb3e436ee",
+                  "prompt": "",
+                  "seed": null,
+                  "parent_gen_id": null,
+                  "edit_op": null,
+                  "serialization_title": "DALL-E generation metadata"
+                },
+                "gizmo": null,
+                "generation": {
+                  "gen_id": "fb9331c8-a49c-4dd2-8d9a-a00fb3e436ee",
+                  "generation_depth": 1,
+                  "gen_size": "smimage",
+                  "gen_size_v2": "16",
+                  "seed": null,
+                  "parent_gen_id": null,
+                  "height": 1254,
+                  "width": 1254,
+                  "transparent_background": false,
+                  "is_sticker": false,
+                  "is_purchasable": null,
+                  "purchase_hints": null,
+                  "serialization_title": "Image Generation metadata",
+                  "orientation": "square",
+                  "projection": "rectilinear",
+                  "spritesheet": null,
+                  "animation": null,
+                  "selected_speed": null,
+                  "gif_speed_variants": null,
+                  "watermarked_gif_speed_variants": null
+                },
+                "segmentation": null,
+                "container_pixel_height": 1254,
+                "container_pixel_width": 1254,
+                "emu_omit_glimpse_image": null,
+                "emu_patches_override": null,
+                "lpe_keep_patch_ijhw": null,
+                "lpe_delta_encoding_channel": null,
+                "sanitized": false,
+                "asset_pointer_link": null,
+                "watermarked_asset_pointer": null,
+                "is_no_auth_placeholder": null
+              }
+            }
+          ]
+        },
+        "metadata": {}
+      }
+    },
+    "6786e55d-f7e0-456a-8b49-38234714c62a": {
+      "id": "6786e55d-f7e0-456a-8b49-38234714c62a",
+      "parent": "5fae6ea8-644a-48c6-92f8-6625b691a5c0",
+      "children": [],
+      "message": {
+        "id": "6786e55d-f7e0-456a-8b49-38234714c62a",
+        "author": {
+          "role": "assistant",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1794494028.096123,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            ""
+          ]
+        },
+        "metadata": {
+          "is_visually_hidden_from_conversation": true
+        }
+      }
+    }
+  }
+}

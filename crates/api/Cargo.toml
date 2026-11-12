@@ -1,0 +1,41 @@
+[package]
+name = "gpt2apirs-api"
+description = "对外 API：axum 路由、鉴权、错误响应格式"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+tls = ["gpt2apirs-http/tls", "gpt2apirs-generate/tls", "gpt2apirs-account/tls"]
+
+[dependencies]
+gpt2apirs-core = { workspace = true }
+gpt2apirs-storage = { workspace = true }
+gpt2apirs-generate = { workspace = true }
+gpt2apirs-account = { workspace = true }
+gpt2apirs-http = { workspace = true }
+gpt2apirs-protocol = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+base64 = { workspace = true }
+tokio = { workspace = true }
+dotenvy = { workspace = true }
+tower = { workspace = true }
+http-body-util = "0.1"
