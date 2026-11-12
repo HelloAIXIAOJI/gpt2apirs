@@ -54,7 +54,15 @@ mod tests {
 
     #[test]
     fn script_uses_real_endpoints() {
-        for endpoint in ["'/admin/session'", "'/api/metrics", "'/api/accounts'", "'/api/logs", "'/api/images", "'/api/keys'"] {
+        for endpoint in [
+            "'/admin/session'",
+            "'/api/metrics",
+            "'/api/accounts'",
+            "'/api/logs",
+            "'/api/images",
+            "'/api/keys'",
+            "'/api/backup'",
+        ] {
             assert!(APP_JS.contains(endpoint), "前端应调用 {endpoint}");
         }
     }
