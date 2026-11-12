@@ -27,6 +27,7 @@
     <button data-tab="overview" class="active">概览</button>
     <button data-tab="accounts">账号池</button>
     <button data-tab="logs">调用日志</button>
+    <button data-tab="proxies">代理分组</button>
     <button data-tab="images">图片</button>
     <button data-tab="settings">设置</button>
     <button data-tab="keys">API Keys</button>
@@ -48,7 +49,7 @@
         <span id="accounts-hint" class="muted"></span>
       </p>
       <table id="accounts">
-        <thead><tr><th>邮箱</th><th>套餐</th><th>状态</th><th>配额</th><th>成功/失败</th><th>代理</th></tr></thead>
+        <thead><tr><th>邮箱</th><th>套餐</th><th>状态</th><th>配额</th><th>成功/失败</th><th>代理</th><th>分组</th></tr></thead>
         <tbody></tbody>
       </table>
     </section>
@@ -66,6 +67,21 @@
       </p>
       <table id="logs">
         <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>耗时</th><th>账号</th><th>错误码</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section data-view="proxies" class="panel" hidden>
+      <h2>代理分组</h2>
+      <p class="muted">一组共用一个代理串。改组地址会让组内账号一次性换线；账号移出分组时保留当前代理。</p>
+      <form id="group-form">
+        <input id="group-name" placeholder="名称，例如 香港出口" required>
+        <input id="group-url" placeholder="代理串，例如 http://127.0.0.1:7890（留空=直连）">
+        <button type="submit">新建分组</button>
+      </form>
+      <p id="group-hint" class="muted"></p>
+      <table id="groups">
+        <thead><tr><th>名称</th><th>代理</th><th>账号数</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </section>

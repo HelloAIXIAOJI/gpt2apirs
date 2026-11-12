@@ -62,6 +62,8 @@ mod tests {
             "'/api/images",
             "'/api/keys'",
             "'/api/backup'",
+            "'/api/proxy-groups'",
+            "'/proxy-group'",
         ] {
             assert!(APP_JS.contains(endpoint), "前端应调用 {endpoint}");
         }
