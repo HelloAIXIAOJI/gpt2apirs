@@ -152,8 +152,8 @@ async fn run() -> Result<()> {
     tracing::info!(interval_minutes = watcher_interval_minutes, "账号池维护任务已启动");
 
     // 保留期清理：让 log_retention_hours / image_retention_hours 真正生效
-    let images_dir = paths::data_dir()?.join("images");
-    gpt2apirs_cli::retention::spawn(settings.clone(), pool.clone(), images_dir);
+    let data_dir = paths::data_dir()?;
+    gpt2apirs_cli::retention::spawn(settings.clone(), pool.clone(), data_dir);
 
     let state = Arc::new(AppState::new(
         config.clone(),

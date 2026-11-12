@@ -51,6 +51,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             get(routes::admin::list_keys).post(routes::admin::create_key),
         )
         .route("/api/keys/{id}", delete(routes::admin::revoke_key))
+        .route(
+            "/api/images",
+            get(routes::images::list_images),
+        )
+        .route("/api/images/stats", get(routes::images::image_stats))
+        .route(
+            "/api/images/{id}",
+            delete(routes::images::delete_image),
+        )
         .route("/api/logs", get(routes::logs::list_logs))
         .route("/api/metrics", get(routes::logs::metrics))
         .route("/api/settings", get(routes::settings::get_settings))
