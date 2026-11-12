@@ -13,6 +13,38 @@ use gpt2apirs_storage::repo::{CallRecordRepo, NewCallRecord};
 use crate::error::ErrorCodeTag;
 use crate::state::AppState;
 
+tokio::task_local! {
+    /// 当前请求的附加信息。handler 用它上报「这次用了哪个账号」。
+    static CURRENT_CALL: Arc<CallMeta>;
+}
+
+/// 当前请求的附加信息。
+#[derive(Debug, Default)]
+pub struct CallMeta {
+    account_id: std::sync::Mutex<Option<uuid::Uuid>>,
+}
+
+impl CallMeta {
+    /// 记录本次请求实际服务的账号。
+    pub fn note_account(&self, account_id: uuid::Uuid) {
+        if let Ok(mut slot) = self.account_id.lock() {
+            *slot = Some(account_id);
+        }
+    }
+
+    /// 读取已记录的账号。
+    pub fn account_id(&self) -> Option<uuid::Uuid> {
+        self.account_id.lock().ok().and_then(|slot| *slot)
+    }
+}
+
+/// 供 handler 调用：上报本次请求使用的账号。
+///
+/// 不在请求作用域内时静默忽略（例如被单独调用的内部函数）。
+pub fn note_account(account_id: uuid::Uuid) {
+    let _ = CURRENT_CALL.try_with(|meta| meta.note_account(account_id));
+}
+
 /// 不记录的路径前缀。
 const SKIP_PREFIXES: [&str; 4] = ["/health", "/version", "/images/", "/favicon"];
 
@@ -34,7 +66,8 @@ pub async fn record_call(
     let path = request.uri().path().to_string();
     let request_id = uuid::Uuid::new_v4();
 
-    let mut response = next.run(request).await;
+    let meta = Arc::new(CallMeta::default());
+    let mut response = CURRENT_CALL.scope(meta.clone(), next.run(request)).await;
     let status = response.status().as_u16() as i32;
     let duration_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
     let error_code = response
@@ -53,7 +86,7 @@ pub async fn record_call(
             path,
             status,
             duration_ms,
-            account_id: None,
+            account_id: meta.account_id(),
             request_id: Some(request_id),
             error_code,
         };

@@ -79,12 +79,16 @@ pub async fn run_text(
             other => ApiError::openai(AppError::Internal(anyhow::anyhow!("{other}"))),
         })?;
     let account_id = lease.id();
+    crate::call_log::note_account(account_id);
 
     let mut request = TextRequest::new(String::new()).with_messages(messages.to_vec());
     request.model = requested_model.to_string();
     request.upstream_model = models::upstream_model_for(requested_model).to_string();
 
-    let outcome = generate_text(&state.client, lease.access_token(), &request, deadline).await;
+    let client = state.client_for(lease.account().proxy.trim()).map_err(|error| {
+        ApiError::openai(AppError::Internal(anyhow::anyhow!("代理客户端构建失败：{error}")))
+    })?;
+    let outcome = generate_text(&client, lease.access_token(), &request, deadline).await;
     let succeeded = outcome.is_ok();
     // 文本记账不扣图片配额：两套额度互相独立
     let _ = state.pool.mark_text_result(account_id, succeeded).await;
@@ -234,6 +238,7 @@ pub async fn start_text_stream(
             other => ApiError::openai(AppError::Internal(anyhow::anyhow!("{other}"))),
         })?;
     let account_id = lease.id();
+    crate::call_log::note_account(account_id);
 
     // ---- 富文本策略（流式同样注入 guard，输出侧用增量剥离器）----
     let policy = rich_text_policy(state);
@@ -246,8 +251,11 @@ pub async fn start_text_stream(
     request.model = requested_model.to_string();
     request.upstream_model = models::upstream_model_for(requested_model).to_string();
 
+    let stream_client = state.client_for(lease.account().proxy.trim()).map_err(|error| {
+        ApiError::openai(AppError::Internal(anyhow::anyhow!("代理客户端构建失败：{error}")))
+    })?;
     let stream = gpt2apirs_generate::text::generate_text_stream(
-        &state.client,
+        stream_client.as_ref(),
         lease.access_token(),
         &request,
         deadline,
