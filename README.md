@@ -141,9 +141,26 @@ curl -X POST http://127.0.0.1:8000/v1/images/generations \
 
 ---
 
-## 图形界面（可选）
+## 管理后台
 
-不想敲 curl 的话，`tools/account_gui.py` 是一个单文件 GUI，**只用 Python 标准库**：
+浏览器打开 `http://127.0.0.1:8000/admin`，用 `.env` 里的 `ADMIN_KEY` 登录。
+
+页面是手写 HTML/CSS/JS，**编译期打进二进制**：不需要 Node、不需要额外静态目录，部署仍只有一个可执行文件。
+六个标签页：概览（成功率 / P50 / P95 / 错误 Top 5）、账号池、调用日志、图片、设置、API Keys。
+
+### 登录口令与 API key 是两套
+
+| 用途 | 凭证 | 存放 |
+|---|---|---|
+| 登录后台、调 `/api/*` | `ADMIN_KEY` | `.env`；登录后换成会话 cookie |
+| 调 `/v1/*` | 后台里创建的 API key | 数据库，只存 sha256 |
+
+两者**不能互换**：登录口令调 `/v1/*` 一律 401，API key 进后台也一律 401。
+升级前只有 `AUTH_KEY` 的部署，启动时会自动把它迁成名为 `legacy` 的 API key，避免断流；之后请到后台建新 key 并吊销它。
+
+### 桌面账号池 GUI（可选）
+
+`tools/account_gui.py` 是一个单文件 Tkinter GUI，**只用 Python 标准库**：
 
 ```bat
 python tools\account_gui.py
@@ -181,6 +198,21 @@ python tools\account_gui.py
 | POST | `/api/accounts/{id}/test` | **真跑一张图**（消耗配额） |
 | POST | `/api/accounts/oauth/{start,finish}` | OAuth PKCE 登录 |
 | POST | `/api/accounts/export` | 导出（`json` / `txt`） |
+
+### 管理后台（后台会话或 `ADMIN_KEY`）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/admin/login` | 登录，下发 `HttpOnly` 会话 cookie（12 小时）|
+| GET | `/admin/session` | 会话信息 + 有效 key 数 |
+| POST | `/admin/logout` | 退出 |
+| GET / POST | `/api/keys` | 列 key / 建 key（明文只返回一次）|
+| DELETE | `/api/keys/{id}` | 吊销（立刻失效）|
+| GET | `/api/logs` | 调用日志，支持 `status=2xx`、`path=`、`account=`、`hours=`、分页 |
+| GET | `/api/metrics` | 近 N 小时成功率、P50 / P95、错误 Top 5 |
+| GET | `/api/images` | 图片列表（含账号、提示词、尺寸）|
+| GET | `/api/images/stats` | 张数与总字节 |
+| DELETE | `/api/images/{id}` | 删记录并删磁盘文件 |
 
 ### 运行设置
 
