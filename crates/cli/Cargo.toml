@@ -18,6 +18,7 @@ name = "gpt2apirs"
 path = "src/main.rs"
 
 [dependencies]
+sqlx = { workspace = true }
 gpt2apirs-core = { workspace = true }
 gpt2apirs-account = { workspace = true }
 gpt2apirs-api = { workspace = true }
