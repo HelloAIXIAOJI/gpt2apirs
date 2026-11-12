@@ -9,6 +9,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+rand = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 tiktoken-rs = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

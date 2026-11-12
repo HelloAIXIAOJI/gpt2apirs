@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod api_key;
 pub mod config;
 pub mod deadline;
 pub mod env;
