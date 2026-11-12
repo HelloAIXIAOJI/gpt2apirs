@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>gpt2apirs 管理后台</title>
+  <link rel="stylesheet" href="/admin/assets/style.css">
+</head>
+<body>
+  <header class="bar">
+    <strong>gpt2apirs 管理后台</strong>
+    <span id="session-state" class="muted">检查会话…</span>
+    <button id="logout" class="ghost" hidden>退出登录</button>
+  </header>
+
+  <section id="login-panel" class="panel" hidden>
+    <h2>登录</h2>
+    <p class="muted">输入 ADMIN_KEY。它与调用 API 的 API key 不同。</p>
+    <form id="login-form">
+      <input id="login-key" type="password" autocomplete="current-password" placeholder="ADMIN_KEY" required>
+      <button type="submit">登录</button>
+    </form>
+    <p id="login-error" class="error" hidden></p>
+  </section>
+
+  <nav id="tabs" class="tabs" hidden>
+    <button data-tab="overview" class="active">概览</button>
+    <button data-tab="accounts">账号池</button>
+    <button data-tab="logs">调用日志</button>
+    <button data-tab="images">图片</button>
+    <button data-tab="settings">设置</button>
+    <button data-tab="keys">API Keys</button>
+  </nav>
+
+  <main id="views" hidden>
+    <section data-view="overview" class="panel">
+      <h2>近 24 小时</h2>
+      <div id="metrics" class="cards"></div>
+      <h3>错误排行</h3>
+      <table id="errors"><thead><tr><th>错误码</th><th>次数</th></tr></thead><tbody></tbody></table>
+    </section>
+
+    <section data-view="accounts" class="panel" hidden>
+      <h2>账号池</h2>
+      <p>
+        <button id="sync-accounts">同步配额</button>
+        <span id="accounts-hint" class="muted"></span>
+      </p>
+      <table id="accounts">
+        <thead><tr><th>邮箱</th><th>套餐</th><th>状态</th><th>配额</th><th>成功/失败</th><th>代理</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section data-view="logs" class="panel" hidden>
+      <h2>调用日志</h2>
+      <p>
+        <select id="log-status">
+          <option value="all">全部</option>
+          <option value="2xx">2xx</option>
+          <option value="4xx">4xx</option>
+          <option value="5xx">5xx</option>
+        </select>
+        <button id="refresh-logs">刷新</button>
+      </p>
+      <table id="logs">
+        <thead><tr><th>时间</th><th>方法</th><th>路径</th><th>状态</th><th>耗时</th><th>账号</th><th>错误码</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section data-view="images" class="panel" hidden>
+      <h2>图片</h2>
+      <p id="images-summary" class="muted"></p>
+      <div id="images" class="grid"></div>
+    </section>
+
+    <section data-view="settings" class="panel" hidden>
+      <h2>运行设置</h2>
+      <p class="muted">改完点保存，服务端校验后会热重载。</p>
+      <table id="settings"><thead><tr><th>键</th><th>值</th><th>范围</th><th></th></tr></thead><tbody></tbody></table>
+      <p id="settings-hint" class="muted"></p>
+    </section>
+
+    <section data-view="keys" class="panel" hidden>
+      <h2>API Keys</h2>
+      <p class="muted">调用 /v1/* 用这些 key；登录口令不能调用。</p>
+      <form id="key-form">
+        <input id="key-name" placeholder="名称，例如 生产环境" required>
+        <button type="submit">创建</button>
+      </form>
+      <p id="new-key" class="secret" hidden></p>
+      <table id="keys"><thead><tr><th>名称</th><th>前缀</th><th>创建</th><th>最后使用</th><th>状态</th><th></th></tr></thead><tbody></tbody></table>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/admin/assets/app.js"></script>
+</body>
+</html>

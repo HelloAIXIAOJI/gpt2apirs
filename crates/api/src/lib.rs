@@ -5,6 +5,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod admin_ui;
 pub mod auth;
 pub mod call_log;
 pub mod error;
@@ -106,6 +107,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // 登录接口本身不能要求已登录。
     let login = Router::new().route("/admin/login", post(routes::admin::login));
 
+    // 页面外壳与静态资源公开：真正的数据都在需要会话的 /api/* 后面
+    let ui = Router::new()
+        .route("/admin", get(admin_ui::index))
+        .route("/admin/assets/{name}", get(admin_ui::asset));
+
     let public = Router::new()
         .route("/health", get(system::health))
         .route("/health/ready", get(system::ready))
@@ -113,6 +119,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/images/{*path}", get(static_files::serve_image));
 
     public
+        .merge(ui)
         .merge(v1)
         .merge(admin)
         .merge(login)
