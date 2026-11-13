@@ -37,7 +37,7 @@ use gpt2apirs_protocol::pow_config::parse_pow_resources;
 use gpt2apirs_protocol::sentinel::{
     build_finalize_payload, build_prepare_payload, parse_finalize, parse_prepare,
 };
-use gpt2apirs_protocol::sse::parse_conversation_stream;
+use gpt2apirs_protocol::sse::{extract_conversation_ids, parse_conversation_stream};
 use serde_json::Value;
 
 /// 各阶段的**上限**（实际取 min(上限, 剩余总时间)）。
@@ -67,6 +67,52 @@ pub fn default_request_deadline(settings: &gpt2apirs_core::RuntimeSettings) -> D
 /// 默认 User-Agent（指纹与 PoW 配置构造都依赖它，不要随意改）。
 pub use gpt2apirs_http::DEFAULT_USER_AGENT;
 
+/// 结果轮询策略。
+///
+/// 上游有时 SSE 已经结束、图片 id 却还没进会话文档：这时立刻去查会拿到空结果，
+/// 甚至在流关闭后的一两百毫秒内吃到 429。所以先等一轮，再按间隔查，总预算封顶。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PollPolicy {
+    /// 首次查询前的等待（秒）。
+    pub initial_wait_secs: f64,
+    /// 两次查询的间隔（秒）。
+    pub interval_secs: f64,
+    /// 轮询总预算（秒）。
+    pub timeout_secs: f64,
+}
+
+impl Default for PollPolicy {
+    fn default() -> Self {
+        Self {
+            initial_wait_secs: 5.0,
+            interval_secs: 5.0,
+            timeout_secs: 60.0,
+        }
+    }
+}
+
+impl PollPolicy {
+    /// 从运行层设置读。
+    ///
+    /// 间隔下限 0.5s：再小只是把上游打爆，不会更快拿到图。
+    pub fn from_settings(settings: &gpt2apirs_core::RuntimeSettings) -> Self {
+        Self {
+            initial_wait_secs: settings
+                .get_f64("image_poll_initial_wait_secs")
+                .clamp(0.0, 60.0),
+            interval_secs: settings
+                .get_f64("image_poll_interval_secs")
+                .clamp(0.5, 60.0),
+            timeout_secs: settings.get_i64("image_poll_timeout_secs").max(1) as f64,
+        }
+    }
+
+    /// 预算比一个间隔还短就没有轮询的意义。
+    pub fn is_enabled(&self) -> bool {
+        self.timeout_secs > 0.0 && self.timeout_secs >= self.interval_secs
+    }
+}
+
 /// 生成请求。
 #[derive(Debug, Clone)]
 pub struct ImageRequest {
@@ -91,6 +137,8 @@ pub struct ImageRequest {
     /// 上传必须在拿到账号 token 之后做，所以由调用方先上传再填这里 ——
     /// generate 不负责上传，它只管「怎么用」。
     pub images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
+    /// 结果轮询策略（SSE 没带回图片时的兜底）。
+    pub poll: PollPolicy,
 }
 
 impl ImageRequest {
@@ -106,6 +154,7 @@ impl ImageRequest {
             frame_count: None,
             frame_duration_ms: None,
             images: Vec::new(),
+            poll: PollPolicy::default(),
         }
     }
 
@@ -221,6 +270,10 @@ pub struct FlowDiagnostics {
     pub sse_status: u16,
     /// SSE 字节数。
     pub sse_bytes: usize,
+    /// 轮询会话详情的次数（0 表示没进入兜底）。
+    pub poll_attempts: u32,
+    /// 轮询花了多少秒。
+    pub poll_seconds: f64,
 }
 
 /// 执行完整生图流水线（`n` 张）。
@@ -463,13 +516,54 @@ async fn generate_one(
     };
 
     // ---- 6/7. 解析下载地址 + 下载 + 落盘 ----
-    let (attachments, files) =
-        plan_download_targets(&state.conversation_id, &state.file_ids, &state.sediment_ids);
+    let target_format = request.output_format.unwrap_or_default();
+    fetch_images(
+        client,
+        &auth,
+        request,
+        &state.conversation_id,
+        &state.file_ids,
+        &state.sediment_ids,
+        target_format,
+        deadline,
+        &mut result.images,
+    )
+    .await?;
+
+    // ---- 8. 兜底：SSE 结束却没图时轮询会话详情，等后到的图片 id ----
+    if result.images.is_empty() && request.poll.is_enabled() {
+        let started = std::time::Instant::now();
+        poll_for_images(
+            client, token, &auth, request, target_format, deadline, &mut result, &mut diag,
+        )
+        .await?;
+        diag.poll_seconds = started.elapsed().as_secs_f64();
+    }
+
+    Ok((result, diag))
+}
+
+/// 解析下载地址并下载，成功的图片追加到 `images`。
+///
+/// 同一 URL 只下一次：sediment 与 file 两条路径可能指向同一份内容。
+#[allow(clippy::too_many_arguments)]
+async fn fetch_images(
+    client: &Client,
+    auth: &str,
+    request: &ImageRequest,
+    conversation_id: &str,
+    file_ids: &[String],
+    sediment_ids: &[String],
+    target_format: crate::format::OutputFormat,
+    deadline: Deadline,
+    images: &mut Vec<GeneratedImage>,
+) -> std::result::Result<(), GenerateError> {
+    let (attachments, files) = plan_download_targets(conversation_id, file_ids, sediment_ids);
 
     let mut urls: Vec<String> = Vec::new();
-    for (conversation_id, sediment_id) in &attachments {
-        let path = attachment_download_path(conversation_id, sediment_id);
-        if let Ok(Some(url)) = resolve_url(client, &auth, &request.user_agent, &path, deadline).await {
+    for (conv_id, sediment_id) in &attachments {
+        let path = attachment_download_path(conv_id, sediment_id);
+        if let Ok(Some(url)) = resolve_url(client, auth, &request.user_agent, &path, deadline).await {
             if !urls.contains(&url) {
                 urls.push(url);
             }
@@ -477,17 +571,33 @@ async fn generate_one(
     }
     for file_id in &files {
         let path = file_download_path(file_id);
-        if let Ok(Some(url)) = resolve_url(client, &auth, &request.user_agent, &path, deadline).await {
+        if let Ok(Some(url)) = resolve_url(client, auth, &request.user_agent, &path, deadline).await {
             if !urls.contains(&url) {
                 urls.push(url);
             }
         }
     }
 
-    for url in &urls {
-        let mut headers = vec![("User-Agent", request.user_agent.clone())];
+    download_urls(client, auth, &request.user_agent, &urls, target_format, deadline, images).await
+}
+
+/// 逐个下载 URL，成功的落盘后追加到 `images`。
+///
+/// 单张下载失败只跳过，不影响其它张（与旧行为一致）。
+#[allow(clippy::too_many_arguments)]
+async fn download_urls(
+    client: &Client,
+    auth: &str,
+    user_agent: &str,
+    urls: &[String],
+    target_format: crate::format::OutputFormat,
+    deadline: Deadline,
+    images: &mut Vec<GeneratedImage>,
+) -> std::result::Result<(), GenerateError> {
+    for url in urls {
+        let mut headers = vec![("User-Agent", user_agent.to_string())];
         if is_same_origin(BASE_URL, url) {
-            headers.push(("Authorization", auth.clone()));
+            headers.push(("Authorization", auth.to_string()));
         }
         let Ok(budget) = stage_budget(deadline, "download", stage_caps::DOWNLOAD) else {
             continue;
@@ -498,13 +608,105 @@ async fn generate_one(
         if response.status != 200 {
             continue;
         }
-        let target = request.output_format.unwrap_or_default();
-        if let Some(saved) = save_image_as(&response.body, target)? {
-            result.images.push(saved);
+        if let Some(saved) = save_image_as(&response.body, target_format)? {
+            images.push(saved);
         }
     }
+    Ok(())
+}
 
-    Ok((result, diag))
+/// 轮询会话详情补齐后到的图片 id。
+///
+/// SSE 结束时图可能还没写进会话文档：先按 `initial_wait` 等一轮，再按 `interval` 重查，
+/// 遇到暂时性错误就翻倍退避（封顶 16s）。总时长同时受轮询预算与请求总时限约束，
+/// 一旦下到图或出现新 id 就重试下载，拿到图立即返回。
+#[allow(clippy::too_many_arguments)]
+async fn poll_for_images(
+    client: &Client,
+    token: &str,
+    auth: &str,
+    request: &ImageRequest,
+    target_format: crate::format::OutputFormat,
+    deadline: Deadline,
+    result: &mut ImageResult,
+    diag: &mut FlowDiagnostics,
+) -> std::result::Result<(), GenerateError> {
+    let policy = request.poll;
+    let conversation_id = result.conversation_id.clone();
+    if conversation_id.is_empty() {
+        return Ok(());
+    }
+    let started = std::time::Instant::now();
+    let cap = policy.interval_secs.max(16.0);
+    let mut wait = if result.file_ids.is_empty() && result.sediment_ids.is_empty() {
+        policy.initial_wait_secs
+    } else {
+        policy.interval_secs
+    };
+
+    loop {
+        if started.elapsed().as_secs_f64() >= policy.timeout_secs || deadline.is_expired() {
+            break;
+        }
+        let budget_left = policy.timeout_secs - started.elapsed().as_secs_f64();
+        let deadline_left = deadline.remaining().map(|d| d.as_secs_f64()).unwrap_or(budget_left);
+        let sleep = wait.min(budget_left).min(deadline_left);
+        if sleep < 0.0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs_f64(sleep)).await;
+
+        diag.poll_attempts += 1;
+        let payload = match conversation::fetch_conversation_payload(
+            client,
+            token,
+            &request.user_agent,
+            &conversation_id,
+            deadline,
+        )
+        .await
+        {
+            Ok(payload) => payload,
+            Err(_) => {
+                wait = (wait.max(0.5) * 2.0).min(cap);
+                continue;
+            }
+        };
+        let (_, file_ids, sediment_ids) = extract_conversation_ids(&payload.to_string());
+        let grew = merge_ids(&mut result.file_ids, file_ids)
+            | merge_ids(&mut result.sediment_ids, sediment_ids);
+        if grew {
+            fetch_images(
+                client,
+                auth,
+                request,
+                &conversation_id,
+                &result.file_ids,
+                &result.sediment_ids,
+                target_format,
+                deadline,
+                &mut result.images,
+            )
+            .await?;
+            if !result.images.is_empty() {
+                break;
+            }
+        }
+        wait = (wait.max(0.5) * 2.0).min(cap);
+    }
+    Ok(())
+}
+
+/// 把 `incoming` 合并进 `existing`，返回是否有新增。
+fn merge_ids(existing: &mut Vec<String>, incoming: Vec<String>) -> bool {
+    let mut grew = false;
+    for id in incoming {
+        if !existing.contains(&id) {
+            existing.push(id);
+            grew = true;
+        }
+    }
+    grew
 }
 
 /// 把图片字节落盘，返回落盘后的元信息。
@@ -743,5 +945,46 @@ mod tests {
         assert!(prompt.contains("生成格式为 gif。"));
         assert!(prompt.contains("frame_count: 20"));
         assert!(prompt.contains("frame_duration_ms: 120"));
+    }
+
+    #[test]
+    fn poll_policy_default_is_enabled() {
+        let policy = PollPolicy::default();
+        assert!(policy.is_enabled());
+        assert_eq!(policy.initial_wait_secs, 5.0);
+        assert_eq!(policy.interval_secs, 5.0);
+    }
+
+    #[test]
+    fn poll_policy_reads_settings_and_clamps() {
+        use serde_json::json;
+        let mut values = std::collections::HashMap::new();
+        values.insert("image_poll_initial_wait_secs".to_string(), json!(0));
+        values.insert("image_poll_interval_secs".to_string(), json!(0.1));
+        values.insert("image_poll_timeout_secs".to_string(), json!(30));
+        let settings = gpt2apirs_core::RuntimeSettings::new(values);
+        let policy = PollPolicy::from_settings(&settings);
+        assert_eq!(policy.initial_wait_secs, 0.0);
+        // 间隔下限 0.5s
+        assert_eq!(policy.interval_secs, 0.5);
+        assert_eq!(policy.timeout_secs, 30.0);
+        assert!(policy.is_enabled());
+    }
+
+    #[test]
+    fn poll_policy_disabled_when_budget_below_interval() {
+        let policy = PollPolicy { initial_wait_secs: 5.0, interval_secs: 10.0, timeout_secs: 5.0 };
+        assert!(!policy.is_enabled());
+    }
+
+    #[test]
+    fn merge_ids_appends_only_new() {
+        let mut existing = vec!["a".to_string(), "b".to_string()];
+        let grew = merge_ids(&mut existing, vec!["b".to_string(), "c".to_string()]);
+        assert!(grew);
+        assert_eq!(existing, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let grew_again = merge_ids(&mut existing, vec!["a".to_string()]);
+        assert!(!grew_again);
+        assert_eq!(existing.len(), 3);
     }
 }

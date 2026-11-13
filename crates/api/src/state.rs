@@ -35,6 +35,8 @@ pub struct AppState {
     client_cache: Arc<RwLock<HashMap<String, Arc<Client>>>>,
     /// 进程启动时间（用于 uptime）。
     pub started_at: DateTime<Utc>,
+    /// 异步生图任务存储。
+    pub image_tasks: Arc<crate::image_tasks::ImageTaskStore>,
 }
 
 impl AppState {
@@ -50,6 +52,7 @@ impl AppState {
         api_keys: Arc<ApiKeyStore>,
     ) -> Self {
         let session_secret = Arc::new(crate::session::derive_secret(&config.admin_key));
+        let task_concurrency = settings.get_i64("image_task_concurrency").clamp(1, 16) as usize;
         Self {
             config,
             settings,
@@ -62,6 +65,7 @@ impl AppState {
             session_secret,
             client_cache: Arc::new(RwLock::new(HashMap::new())),
             started_at: Utc::now(),
+            image_tasks: Arc::new(crate::image_tasks::ImageTaskStore::new(task_concurrency)),
         }
     }
 

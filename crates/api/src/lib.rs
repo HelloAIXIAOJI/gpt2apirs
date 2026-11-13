@@ -9,6 +9,7 @@ pub mod admin_ui;
 pub mod auth;
 pub mod call_log;
 pub mod error;
+pub mod image_tasks;
 pub mod routes;
 pub mod session;
 pub mod state;
@@ -119,6 +120,19 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             auth::require_admin,
         ));
 
+    // 异步生图任务：给 API 调用方，按 API key 鉴权（不是后台管理面）。
+    let image_task_routes = Router::new()
+        .route("/api/image-tasks", get(routes::image_tasks::list))
+        .route("/api/image-tasks/generations", post(routes::image_tasks::submit))
+        .route(
+            "/api/image-tasks/{id}",
+            get(routes::image_tasks::get_one).delete(routes::image_tasks::delete),
+        )
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_api_key,
+        ));
+
     // 登录接口本身不能要求已登录。
     let login = Router::new().route("/admin/login", post(routes::admin::login));
 
@@ -137,6 +151,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(ui)
         .merge(v1)
         .merge(admin)
+        .merge(image_task_routes)
         .merge(login)
         .fallback(not_found)
         .layer(middleware::from_fn_with_state(

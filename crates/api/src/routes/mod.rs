@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod backup;
 pub mod admin;
 pub mod image_flow;
+pub mod image_tasks;
 pub mod images;
 pub mod proxy_groups;
 pub mod logs;
