@@ -491,7 +491,6 @@ impl AccountRepo {
         Ok(row_to_account(&row))
     }
 
-    /// 批量删除。返回删除数量。
     // ---- 代理分组 ----
 
     /// 把账号加入分组：组地址同时写进 `proxy`。
