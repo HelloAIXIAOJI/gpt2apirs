@@ -26,7 +26,8 @@ pub mod v1_models;
 pub use accounts::{
     AccountListResponse, AccountView, BatchRequest, BatchResponse, DeleteAccountsRequest,
     ExportRequest, ImportItem, ImportResponse, ListQuery, OAuthFinishRequest, OAuthStartRequest,
-    TestRequest, TestResponse, UpdateAccountRequest, create_accounts, delete_accounts,
+    TestRequest, TestResponse, UpdateAccountRequest, create_accounts, delete_account,
+    delete_accounts,
     export_accounts, get_operation, list_accounts, oauth_finish, oauth_start, refresh_tokens,
     stats, sync_accounts, test_account, update_account,
 };

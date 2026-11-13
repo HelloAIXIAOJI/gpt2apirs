@@ -460,7 +460,9 @@ pub struct DeleteAccountsRequest {
     pub ids: Vec<Uuid>,
 }
 
-/// `DELETE /api/accounts`
+/// `DELETE /api/accounts` —— 批量，只认请求体里的 ids。
+///
+/// 没有 body 时**不要**退化成「删光」：那是数据丢失，不是便利。
 pub async fn delete_accounts(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DeleteAccountsRequest>,
@@ -479,6 +481,29 @@ pub async fn delete_accounts(
         .map_err(internal)?;
     let _ = state.pool.reload().await;
     Ok(Json(serde_json::json!({ "removed": removed })))
+}
+
+/// `DELETE /api/accounts/{id}` —— 单个，只认路径里的 id。
+///
+/// 与批量版本分开：曾经两者共用一个 handler，路径 id 被忽略，
+/// 于是不带 body 的 `DELETE /api/accounts/{id}` 直接 415。
+pub async fn delete_account(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Value> {
+    let removed = state
+        .pool
+        .repo()
+        .delete_many(&[id])
+        .await
+        .map_err(internal)?;
+    if removed == 0 {
+        return Err(ApiError::openai(AppError::not_found(format!(
+            "账号不存在: {id}"
+        ))));
+    }
+    let _ = state.pool.reload().await;
+    Ok(Json(serde_json::json!({ "removed": removed, "id": id })))
 }
 
 // 批量维护
