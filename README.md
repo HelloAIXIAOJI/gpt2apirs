@@ -318,9 +318,12 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls
 
 :: 换号重试：第一个账号 401，第二个必须接手
 powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_switch_account_live
+
+:: 图文对话：图片真的上传，且会话 payload 是多模态
+powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_upstream_image_input
 ```
 
-后三条需要 `DATABASE_URL`（账号池读库），缺则自动跳过。
+后四条需要 `DATABASE_URL`（账号池读库），缺则自动跳过。
 换号用例造的账号必须带 future `exp` 的 JWT，否则池子的凭证准入会跳过它们。
 
 ---

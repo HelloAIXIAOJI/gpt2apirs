@@ -57,6 +57,10 @@ pub const IMAGE_FILE_ID: &str = "file_00000000aabbccddeeff001122334455";
 /// 图片链路：会话 id。
 pub const IMAGE_CONVERSATION_ID: &str = "mock-image-conv";
 
+/// 图文对话上传：文件 id 与 PUT 目标路径。
+const UPLOAD_FILE_ID: &str = "file-mock-upload";
+const UPLOAD_PATH: &str = "/mock-upload";
+
 /// 图片链路：下载路径的固定后缀，用于区分「解析地址」与「取字节」。
 pub const IMAGE_ASSET_PATH: &str = "/mock-asset.png";
 
@@ -70,7 +74,7 @@ pub const CONVERSATION_ID: &str = "mock-conv-1";
 #[derive(Clone)]
 pub struct MockUpstream {
     base: String,
-    hits: Arc<Mutex<Vec<String>>>,
+    hits: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl MockUpstream {
@@ -81,7 +85,24 @@ impl MockUpstream {
 
     /// 收到过的请求路径（按到达顺序）。
     pub fn hits(&self) -> Vec<String> {
-        self.hits.lock().map(|guard| guard.clone()).unwrap_or_default()
+        self.hits
+            .lock()
+            .map(|guard| guard.iter().map(|(path, _)| path.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// 某条路径**最后一次**收到的请求体；没收到过返回 `None`。
+    pub fn last_body(&self, path: &str) -> Option<String> {
+        self.hits
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .iter()
+                    .rev()
+                    .find(|(hit, _)| hit == path)
+                    .map(|(_, body)| body.clone())
+            })
     }
 
     /// 是否收到过某条路径。
@@ -111,13 +132,18 @@ fn png_bytes() -> Vec<u8> {
 }
 
 async fn handle(
-    State(hits): State<Arc<Mutex<Vec<String>>>>,
+    State(hits): State<Arc<Mutex<Vec<(String, String)>>>>,
     request: Request,
 ) -> Response {
     let path = request.uri().path().to_string();
+    // 读一次 body：断言 payload 形状要靠它，上限 1 MiB 足够
+    let (parts, body) = request.into_parts();
+    let bytes = axum::body::to_bytes(body, 1024 * 1024).await.unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes).to_string();
     if let Ok(mut guard) = hits.lock() {
-        guard.push(path.clone());
+        guard.push((path.clone(), text));
     }
+    let request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     // 「前 N 次失败」要在路由之前判定：每次命中消耗一次配额
     if path == "/backend-api/f/conversation"
         && let Some(Fault::FailFirstConversations { status, .. }) = current_fault()
@@ -151,6 +177,21 @@ async fn handle(
         p if p.ends_with("/sentinel/chat-requirements/prepare") => json(PREPARE_JSON),
         p if p.ends_with("/sentinel/chat-requirements/finalize") => json(FINALIZE_JSON),
         "/backend-api/f/conversation/prepare" => json(PREPARE_CONVERSATION_JSON),
+        // 图文对话的上传三步：申请上传位 / 传字节 / 确认
+        p if p.starts_with("/backend-api/files") && !p.ends_with("/download") && p.ends_with("/uploaded") => {
+            json_text("{}".to_string())
+        }
+        "/backend-api/files" => {
+            let host = request
+                .headers()
+                .get("host")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("127.0.0.1");
+            json_text(format!(
+                "{{\"file_id\":\"{UPLOAD_FILE_ID}\",\"upload_url\":\"http://{host}{UPLOAD_PATH}\"}}"
+            ))
+        }
+        UPLOAD_PATH => (axum::http::StatusCode::OK, "").into_response(),
         "/backend-api/f/conversation" => {
             // 图片链路一定带 conduit token，文本链路一定不带
             let is_image = request.headers().contains_key("x-conduit-token");
@@ -278,7 +319,7 @@ pub async fn spawn() -> MockUpstream {
     if let Some(existing) = STARTED.get() {
         return existing.clone();
     }
-    let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let hits: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     // 兜底路由接住所有路径：图片链路的下载地址是动态的，逐个注册不现实
     let app = Router::new()
         .route("/", get(handle).post(handle))

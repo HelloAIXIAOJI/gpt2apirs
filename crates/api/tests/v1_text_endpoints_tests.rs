@@ -160,6 +160,66 @@ async fn responses_rejects_image_input() {
 
 // ---------------- /v1/messages ----------------
 
+/// 图文对话：Anthropic 的 base64 图片块被接受，请求走到取号（池空 → 503）。
+#[tokio::test]
+async fn messages_accepts_base64_image_block() {
+    let (status, body) = post(
+        "/v1/messages",
+        json!({
+            "max_tokens": 128,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "这是什么"},
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/png",
+                        "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+                    }},
+                ],
+            }],
+        }),
+        Some(AUTH_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["code"], "no_available_account");
+}
+
+/// url 形态的图片块同样接受。
+#[tokio::test]
+async fn messages_accepts_url_image_block() {
+    let (status, body) = post(
+        "/v1/messages",
+        json!({
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "url", "url": "https://x/y.png"}},
+            ]}],
+        }),
+        Some(AUTH_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+}
+
+/// base64 不合法要报参数错误而不是崩。
+#[tokio::test]
+async fn messages_rejects_broken_base64_image() {
+    let (status, body) = post(
+        "/v1/messages",
+        json!({
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "!!!"}},
+            ]}],
+        }),
+        Some(AUTH_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["type"], "error", "{body}");
+}
+
 #[tokio::test]
 async fn messages_requires_auth() {
     let (status, body) = post(
