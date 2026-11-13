@@ -83,7 +83,7 @@ pub async fn generate_text(
     let Handshake {
         requirements_token,
         proof_token,
-        diag,
+        mut diag,
     } = handshake(client, token, &request.user_agent, deadline).await?;
 
     let budget = stage_budget(deadline, "sse", stage_caps::SSE)?;
@@ -111,6 +111,8 @@ pub async fn generate_text(
             Some(budget),
         )
         .await?;
+    diag.sse_status = sse.status;
+    diag.sse_bytes = sse.body.len();
     if sse.status != 200 {
         bail!(
             "文本 SSE 请求失败，状态 {}: {}",
