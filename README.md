@@ -332,6 +332,7 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls
 
 | 限制 | 说明 |
 |---|---|
+| 生图 `stream: true` 不支持 | 上游没有逐块图片流（SSE 只给指针，字节另行下载）；要进度请用 `/api/image-tasks` |
 | `temperature` / `top_p` / `max_tokens` 接受但忽略 | 上游 web 会话没有这些旋钮；`modalities` 例外，非 text 直接 400 |
 | Codex 模型 | `codex-gpt-image-2` 等走另一条上游链路，未实现，对外不宣告 |
 | 单实例假设 | 选号游标在进程内存，多实例部署槽位不共享 |
