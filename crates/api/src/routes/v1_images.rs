@@ -141,7 +141,8 @@ pub async fn generate(
     }
     if body.stream == Some(true) {
         return Err(ApiError::openai(AppError::invalid_param(
-            "stream 暂不支持",
+            "上游不提供逐块图片流（SSE 只回 sediment:// 指针，字节要等生成完成后另行下载）；\
+        要边等边查进度请用 POST /api/image-tasks 提交，再用 GET /api/image-tasks/{id} 轮询",
             "stream",
         )));
     }

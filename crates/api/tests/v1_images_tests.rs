@@ -158,6 +158,12 @@ async fn rejects_stream() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["param"], "stream");
+    // 拒绝要指路：上游没有逐块图片流，异步任务才是边等边查的正路
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("image-tasks") && message.contains("sediment"),
+        "错误信息应说明原因并指路：{message}"
+    );
 }
 
 #[tokio::test]
