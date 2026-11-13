@@ -110,6 +110,9 @@ cargo run -p gpt2apirs-cli --features tls
 
 > `--features tls` **不能省**。不开它编译出来的是存根客户端，第一次请求才会报
 > 「gpt2apirs-http 未启用 tls feature」。
+>
+> Windows 上 BoringSSL 对环境敏感（VS 生成器找不到 cl、Ninja 下把 cl 当汇编器）。
+> 直接跑 `powershell -File tools\build.ps1`，它把 vcvars、Ninja、NASM 和工具链文件都配好。
 
 ### 3. 导入账号
 
@@ -270,6 +273,7 @@ python tools\account_gui.py
 | [docs/account-pool-design.md](docs/account-pool-design.md) | 账号池设计：11 条决策 + 数据模型 + 状态机 + 任务分解 |
 | [docs/account-pool-research.md](docs/account-pool-research.md) | 账号池研究：字段 / 状态 / 导入 / 切换策略 |
 | [docs/account-pool-features.md](docs/account-pool-features.md) | 管理面按钮清单（28 项对照） |
+| [docs/build-verification.md](docs/build-verification.md) | **构建验证**：BoringSSL 四个坑 / 全特性实测 / tools\build.ps1 |
 | [docs/m3-batch1-verification.md](docs/m3-batch1-verification.md) | M3 第 1 批：模型 / 凭证 / 仓储 |
 | [docs/m5-m4-verification.md](docs/m5-m4-verification.md) | 全局 deadline + `/v1/models` |
 | [docs/m2-m4-verification.md](docs/m2-m4-verification.md) | 协议下沉 + `/v1/images/generations` |

@@ -1,5 +1,19 @@
 # tools/
 
+## build.ps1 —— 统一构建入口
+
+Windows 上编 `--features tls` 要过 BoringSSL，对环境有要求（VS 自带 Ninja、NASM、工具链文件）。
+脚本一次性把这些配好：
+
+```bat
+powershell -File tools\build.ps1           :: = cargo build -p gpt2apirs-cli --features tls
+powershell -File tools\build.ps1 -Release
+powershell -File tools\build.ps1 -CargoArgs build,--workspace,--all-targets
+```
+
+只往 `target/` 写一个 `bssl-toolchain.cmake`，不动仓库其他文件；也不替你停正在跑的服务。
+四个坑的报错原文与实测记录见 `docs/build-verification.md`。
+
 ## account_gui.py —— 账号池图形管理工具
 
 单文件，**只用 Python 标准库**（tkinter + urllib），不需要 pip install。
