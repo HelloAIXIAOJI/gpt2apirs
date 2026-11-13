@@ -5,7 +5,7 @@
 //! 与生图的差异：不做 `conversation/prepare`；`system_hints` 传空；输出靠增量补丁而不是 sediment id。
 //! bootstrap 与 sentinel 两条链路共用同一个 `handshake`。
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use gpt2apirs_core::Deadline;
 use gpt2apirs_http::Client;
 use gpt2apirs_protocol::conversation::{
@@ -114,21 +114,30 @@ pub async fn generate_text(
     diag.sse_status = sse.status;
     diag.sse_bytes = sse.body.len();
     if sse.status != 200 {
-        bail!(
-            "文本 SSE 请求失败，状态 {}: {}",
-            sse.status,
-            clip(&sse.body)
-        );
+        // 必须带分类：上层靠 kind 决定换号 / 标异常，裸字符串会让这些判断失效
+        return Err(GenerateError::new(
+            classify_http(sse.status, &sse.body),
+            format!(
+                "文本 SSE 请求失败，状态 {}: {}",
+                sse.status,
+                clip(&sse.body)
+            ),
+        )
+        .into());
     }
 
     let (text, conversation_id, deltas) = collect_text(&sse.body, &request.history);
     if text.trim().is_empty() {
         // 空回复要能诊断：把 SSE 的头尾留下来
-        bail!(
-            "上游没有返回文本（SSE {} 字节）：{}",
-            sse.body.len(),
-            clip(&sse.body)
-        );
+        return Err(GenerateError::new(
+            FailureKind::Protocol,
+            format!(
+                "上游没有返回文本（SSE {} 字节）：{}",
+                sse.body.len(),
+                clip(&sse.body)
+            ),
+        )
+        .into());
     }
 
     Ok((

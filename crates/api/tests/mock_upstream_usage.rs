@@ -11,121 +11,15 @@
 //! 曾经它们不一致：流式把内部注入的富文本 guard 提示词也算进了用户账单
 //! （实测 149 vs 77）。离线用例覆盖不到这个组合，只有端到端能抓。
 //!
-//! # 条件
-//!
-//! 需要 `--features tls`（要真发 HTTP）与 `DATABASE_URL`（账号池读库）。
-//! 两者缺一则跳过。
-//!
-//! # 数据安全
-//!
-//! 账号 token 带独立前缀，只删自己的行。
+//! 条件与数据安全见 `support`。
 
 #![cfg(feature = "tls")]
 
-use std::sync::Arc;
+mod support;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode, header};
-use gpt2apirs_api::{AppState, build_router};
-use gpt2apirs_core::BootstrapConfig;
-use gpt2apirs_core::settings::RuntimeSettings;
-use gpt2apirs_storage::repo::{ApiKeyStore, MemoryApiKeys};
+use axum::http::StatusCode;
 use serde_json::{Value, json};
-use sqlx::PgPool;
-use tower::ServiceExt;
-
-const API_KEY: &str = "sk-g2a-usage-regression-00000000";
-const TEST_PREFIX: &str = "gpt2apirs-usage-test-";
-
-fn prepare_env() -> bool {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    for path in [
-        manifest.join("../../.env"),
-        manifest.join("../../target/debug/.env"),
-    ] {
-        if path.is_file() {
-            let _ = dotenvy::from_path(&path);
-            break;
-        }
-    }
-    std::env::var("DATABASE_URL")
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false)
-}
-
-async fn setup() -> Option<(Arc<AppState>, PgPool)> {
-    if !prepare_env() {
-        eprintln!("跳过：未找到 DATABASE_URL");
-        return None;
-    }
-    let config = Arc::new(BootstrapConfig::from_env().expect("配置应可加载"));
-    let pool = gpt2apirs_storage::pool::build_pool(&config)
-        .await
-        .expect("应能连接 PostgreSQL");
-    gpt2apirs_storage::migrate::run_migrations(&pool)
-        .await
-        .expect("迁移应成功");
-
-    let cleanup = |pool: PgPool| async move {
-        let _ = sqlx::query("delete from accounts where access_token like $1")
-            .bind(format!("{TEST_PREFIX}%"))
-            .execute(&pool)
-            .await;
-    };
-    cleanup(pool.clone()).await;
-
-    // 账号池要有一个文本可用的账号：token 内容无所谓，链路全在本地 mock
-    let repo = gpt2apirs_account::AccountRepo::new(pool.clone());
-    let new = gpt2apirs_account::repo::NewAccount {
-        access_token: format!("{TEST_PREFIX}usage"),
-        email: Some("usage@test.local".to_string()),
-        quota: 1,
-        quota_confirmed: true,
-        ..Default::default()
-    };
-    repo.upsert(&new).await.expect("应能建测试账号");
-
-    let state = Arc::new(AppState::new(
-        config,
-        Arc::new(RuntimeSettings::new(std::collections::HashMap::new())),
-        pool.clone(),
-        Arc::new(
-            gpt2apirs_http::Client::new(gpt2apirs_http::ClientOptions::default()).expect("client"),
-        ),
-        Arc::new(gpt2apirs_account::AccountPool::new(
-            gpt2apirs_account::AccountRepo::new(pool.clone()),
-            gpt2apirs_account::PoolConfig::default(),
-        )),
-        Arc::new(gpt2apirs_account::ProgressStore::new()),
-        Arc::new(gpt2apirs_account::OAuthSessions::new()),
-        Arc::new(ApiKeyStore::Memory(
-            MemoryApiKeys::new().with_key(API_KEY, "usage regression"),
-        )),
-    ));
-    state.pool.reload().await.ok();
-    Some((state, pool))
-}
-
-/// 发请求，拿 (状态码, 响应文本)。
-async fn send(state: &Arc<AppState>, path: &str, body: Value) -> (StatusCode, String) {
-    let response = build_router(state.clone())
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(path)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::AUTHORIZATION, format!("Bearer {API_KEY}"))
-                .body(Body::from(body.to_string()))
-                .expect("构造请求"),
-        )
-        .await
-        .expect("请求应成功");
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
-        .await
-        .expect("读 body");
-    (status, String::from_utf8_lossy(&bytes).to_string())
-}
+use support::{cleanup, send, setup};
 
 fn message_start_usage(sse: &str) -> Option<i64> {
     for line in sse.lines() {
@@ -191,8 +85,5 @@ async fn usage_matches_across_count_stream_and_non_stream() {
         mock.hits()
     );
 
-    let _ = sqlx::query("delete from accounts where access_token like $1")
-        .bind(format!("{TEST_PREFIX}%"))
-        .execute(&pool)
-        .await;
+    cleanup(&pool).await;
 }

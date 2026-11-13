@@ -82,6 +82,22 @@ async fn handle(
     if let Ok(mut guard) = hits.lock() {
         guard.push(path.clone());
     }
+    match current_fault() {
+        Some(Fault::Status { path_contains, status, body }) if path.contains(path_contains) => {
+            let code = axum::http::StatusCode::from_u16(status)
+                .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+            return (code, body.to_string()).into_response();
+        }
+        Some(Fault::TruncateSse(limit)) if path == "/backend-api/f/conversation" => {
+            let cut = CONVERSATION_SSE.len().min(limit);
+            return (
+                [("content-type", "text/event-stream")],
+                CONVERSATION_SSE[..cut].to_string(),
+            )
+                .into_response();
+        }
+        _ => {}
+    }
     match path.as_str() {
         "/" => HOME_HTML.to_string().into_response(),
         p if p.ends_with("/sentinel/chat-requirements/prepare") => json(PREPARE_JSON),
@@ -112,6 +128,59 @@ fn point_upstream_at(base: &str) {
     unsafe { std::env::set_var(gpt2apirs_protocol::endpoints::BASE_URL_ENV, base) };
 }
 
+/// 注入给 mock 的故障。
+///
+/// 全部按「路径包含某片段」匹配，这样同一套断言可以复用于不同端点。
+#[derive(Debug, Clone, Copy)]
+pub enum Fault {
+    /// 命中路径返回该状态码与响应体。
+    Status {
+        /// 路径包含该片段即命中。
+        path_contains: &'static str,
+        /// 返回的状态码。
+        status: u16,
+        /// 返回的响应体。
+        body: &'static str,
+    },
+    /// 会话 SSE 只发前 N 字节就以 200 结束（模拟中途断流）。
+    TruncateSse(usize),
+}
+
+static FAULT: Mutex<Option<Fault>> = Mutex::new(None);
+
+fn current_fault() -> Option<Fault> {
+    FAULT.lock().ok().and_then(|guard| *guard)
+}
+
+fn set_fault(fault: Option<Fault>) {
+    if let Ok(mut guard) = FAULT.lock() {
+        *guard = fault;
+    }
+}
+
+/// 故障注入期间持有的串行令牌；**丢弃时自动清除故障**。
+pub struct FaultGuard {
+    _serial: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl Drop for FaultGuard {
+    fn drop(&mut self) {
+        set_fault(None);
+    }
+}
+
+/// 注入一个故障，返回的守卫存活期间生效。
+///
+/// 同一进程里只有一台 mock 服务，所以故障是全局状态：用这把锁把多个故障用例串起来，
+/// 守卫 Drop 时清空 —— 即使断言 panic 也不会把故障留给下一个用例。
+pub async fn inject(fault: Fault) -> FaultGuard {
+    static SERIAL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    let serial = SERIAL.get_or_init(|| tokio::sync::Mutex::new(()));
+    let guard = serial.lock().await;
+    set_fault(Some(fault));
+    FaultGuard { _serial: guard }
+}
+
 static STARTED: OnceLock<MockUpstream> = OnceLock::new();
 
 /// 起 mock 上游，并把进程里的上游站点指过来。
@@ -129,13 +198,32 @@ pub async fn spawn() -> MockUpstream {
         .route("/backend-api/sentinel/chat-requirements/finalize", post(handle))
         .with_state(hits.clone());
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
+    // 服务必须活过**任何一个**用例的运行时：用例各自 new 一个 Runtime，
+    // 结束时整棵任务树被丢弃。所以这里独占一个线程 + 自己的运行时，活到进程退出。
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0")
         .expect("mock 上游应能绑定端口");
-    let addr = listener.local_addr().expect("本地地址");
-    tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("mock 上游应持续运行");
-    });
+    std_listener
+        .set_nonblocking(true)
+        .expect("mock 上游应能设为非阻塞");
+    let addr = std_listener.local_addr().expect("本地地址");
+
+    std::thread::Builder::new()
+        .name("mock-upstream".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("mock 上游运行时");
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(std_listener)
+                    .expect("mock 上游监听器");
+                axum::serve(listener, app)
+                    .await
+                    .expect("mock 上游应持续运行");
+            });
+        })
+        .expect("mock 上游线程");
 
     let base = format!("http://{addr}");
     point_upstream_at(&base);
