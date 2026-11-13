@@ -100,8 +100,12 @@ async fn missing_account_is_404() {
         .or_else(|| body["detail"]["message"].as_str())
         .unwrap_or("");
     assert!(message.contains("账号不存在"), "{body}");
-    // 404 不该报成 bad_request —— 客户端靠 code 分支
-    assert_eq!(body["error"]["code"], "account_not_found", "{body}");
+    // 404 不该报成 bad_request —— 客户端靠 code 分支；管理面统一用 detail 包裹
+    let code = body["detail"]["code"]
+        .as_str()
+        .or_else(|| body["error"]["code"].as_str())
+        .unwrap_or("");
+    assert_eq!(code, "account_not_found", "{body}");
 
     support::cleanup_with(&pool, PREFIX_MISSING).await;
 }
