@@ -307,9 +307,13 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-generate,--feature
 
 :: 三个口径的 usage 必须一致（count_tokens = 非流式 = 流式）
 powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_upstream_usage
+
+:: 故障分类：401 / 429 / 配额 / 内容策略 / SSE 断流
+powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-generate,--features,tls,--test,mock_faults
+powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_faults_api
 ```
 
-后者需要 `DATABASE_URL`（账号池读库），缺则自动跳过。
+后两条需要 `DATABASE_URL`（账号池读库），缺则自动跳过。
 
 ---
 

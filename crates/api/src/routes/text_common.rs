@@ -110,10 +110,15 @@ pub async fn run_text(
 
     let (result, diag) = outcome.map_err(|error| {
         tracing::warn!(account = %account_id, %error, "文本生成失败");
+        // 分类来自 generate 层；流式路径一直用它，非流式曾经固定成 upstream_error，
+        // 同一个失败在两个路径报不同错误码
+        let classified = error.downcast_ref::<gpt2apirs_generate::error::GenerateError>();
         ApiError::openai(AppError::Upstream {
             message: error.to_string(),
-            code: "upstream_error".to_string(),
-            retryable: true,
+            code: classified
+                .map(|failure| failure.kind.code().to_string())
+                .unwrap_or_else(|| "upstream_error".to_string()),
+            retryable: classified.map(|failure| failure.kind.retryable()).unwrap_or(true),
             status: 502,
         })
     })?;
