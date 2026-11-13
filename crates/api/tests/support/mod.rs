@@ -1,4 +1,5 @@
 //! api 层端到端测试的共享支撑：真库 + mock 上游 + 请求发送。
+#![allow(dead_code)] // 每个用例文件只用其中一部分，未用到的不算问题
 //!
 //! 需要 `--features tls`（要真发 HTTP）与 `DATABASE_URL`（账号池读库）。
 //! 缺任一条件时 `setup()` 返回 `None`，用例直接 return 当作跳过。
@@ -37,16 +38,26 @@ fn prepare_env() -> bool {
         .unwrap_or(false)
 }
 
-/// 清理本测试创建的账号。
-pub async fn cleanup(pool: &PgPool) {
+/// 清理指定前缀的测试账号。
+pub async fn cleanup_with(pool: &PgPool, prefix: &str) {
     let _ = sqlx::query("delete from accounts where access_token like $1")
-        .bind(format!("{TEST_PREFIX}%"))
+        .bind(format!("{prefix}%"))
         .execute(pool)
         .await;
 }
 
+/// 清理默认前缀的测试账号。
+pub async fn cleanup(pool: &PgPool) {
+    cleanup_with(pool, TEST_PREFIX).await;
+}
+
 /// 建好带一个文本可用账号的状态与连接池；缺条件返回 `None`。
 pub async fn setup() -> Option<(Arc<AppState>, PgPool)> {
+    setup_with(TEST_PREFIX).await
+}
+
+/// 同 [`setup`]，但用指定的 token 前缀（不同用例互不干扰）。
+pub async fn setup_with(prefix: &str) -> Option<(Arc<AppState>, PgPool)> {
     if !prepare_env() {
         eprintln!("跳过：未找到 DATABASE_URL");
         return None;
@@ -58,12 +69,12 @@ pub async fn setup() -> Option<(Arc<AppState>, PgPool)> {
     gpt2apirs_storage::migrate::run_migrations(&pool)
         .await
         .expect("迁移应成功");
-    cleanup(&pool).await;
+    cleanup_with(&pool, prefix).await;
 
     // 账号池要有一个文本可用的账号：token 内容无所谓，链路全在本地 mock
     let repo = gpt2apirs_account::AccountRepo::new(pool.clone());
     let new = gpt2apirs_account::repo::NewAccount {
-        access_token: format!("{TEST_PREFIX}account"),
+        access_token: format!("{prefix}account"),
         email: Some("apitest@test.local".to_string()),
         quota: 1,
         quota_confirmed: true,

@@ -28,7 +28,8 @@ pub use accounts::{
     ExportRequest, ImportItem, ImportResponse, ListQuery, OAuthFinishRequest, OAuthStartRequest,
     TestRequest, TestResponse, UpdateAccountRequest, create_accounts, delete_account,
     delete_accounts,
-    export_accounts, get_operation, list_accounts, oauth_finish, oauth_start, refresh_tokens,
+    export_accounts, get_account, get_operation, list_accounts, oauth_finish, oauth_start,
+    refresh_tokens,
     stats, sync_accounts, test_account, update_account,
 };
 pub use v1_image_edits::edit_images;

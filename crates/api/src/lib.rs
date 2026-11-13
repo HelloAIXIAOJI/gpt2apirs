@@ -119,7 +119,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/accounts/{id}/test",
             post(routes::accounts::test_account),
         )
-        .route("/api/accounts/{id}", delete(routes::accounts::delete_account))
+        .route(
+            "/api/accounts/{id}",
+            get(routes::accounts::get_account).delete(routes::accounts::delete_account),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_admin,
