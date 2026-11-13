@@ -38,6 +38,7 @@ uuid = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+gpt2apirs-testkit = { workspace = true }
 base64 = { workspace = true }
 tokio = { workspace = true }
 dotenvy = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "gpt2apirs-testkit"
+description = "测试支撑：本地 mock 上游（仅供测试，不发布）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+gpt2apirs-protocol = { workspace = true }
