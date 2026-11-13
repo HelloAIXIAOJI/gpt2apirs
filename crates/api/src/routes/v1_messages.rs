@@ -249,10 +249,10 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     let message_id = format!("msg_{}", Uuid::new_v4().simple());
     let model = model.to_string();
     let snapshot = handle.snapshot.clone();
-    let messages = handle.messages.clone();
+    let messages = handle.billing_messages.clone();
     let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let input_tokens =
-        gpt2apirs_core::tokens::count_message_text_tokens(&handle.messages, &model);
+        gpt2apirs_core::tokens::count_message_text_tokens(&handle.billing_messages, &model);
 
     // 1) 开头两件
     let head = futures_util::stream::iter(vec![
