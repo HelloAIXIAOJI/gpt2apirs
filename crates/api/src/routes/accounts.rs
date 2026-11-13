@@ -25,16 +25,16 @@ use crate::state::AppState;
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
 fn internal(error: impl std::fmt::Display) -> ApiError {
-    ApiError::openai(AppError::Internal(anyhow::anyhow!("{error}")))
+    ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}")))
 }
 
 fn pool_error(error: PoolError) -> ApiError {
     match error {
-        PoolError::NoCandidate { reason } => ApiError::openai(AppError::ServiceUnavailable {
+        PoolError::NoCandidate { reason } => ApiError::admin(AppError::ServiceUnavailable {
             message: format!("无可用账号（{reason}），请先通过 POST /api/accounts 导入"),
             code: "no_available_account".to_string(),
         }),
-        PoolError::DeadlineExceeded => ApiError::openai(AppError::ServiceUnavailable {
+        PoolError::DeadlineExceeded => ApiError::admin(AppError::ServiceUnavailable {
             message: "等待账号槽位超时，请稍后重试".to_string(),
             code: "account_pool_timeout".to_string(),
         }),
@@ -275,7 +275,7 @@ pub async fn get_account(
     let account = state.pool.repo().get_by_id(id).await.map_err(internal)?;
     match account {
         Some(account) => Ok(Json(AccountView::from_account(account))),
-        None => Err(ApiError::openai(AppError::not_found_coded(
+        None => Err(ApiError::admin(AppError::not_found_coded(
             format!("账号不存在: {id}"),
             "account_not_found",
         ))),
@@ -338,7 +338,7 @@ pub async fn create_accounts(
 
     let new_accounts = parse_import_body(&bytes)?;
     if new_accounts.is_empty() {
-        return Err(ApiError::openai(AppError::invalid(
+        return Err(ApiError::admin(AppError::invalid(
             "没有解析出任何账号，请检查 access_token 字段",
         )));
     }
@@ -382,7 +382,7 @@ fn parse_import_body(bytes: &[u8]) -> Result<Vec<gpt2apirs_account::NewAccount>,
     let Ok(value) = serde_json::from_str::<Value>(&text) else {
         // 不是 JSON：按纯文本处理
         return parse_any(&text).map_err(|error| {
-            ApiError::openai(AppError::invalid(format!("导入内容无法解析: {error}")))
+            ApiError::admin(AppError::invalid(format!("导入内容无法解析: {error}")))
         });
     };
     match &value {
@@ -400,7 +400,7 @@ fn parse_import_body(bytes: &[u8]) -> Result<Vec<gpt2apirs_account::NewAccount>,
         _ => Err(gpt2apirs_account::ImportParseError::NoAccounts),
     }
     .map_err(|error| {
-        ApiError::openai(AppError::invalid(format!("导入内容无法解析: {error}")))
+        ApiError::admin(AppError::invalid(format!("导入内容无法解析: {error}")))
     })
 }
 
@@ -441,7 +441,7 @@ pub async fn update_account(
             "abnormal" | "error" => AccountStatus::Abnormal,
             "disabled" | "disable" => AccountStatus::Disabled,
             other => {
-                return Err(ApiError::openai(AppError::invalid_param(
+                return Err(ApiError::admin(AppError::invalid_param(
                     format!("未知状态 {other:?}，可选 normal/limited/abnormal/disabled"),
                     "status",
                 )));
@@ -462,7 +462,7 @@ pub async fn update_account(
         .await
         .map_err(|error| match error {
             gpt2apirs_account::AccountError::NotFound(id) => {
-                ApiError::openai(AppError::not_found(format!("账号不存在: {id}")))
+                ApiError::admin(AppError::not_found(format!("账号不存在: {id}")))
             }
             other => internal(other),
         })?;
@@ -485,7 +485,7 @@ pub async fn delete_accounts(
     Json(body): Json<DeleteAccountsRequest>,
 ) -> ApiResult<Value> {
     if body.ids.is_empty() {
-        return Err(ApiError::openai(AppError::invalid_param(
+        return Err(ApiError::admin(AppError::invalid_param(
             "ids 不能为空",
             "ids",
         )));
@@ -515,7 +515,7 @@ pub async fn delete_account(
         .await
         .map_err(internal)?;
     if removed == 0 {
-        return Err(ApiError::openai(AppError::not_found_coded(
+        return Err(ApiError::admin(AppError::not_found_coded(
             format!("账号不存在: {id}"),
             "account_not_found",
         )));
@@ -619,7 +619,7 @@ pub async fn get_operation(
         .get(id)
         .map(Json)
         .ok_or_else(|| {
-            ApiError::openai(AppError::not_found(format!("操作 {id} 不存在或已过期")))
+            ApiError::admin(AppError::not_found(format!("操作 {id} 不存在或已过期")))
         })
 }
 
@@ -675,7 +675,7 @@ pub async fn test_account(
         .map(str::to_string)
         .unwrap_or_else(|| gpt2apirs_generate::models::default_image_model().to_string());
     if !gpt2apirs_generate::models::is_supported_image(&model) {
-        return Err(ApiError::openai(AppError::invalid_param(
+        return Err(ApiError::admin(AppError::invalid_param(
             format!("不支持的模型 {model:?}"),
             "model",
         )));
@@ -688,7 +688,7 @@ pub async fn test_account(
         ..Default::default()
     };
     let lease = state.pool.acquire(&filter, deadline).await.map_err(|error| match error {
-        PoolError::NoCandidate { .. } => ApiError::openai(AppError::ServiceUnavailable {
+        PoolError::NoCandidate { .. } => ApiError::admin(AppError::ServiceUnavailable {
             message: "该账号当前不可用（状态非正常或配额为 0）".to_string(),
             code: "account_not_available".to_string(),
         }),
@@ -770,7 +770,7 @@ pub async fn oauth_finish(
         gpt2apirs_account::oauth::finish(&state.client, &state.oauth, body.session_id, &body.callback, deadline)
             .await
             .map_err(|error| {
-                ApiError::openai(AppError::invalid_param(
+                ApiError::admin(AppError::invalid_param(
                     error.to_string(),
                     "callback",
                 ))
@@ -872,7 +872,7 @@ pub async fn export_accounts(
                 "skipped": report.skipped,
             })))
         }
-        other => Err(ApiError::openai(AppError::invalid_param(
+        other => Err(ApiError::admin(AppError::invalid_param(
             format!("未知导出格式 {other:?}，可选 json/txt"),
             "format",
         ))),
