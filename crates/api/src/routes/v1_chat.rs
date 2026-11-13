@@ -3,9 +3,8 @@
 //! 与生图的三点差别：允许 `limited` 账号（文本不吃图片配额）；记账走 `mark_text_result`（**不扣**配额）；
 //! token 用 tiktoken 真实计算而不是估算。
 //!
-//! 上游是把整段 SSE 一次给全的（见 [docs/m4-text-stream.md]），所以这里**不是真流式**：
-//! 服务端拿到全文后切块下发。对客户端来说 SSE 格式合法，但首字延迟等于总生成时间。
-//! 要真流式必须改 `post_sse` 为增量读取通道 —— 记在 M4.19。
+//! 流式是**真流式**：握手后 `post_sse_stream` 边收边转，每拿到一个完整 SSE 事件就吐一个片段
+//! （见 `generate::text::generate_text_stream`）；首字延迟不再等于总生成时间。
 
 use std::sync::Arc;
 
