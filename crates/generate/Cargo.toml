@@ -36,5 +36,4 @@ gpt2apirs-storage = { workspace = true }
 sqlx = { workspace = true }
 dotenvy = { workspace = true }
 tokio = { workspace = true }
-# mock 上游：本地起一个 HTTP 服务接住出站请求
-axum = { workspace = true }
+gpt2apirs-testkit = { workspace = true }

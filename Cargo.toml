@@ -9,6 +9,7 @@ members = [
     "crates/storage",
     "crates/api",
     "crates/cli",
+    "crates/testkit",
 ]
 
 [workspace.package]
@@ -28,6 +29,8 @@ gpt2apirs-account = { path = "crates/account" }
 gpt2apirs-generate = { path = "crates/generate" }
 gpt2apirs-storage = { path = "crates/storage" }
 gpt2apirs-api = { path = "crates/api" }
+# 仅测试用：本地 mock 上游（不发布）
+gpt2apirs-testkit = { path = "crates/testkit" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }

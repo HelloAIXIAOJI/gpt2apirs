@@ -293,6 +293,26 @@ python tools\account_gui.py
 
 ---
 
+## 测试怎么跑
+
+```bash
+cargo test --workspace        # 离线用例：参数校验 / 解析 / 鉴权 / 盘面逻辑
+```
+
+**生成链路**的离线回归需要 `tls`（默认特性下 HTTP 客户端是存根），走脚本一次配好环境：
+
+```bat
+:: 文本链路端到端（本地 mock 上游，不出环回地址）
+powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-generate,--features,tls,--test,mock_upstream
+
+:: 三个口径的 usage 必须一致（count_tokens = 非流式 = 流式）
+powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_upstream_usage
+```
+
+后者需要 `DATABASE_URL`（账号池读库），缺则自动跳过。
+
+---
+
 ## 已知限制
 
 | 限制 | 说明 |
