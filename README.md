@@ -329,6 +329,7 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls
 
 | 限制 | 说明 |
 |---|---|
+| `temperature` / `top_p` / `max_tokens` 接受但忽略 | 上游 web 会话没有这些旋钮；`modalities` 例外，非 text 直接 400 |
 | Codex 模型 | `codex-gpt-image-2` 等走另一条上游链路，未实现，对外不宣告 |
 | 单实例假设 | 选号游标在进程内存，多实例部署槽位不共享 |
 | 账号必须有额度 | `quota=0` 时不会出图；上游说 0 就是 0，等 `restore_at` 或换号 |

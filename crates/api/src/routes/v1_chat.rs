@@ -47,6 +47,45 @@ pub struct ChatCompletionRequest {
     /// 工具列表（**不支持**，非空即拒）。
     #[serde(default)]
     pub tools: Option<Value>,
+    /// 输出模态（只支持 `text`；要图片请走生图端点）。
+    #[serde(default)]
+    pub modalities: Option<Value>,
+}
+
+/// 校验 `modalities`：只接受纯文本输出。
+///
+/// 这是**声明式能力开关**，不能像 temperature 那样默默忽略 ——
+/// 客户端说「我要图片模态」而我们只回文字，等于让它在错误的假设上继续跑。
+fn ensure_text_modalities(modalities: &Option<Value>) -> Result<(), ApiError> {
+    let Some(value) = modalities else { return Ok(()) };
+    let items = match value {
+        Value::Null => return Ok(()),
+        Value::Array(items) => items,
+        other => {
+            return Err(ApiError::openai(AppError::invalid_param(
+                format!("modalities 必须是字符串数组，收到：{other}"),
+                "modalities",
+            )));
+        }
+    };
+    for item in items {
+        let Some(kind) = item.as_str() else {
+            return Err(ApiError::openai(AppError::invalid_param(
+                format!("modalities 的元素必须是字符串，收到：{item}"),
+                "modalities",
+            )));
+        };
+        if kind.trim().eq_ignore_ascii_case("text") {
+            continue;
+        }
+        return Err(ApiError::openai(AppError::invalid_param(
+            format!(
+                "不支持输出模态 {kind:?}；本实现只返回文本，要出图请用 POST /v1/images/generations"
+            ),
+            "modalities",
+        )));
+    }
+    Ok(())
 }
 
 /// 把一条消息的 `content` 取成纯文本。
@@ -134,6 +173,7 @@ pub async fn chat_completions(
             crate::routes::text_common::tools_not_supported("chat.tools"),
         ));
     }
+    ensure_text_modalities(&request.modalities)?;
     if request.messages.is_empty() {
         return Err(ApiError::openai(AppError::invalid_param(
             "messages 不能为空",
