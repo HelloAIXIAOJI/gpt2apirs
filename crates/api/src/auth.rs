@@ -13,7 +13,6 @@ use crate::state::AppState;
 
 /// 按请求路径决定错误响应格式。
 ///
-///
 /// 按路径选格式：`/v1/messages` → Anthropic，其余 `/v1*` → OpenAI，其他 → 管理面。
 pub fn error_format_for_path(path: &str) -> ErrorFormat {
     if path == "/v1/messages" {
