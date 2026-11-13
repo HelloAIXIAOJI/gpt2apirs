@@ -275,9 +275,10 @@ pub async fn get_account(
     let account = state.pool.repo().get_by_id(id).await.map_err(internal)?;
     match account {
         Some(account) => Ok(Json(AccountView::from_account(account))),
-        None => Err(ApiError::openai(AppError::not_found(format!(
-            "账号不存在: {id}"
-        )))),
+        None => Err(ApiError::openai(AppError::not_found_coded(
+            format!("账号不存在: {id}"),
+            "account_not_found",
+        ))),
     }
 }
 
@@ -514,9 +515,10 @@ pub async fn delete_account(
         .await
         .map_err(internal)?;
     if removed == 0 {
-        return Err(ApiError::openai(AppError::not_found(format!(
-            "账号不存在: {id}"
-        ))));
+        return Err(ApiError::openai(AppError::not_found_coded(
+            format!("账号不存在: {id}"),
+            "account_not_found",
+        )));
     }
     let _ = state.pool.reload().await;
     Ok(Json(serde_json::json!({ "removed": removed, "id": id })))
