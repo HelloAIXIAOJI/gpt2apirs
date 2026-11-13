@@ -235,7 +235,7 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     let created = chrono::Utc::now().timestamp();
     let model = model.to_string();
     let snapshot = handle.snapshot.clone();
-    let messages = handle.messages.clone();
+    let messages = handle.billing_messages.clone();
     let last_error: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
 
     // 1) role 块

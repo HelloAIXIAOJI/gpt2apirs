@@ -27,8 +27,9 @@
 | `POST /v1/images/generations`（`url`） | ✅ | 96.9s / 2,273,901 字节 / 1402×1122 |
 | `GET /v1/models` | ✅ | 文本 + 图片两个模型，带 `kind`；只宣告真正支持的 |
 | `GET /v1/models/{id}` | ✅ | 未知 id → 404 `model_not_found`（与列表口径一致）|
-| `POST /v1/messages/count_tokens` | ✅ | 离线可验：`hello` → 8，与 usage 同一条 tiktoken 口径 |
+| `POST /v1/messages/count_tokens` | ✅ | 真机三方对齐：预估 77 = 非流式 77 = 流式 77 |
 | `x-api-key` 头 | ✅ | 与 Bearer 等价；进后台仍然 401 |
+| 流式 usage 与小费口径 | ✅ | 修掉「guard 提示词算进账单」：chat / responses / messages 流式非流式全部对齐 |
 | `GET /images/{path}` 静态服务 | ✅ | 路径穿越防护 + MIME 正确 |
 | `GET /health` `/health/ready` `/version` | ✅ | 就绪探针 DB 不可用返回 503 |
 | PostgreSQL 迁移 | ✅ | 可重复执行，幂等 |

@@ -18,6 +18,23 @@ fn rich_text_policy(state: &AppState) -> crate::routes::rich_text::RichTextPolic
     )
 }
 
+/// 拆成「实际发给上游的消息」与「计费口径的消息」。
+///
+/// guard 提示词是**我们**为了压住富文本组件才加的，不该算进用户账单：
+/// 曾经流式路径把注入后的列表当计费口径，导致同一请求流式报 149、非流式报 77。
+/// 两条清单必须同时产出，调用方拿错一条就是扣费错误。
+pub fn dispatch_messages(
+    policy: crate::routes::rich_text::RichTextPolicy,
+    messages: Vec<(String, String)>,
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let billing = messages.clone();
+    let mut dispatch = messages;
+    if policy.guard() {
+        crate::routes::rich_text::apply_guard(&mut dispatch);
+    }
+    (dispatch, billing)
+}
+
 /// 一次文本生成的产物（已记账、槽位已归还）。
 pub struct TextOutcome {
     /// 是否命中缓存（命中时没有消耗上游配额，也没有实际账号）。
@@ -39,13 +56,10 @@ pub async fn run_text(
     requested_model: &str,
     deadline: Deadline,
 ) -> Result<TextOutcome, ApiError> {
-    // ---- 富文本策略 ----
+    // ---- 富文本策略：只改发给上游的内容；usage 由端点用原始消息单独算 ----
     let policy = rich_text_policy(state);
-    let mut effective: Vec<(String, String)> = messages.to_vec();
-    if policy.guard() {
-        crate::routes::rich_text::apply_guard(&mut effective);
-    }
-    let messages = &effective[..];
+    let (dispatch, _billing) = dispatch_messages(policy, messages.to_vec());
+    let messages = &dispatch[..];
 
     // ---- 缓存（只对非流式生效；流式不走这里）----
     let ttl = std::time::Duration::from_secs(
@@ -204,8 +218,10 @@ pub struct StreamHandle {
     pub snapshot: std::sync::Arc<std::sync::Mutex<gpt2apirs_generate::text::StreamSnapshot>>,
     /// 归一后的模型名。
     pub model: String,
-    /// 归一后的消息（算 prompt token 用）。
-    pub messages: Vec<(String, String)>,
+    /// **计费口径**的消息：原始消息，不含内部注入的 guard 提示词。
+    ///
+    /// 别改成发给上游的那份 —— 那会把我们的提示词算进用户账单。
+    pub billing_messages: Vec<(String, String)>,
     /// 服务的账号。
     pub account_id: uuid::Uuid,
 }
@@ -242,12 +258,9 @@ pub async fn start_text_stream(
 
     // ---- 富文本策略（流式同样注入 guard，输出侧用增量剥离器）----
     let policy = rich_text_policy(state);
-    let mut effective = messages.clone();
-    if policy.guard() {
-        crate::routes::rich_text::apply_guard(&mut effective);
-    }
+    let (dispatch, billing) = dispatch_messages(policy, messages);
 
-    let mut request = TextRequest::new(String::new()).with_messages(effective.clone());
+    let mut request = TextRequest::new(String::new()).with_messages(dispatch);
     request.model = requested_model.to_string();
     request.upstream_model = models::upstream_model_for(requested_model).to_string();
 
@@ -355,7 +368,55 @@ pub async fn start_text_stream(
         deltas,
         snapshot: stream.snapshot,
         model: requested_model.to_string(),
-        messages: effective,
+        billing_messages: billing,
         account_id,
     })
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use crate::routes::rich_text::{RichTextPolicy, GUARD_MESSAGE};
+
+    /// guard 提示词只进「发给上游」的那份，不进「计费口径」那份。
+    ///
+    /// 这条测试曾经能抓住真 bug：流式端点拿错清单，同一个请求报 149 而非 77。
+    #[test]
+    fn guard_goes_to_dispatch_but_not_to_billing() {
+        let raw = vec![("user".to_string(), "你好".to_string())];
+        let (dispatch, billing) = dispatch_messages(RichTextPolicy::GuardStrip, raw.clone());
+
+        assert_eq!(dispatch.len(), raw.len() + 1, "guard 应插进派发消息");
+        assert!(dispatch[0].1.contains(GUARD_MESSAGE), "派发消息首位应是 guard");
+        assert_eq!(billing, raw, "计费口径必须保持原样");
+        assert!(
+            !billing.iter().any(|(_, text)| text.contains(GUARD_MESSAGE)),
+            "计费消息里不该有 guard：{billing:?}"
+        );
+    }
+
+    /// 策略关闭时不注入，两张清单完全一致。
+    #[test]
+    fn policy_off_keeps_both_lists_identical() {
+        let raw = vec![("user".to_string(), "hi".to_string())];
+        let (dispatch, billing) = dispatch_messages(RichTextPolicy::Off, raw.clone());
+        assert_eq!(dispatch, raw);
+        assert_eq!(billing, raw);
+    }
+
+    /// 计费口径的 token 数不受 guard 影响 —— 与 /v1/messages/count_tokens 同一个答案。
+    #[test]
+    fn billing_tokens_do_not_include_guard() {
+        let raw = vec![("user".to_string(), "hello".to_string())];
+        let (dispatch, billing) = dispatch_messages(RichTextPolicy::GuardStrip, raw.clone());
+        let billing_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&billing, "gpt-5-5");
+        let dispatch_tokens =
+            gpt2apirs_core::tokens::count_message_text_tokens(&dispatch, "gpt-5-5");
+
+        assert_eq!(billing_tokens, 8, "hello 的计费口径固定为 8");
+        assert!(
+            dispatch_tokens > billing_tokens,
+            "guard 会抬高派发侧 token（{dispatch_tokens} vs {billing_tokens}）"
+        );
+    }
 }
