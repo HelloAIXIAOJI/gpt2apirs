@@ -11,7 +11,7 @@ use gpt2apirs_account::{PoolError, SelectionFilter};
 use gpt2apirs_core::{AppError, Deadline};
 use gpt2apirs_generate::error::{FailureKind, GenerateError};
 use gpt2apirs_generate::upload::UploadedFile;
-use gpt2apirs_generate::{FlowDiagnostics, ImageRequest, generate_images};
+use gpt2apirs_generate::{FlowDiagnostics, ImageRequest, PollPolicy, generate_images};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -156,9 +156,11 @@ pub(crate) fn slot_error(error: GenerateError) -> ApiError {
 /// 文生图：`n` 张并行 + 换号重试。
 pub async fn run_generation(
     state: &Arc<AppState>,
-    request: ImageRequest,
+    mut request: ImageRequest,
     deadline: Deadline,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
+    // SSE 没带回图片时的兜底轮询，读三个 image_poll_* 设置。
+    request.poll = PollPolicy::from_settings(&state.settings);
     let total = request.n.clamp(1, 4) as usize;
     let mut set: JoinSet<SlotResult> = JoinSet::new();
 
@@ -225,10 +227,11 @@ pub async fn record_assets(state: &Arc<AppState>, slots: &[SlotOutcome], prompt:
 /// 参考图的上传与账号绑定，所以**每次换号都要重新上传**。
 pub async fn run_edit(
     state: &Arc<AppState>,
-    request: ImageRequest,
+    mut request: ImageRequest,
     prepared: Vec<(Vec<u8>, String)>,
     deadline: Deadline,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
+    request.poll = PollPolicy::from_settings(&state.settings);
     let total = request.n.clamp(1, 4) as usize;
     let mut set: JoinSet<SlotResult> = JoinSet::new();
 

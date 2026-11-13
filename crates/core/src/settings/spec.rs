@@ -39,7 +39,7 @@ pub struct NumericSpec {
     pub description: &'static str,
 }
 
-/// P1 需要的 12 项数值设置。
+/// 运行层数值设置。
 ///
 /// 数值与上游实测边界逐项对齐。
 pub static NUMERIC_SPECS: &[NumericSpec] = &[
@@ -173,6 +173,16 @@ pub static NUMERIC_SPECS: &[NumericSpec] = &[
         restart_required: false,
         description: "文本结果缓存有效期；0 = 关闭",
     },
+    NumericSpec {
+        key: "image_task_concurrency",
+        default: 2.0,
+        min: 1.0,
+        max: Some(16.0),
+        kind: NumericKind::Integer,
+        unit: None,
+        restart_required: true,
+        description: "异步生图任务并发上限（重启生效）",
+    },
 ];
 
 /// 按键查规格。
@@ -294,6 +304,7 @@ mod tests {
             "console_request_timeout_secs",
             "refresh_account_interval_minute",
             "chat_cache_ttl_secs",
+            "image_task_concurrency",
         ];
         assert_eq!(NUMERIC_SPECS.len(), expected.len());
         for key in expected {
