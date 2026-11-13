@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use gpt2apirs_core::Deadline;
 use gpt2apirs_http::Client;
 use gpt2apirs_protocol::endpoints::{
-    ACCOUNTS_CHECK, BASE_URL, CONVERSATION_INIT, ME,
+    ACCOUNTS_CHECK, CONVERSATION_INIT, ME,
 };
 use serde_json::Value;
 
@@ -186,7 +186,7 @@ async fn get_json(
 ) -> Result<Value, RemoteError> {
     let headers = gpt2apirs_http::api_headers(user_agent, token, path);
     let response = client
-        .get_text(&format!("{BASE_URL}{path}"), &headers, Some(timeout))
+        .get_text(&gpt2apirs_protocol::endpoints::url(path), &headers, Some(timeout))
         .await
         .map_err(|error| RemoteError::Transport(error.to_string()))?;
     interpret(path, response.status, &response.body)
@@ -202,7 +202,7 @@ async fn post_json(
 ) -> Result<Value, RemoteError> {
     let headers = gpt2apirs_http::api_headers(user_agent, token, path);
     let response = client
-        .post_json(&format!("{BASE_URL}{path}"), &headers, &body, Some(timeout))
+        .post_json(&gpt2apirs_protocol::endpoints::url(path), &headers, &body, Some(timeout))
         .await
         .map_err(|error| RemoteError::Transport(error.to_string()))?;
     interpret(path, response.status, &response.body)

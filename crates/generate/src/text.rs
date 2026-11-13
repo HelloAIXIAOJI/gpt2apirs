@@ -11,7 +11,7 @@ use gpt2apirs_http::Client;
 use gpt2apirs_protocol::conversation::{
     build_text_conversation_payload, build_text_conversation_payload_messages,
 };
-use gpt2apirs_protocol::endpoints::{BASE_URL, CONVERSATION};
+use gpt2apirs_protocol::endpoints::{CONVERSATION, url as upstream_url};
 use gpt2apirs_protocol::text_stream::{TextAccumulator, collect_text};
 
 use crate::error::{FailureKind, GenerateError, classify_http};
@@ -89,7 +89,7 @@ pub async fn generate_text(
     let budget = stage_budget(deadline, "sse", stage_caps::SSE)?;
     let sse = client
         .post_sse(
-            &format!("{BASE_URL}{CONVERSATION}"),
+            &upstream_url(CONVERSATION),
             // 文本链路**不带** conduit_token（那是图片链路才有的）
             &image_headers(
                 &request.user_agent,
@@ -274,7 +274,7 @@ pub async fn generate_text_stream(
 
     let started = client
         .post_sse_stream(
-            &format!("{BASE_URL}{CONVERSATION}"),
+            &upstream_url(CONVERSATION),
             &image_headers(
                 &request.user_agent,
                 token,
