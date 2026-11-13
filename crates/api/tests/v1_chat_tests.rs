@@ -243,3 +243,59 @@ async fn content_filter_ignores_assistant_messages() {
     let (status, response) = post_with(state_with(settings), body, Some(AUTH_KEY)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
 }
+
+// ---------------- modalities ----------------
+
+/// 只要文本：照常放行（账号池为空，终点是 503）。
+#[tokio::test]
+async fn accepts_text_only_modalities() {
+    let mut body = simple_body("hi");
+    body["modalities"] = json!(["text"]);
+    let (status, response) = post(body, Some(AUTH_KEY)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
+    assert_eq!(response["error"]["code"], "no_available_account");
+}
+
+/// 要图片模态：必须显式拒绝，不能默默只回文本。
+#[tokio::test]
+async fn rejects_image_modality() {
+    let mut body = simple_body("画一只猫");
+    body["modalities"] = json!(["text", "image"]);
+    let (status, response) = post(body, Some(AUTH_KEY)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(response["error"]["param"], "modalities", "{response}");
+    let message = response["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("images/generations"),
+        "错误信息应指路生图端点：{message}"
+    );
+}
+
+/// 只写 image 也一样拒。
+#[tokio::test]
+async fn rejects_image_only_modality() {
+    let mut body = simple_body("画一只猫");
+    body["modalities"] = json!(["image"]);
+    let (status, response) = post(body, Some(AUTH_KEY)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(response["error"]["code"], "bad_request", "{response}");
+}
+
+/// 形态不对也要说清楚是哪个字段。
+#[tokio::test]
+async fn rejects_malformed_modalities() {
+    let mut body = simple_body("hi");
+    body["modalities"] = json!("text");
+    let (status, response) = post(body, Some(AUTH_KEY)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(response["error"]["param"], "modalities", "{response}");
+}
+
+/// 不传或传 null 都不该被拦。
+#[tokio::test]
+async fn null_modalities_is_accepted() {
+    let mut body = simple_body("hi");
+    body["modalities"] = Value::Null;
+    let (status, response) = post(body, Some(AUTH_KEY)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
+}
