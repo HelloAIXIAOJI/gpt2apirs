@@ -202,6 +202,7 @@ python tools\account_gui.py
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET / POST / DELETE | `/api/accounts` | 列表 / 导入 / 批量删除 |
+| GET | `/api/accounts/{id}` | 单个账号详情（与列表同一份视图，未知 id → 404）|
 | GET | `/api/accounts/stats` | 统计 |
 | POST | `/api/accounts/update` | 更新（状态 / 套餐 / 邮箱 / 代理 / 配额） |
 | POST | `/api/accounts/sync` | 批量同步配额 → `operation_id` |

@@ -265,6 +265,22 @@ pub async fn list_accounts(
     }))
 }
 
+/// `GET /api/accounts/{id}` —— 单个账号详情。
+///
+/// 与列表共用 [`AccountView`]，所以字段口径不会分叉；不存在时 404 而不是空对象。
+pub async fn get_account(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<AccountView> {
+    let account = state.pool.repo().get_by_id(id).await.map_err(internal)?;
+    match account {
+        Some(account) => Ok(Json(AccountView::from_account(account))),
+        None => Err(ApiError::openai(AppError::not_found(format!(
+            "账号不存在: {id}"
+        )))),
+    }
+}
+
 // 统计
 
 /// `GET /api/accounts/stats`
