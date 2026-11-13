@@ -168,19 +168,54 @@ pub fn build_text_conversation_payload_messages(
     messages: &[(String, String)],
     model: &str,
 ) -> Value {
+    build_text_conversation_payload_with_images(messages, &[], model)
+}
+
+/// 带图片的文本会话请求体。
+///
+/// 图片挂在**最后一条 user 消息**上：`parts` 里先放 `image_asset_pointer`，再放文本；
+/// `metadata.attachments` 再报一次（上游两处都读，与生图链路一致）。
+/// 没有图片时直接退化成纯文本消息，不额外造空字段。
+pub fn build_text_conversation_payload_with_images(
+    messages: &[(String, String)],
+    images: &[ImageReference],
+    model: &str,
+) -> Value {
+    let last_user = messages
+        .iter()
+        .rposition(|(role, _)| role == "user");
     let converted: Vec<Value> = messages
         .iter()
-        .map(|(role, text)| {
+        .enumerate()
+        .map(|(index, (role, text))| {
+            let with_images = !images.is_empty() && Some(index) == last_user;
+            if !with_images {
+                return json!({
+                    "id": util_uuid(),
+                    "author": { "role": role },
+                    "content": { "content_type": "text", "parts": [text] },
+                });
+            }
+            let mut parts: Vec<Value> = images.iter().map(asset_pointer_part).collect();
+            parts.push(Value::String(text.clone()));
             json!({
                 "id": util_uuid(),
                 "author": { "role": role },
-                "content": { "content_type": "text", "parts": [text] },
+                "content": { "content_type": "multimodal_text", "parts": parts },
+                "metadata": {
+                    "attachments": images.iter().map(attachment_entry).collect::<Vec<Value>>(),
+                },
             })
         })
         .collect();
+    build_text_envelope(model, converted)
+}
+
+/// 文本会话的信封字段：消息体由调用方给，这里只补公共字段。
+fn build_text_envelope(model: &str, messages: Vec<Value>) -> Value {
     json!({
         "action": "next",
-        "messages": converted,
+        "messages": messages,
         "model": model,
         "parent_message_id": util_uuid(),
         "conversation_mode": { "kind": "primary_assistant" },
@@ -381,6 +416,56 @@ mod tests {
             width: 64,
             height: 48,
         }
+    }
+
+    #[test]
+    fn text_payload_without_images_stays_plain() {
+        let messages = vec![
+            ("system".to_string(), "你是助手".to_string()),
+            ("user".to_string(), "你好".to_string()),
+        ];
+        let payload = build_text_conversation_payload_with_images(&messages, &[], "gpt-5-5");
+        for index in 0..2 {
+            assert_eq!(payload["messages"][index]["content"]["content_type"], "text");
+            assert_eq!(payload["messages"][index]["content"]["parts"].as_array().map(Vec::len), Some(1));
+        }
+        assert!(payload["messages"][1]["metadata"].get("attachments").is_none());
+    }
+
+    /// 图片挂在最后一条 user 消息上：先 asset_pointer 再文本，且 metadata 也报一次。
+    #[test]
+    fn images_attach_to_the_last_user_message() {
+        let messages = vec![
+            ("user".to_string(), "第一问".to_string()),
+            ("assistant".to_string(), "第一答".to_string()),
+            ("user".to_string(), "这张图里是什么".to_string()),
+        ];
+        let payload =
+            build_text_conversation_payload_with_images(&messages, &[sample_ref()], "gpt-5-5");
+
+        // 前两条保持纯文本
+        assert_eq!(payload["messages"][0]["content"]["content_type"], "text");
+        assert_eq!(payload["messages"][1]["content"]["content_type"], "text");
+
+        let last = &payload["messages"][2];
+        assert_eq!(last["content"]["content_type"], "multimodal_text");
+        assert_eq!(last["content"]["parts"][0]["content_type"], "image_asset_pointer");
+        assert_eq!(
+            last["content"]["parts"][0]["asset_pointer"],
+            "file-service://file-abc"
+        );
+        assert_eq!(last["content"]["parts"][1], "这张图里是什么");
+        assert_eq!(last["metadata"]["attachments"][0]["id"], "file-abc");
+    }
+
+    /// 没有 user 消息时不能 panic，也不该把图塞进 system。
+    #[test]
+    fn images_without_user_message_are_ignored() {
+        let messages = vec![("system".to_string(), "只有系统提示".to_string())];
+        let payload =
+            build_text_conversation_payload_with_images(&messages, &[sample_ref()], "gpt-5-5");
+        assert_eq!(payload["messages"][0]["content"]["content_type"], "text");
+        assert!(payload["messages"][0]["metadata"].get("attachments").is_none());
     }
 
     #[test]

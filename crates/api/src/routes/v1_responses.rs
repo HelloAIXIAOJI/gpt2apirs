@@ -208,11 +208,11 @@ pub async fn create_response(
 
     // 真流式：命中时直接返回 SSE，不走「先跑完再切块」
     if request.stream.unwrap_or(false) {
-        let handle = start_text_stream(&state, messages.clone(), &model, deadline).await?;
+        let handle = start_text_stream(&state, messages.clone(), Vec::new(), &model, deadline).await?;
         return Ok(build_live_stream(handle, &model).into_response());
     }
 
-    let outcome = run_text(&state, &messages, &model, deadline).await?;
+    let outcome = run_text(&state, &messages, &[], &model, deadline).await?;
 
     let prompt_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
     let completion_tokens = gpt2apirs_core::tokens::count_text_tokens(&outcome.result.text, &model);

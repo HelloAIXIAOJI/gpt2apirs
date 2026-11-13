@@ -125,8 +125,9 @@ async fn rejects_unknown_role() {
     );
 }
 
+/// 图文对话：图片被接受，请求走到取号（账号池为空 → 503）。
 #[tokio::test]
-async fn rejects_image_content_on_text_endpoint() {
+async fn accepts_image_content() {
     let body = json!({"messages": [{
         "role": "user",
         "content": [
@@ -135,14 +136,31 @@ async fn rejects_image_content_on_text_endpoint() {
         ],
     }]});
     let (status, response) = post(body, Some(AUTH_KEY)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(
-        response["error"]["message"]
-            .as_str()
-            .unwrap_or("")
-            .contains("images/edits"),
-        "{response}"
-    );
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
+    assert_eq!(response["error"]["code"], "no_available_account");
+}
+
+/// 只有图片、没有文本也要放行（图片本身就是内容）。
+#[tokio::test]
+async fn accepts_image_only_message() {
+    let body = json!({"messages": [{
+        "role": "user",
+        "content": [{"type": "image_url", "image_url": {"url": "https://x/y.png"}}],
+    }]});
+    let (status, response) = post(body, Some(AUTH_KEY)).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
+}
+
+/// 图片 part 缺少地址要说清是哪个字段。
+#[tokio::test]
+async fn rejects_image_part_without_url() {
+    let body = json!({"messages": [{
+        "role": "user",
+        "content": [{"type": "image_url", "image_url": {}}],
+    }]});
+    let (status, response) = post(body, Some(AUTH_KEY)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
+    assert_eq!(response["error"]["param"], "messages", "{response}");
 }
 
 #[tokio::test]

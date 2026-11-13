@@ -167,10 +167,47 @@ pub struct TextOutcome {
     pub model: String,
 }
 
+/// 一次图文对话里带的图片来源（尚未上传）。
+pub type ImageSources = Vec<gpt2apirs_generate::inputs::ImageSource>;
+
+/// 把图片来源取成字节并上传，得到能放进 payload 的引用。
+///
+/// 上传必须发生在拿到账号 token 之后，所以在换号重试的闭包里调用 ——
+/// 换号后图片会重新上传一次，这一点和生图链路一致。
+async fn upload_image_sources(
+    client: &gpt2apirs_http::Client,
+    token: &str,
+    user_agent: &str,
+    sources: &[gpt2apirs_generate::inputs::ImageSource],
+    deadline: Deadline,
+) -> anyhow::Result<Vec<gpt2apirs_protocol::conversation::ImageReference>> {
+    use gpt2apirs_generate::inputs::resolve_sources;
+    use gpt2apirs_generate::upload::upload_image;
+
+    let resolved = resolve_sources(client, sources, deadline)
+        .await
+        .map_err(|error| anyhow::anyhow!("图片解析失败：{error}"))?;
+    let mut references = Vec::with_capacity(resolved.len());
+    for image in resolved {
+        let uploaded = upload_image(
+            client,
+            token,
+            user_agent,
+            &image.data,
+            Some(image.filename.as_str()),
+            deadline,
+        )
+        .await?;
+        references.push(uploaded.as_reference());
+    }
+    Ok(references)
+}
+
 /// 取号  生成  记账  归还。
 pub async fn run_text(
     state: &Arc<AppState>,
     messages: &[(String, String)],
+    images: &[gpt2apirs_generate::inputs::ImageSource],
     requested_model: &str,
     deadline: Deadline,
 ) -> Result<TextOutcome, ApiError> {
@@ -183,8 +220,9 @@ pub async fn run_text(
     let ttl = std::time::Duration::from_secs(
         state.settings.get_i64("chat_cache_ttl_secs").max(0) as u64,
     );
+    // 带图时不走缓存：缓存键只看文本，命中会把「图里是什么」答成上一次的纯文本结果
     let key = crate::routes::text_cache::cache_key(requested_model, messages);
-    if let Some(cached) = crate::routes::text_cache::get(key, ttl) {
+    if images.is_empty() && let Some(cached) = crate::routes::text_cache::get(key, ttl) {
         tracing::info!(model = %requested_model, "命中文本缓存");
         return Ok(TextOutcome {
             cached: true,
@@ -201,8 +239,21 @@ pub async fn run_text(
 
     // 换号重试：401/限流/配额这类换号有意义的失败会换下一个账号
     let ((mut result, diag), account_id, lease) = with_text_retry(state, deadline, |client, token| {
-        let request = request.clone();
-        async move { generate_text(client.as_ref(), &token, &request, deadline).await }
+        let mut request = request.clone();
+        let sources = images.to_vec();
+        async move {
+            if !sources.is_empty() {
+                request.images = upload_image_sources(
+                    client.as_ref(),
+                    &token,
+                    &request.user_agent,
+                    &sources,
+                    deadline,
+                )
+                .await?;
+            }
+            generate_text(client.as_ref(), &token, &request, deadline).await
+        }
     })
     .await?;
     // 文本记账不扣图片配额：两套额度互相独立
@@ -323,6 +374,7 @@ pub struct StreamHandle {
 pub async fn start_text_stream(
     state: &Arc<AppState>,
     messages: Vec<(String, String)>,
+    images: Vec<gpt2apirs_generate::inputs::ImageSource>,
     requested_model: &str,
     deadline: Deadline,
 ) -> Result<StreamHandle, ApiError> {
@@ -338,8 +390,19 @@ pub async fn start_text_stream(
 
     // 起流之前失败还能换号；流开始之后就不再重试（部分内容已经吐出去了）
     let (stream, account_id, lease) = with_text_retry(state, deadline, |client, token| {
-        let request = request.clone();
+        let mut request = request.clone();
+        let sources = images.clone();
         async move {
+            if !sources.is_empty() {
+                request.images = upload_image_sources(
+                    client.as_ref(),
+                    &token,
+                    &request.user_agent,
+                    &sources,
+                    deadline,
+                )
+                .await?;
+            }
             gpt2apirs_generate::text::generate_text_stream(
                 client.as_ref(),
                 &token,

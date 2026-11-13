@@ -72,12 +72,16 @@ fn anthropic_error(error: impl Into<gpt2apirs_core::AppError>) -> ApiError {
     ApiError::anthropic(error)
 }
 
-fn blocks_text(value: &Value, param: &str) -> Result<String, ApiError> {
+fn block_content(
+    value: &Value,
+    param: &str,
+) -> Result<(String, Vec<gpt2apirs_generate::inputs::ImageSource>), ApiError> {
     match value {
-        Value::Null => Ok(String::new()),
-        Value::String(text) => Ok(text.clone()),
+        Value::Null => Ok((String::new(), Vec::new())),
+        Value::String(text) => Ok((text.clone(), Vec::new())),
         Value::Array(parts) => {
             let mut out = String::new();
+            let mut images = Vec::new();
             for part in parts {
                 let kind = part.get("type").and_then(Value::as_str).unwrap_or("text");
                 match kind {
@@ -86,23 +90,83 @@ fn blocks_text(value: &Value, param: &str) -> Result<String, ApiError> {
                             out.push_str(text);
                         }
                     }
-                    "image" | "image_url" => {
-                        return Err(anthropic_error(
-                            gpt2apirs_core::AppError::invalid_param(
-                                "文本端点不支持图片输入；请用 /v1/images/edits",
-                                param,
-                            ),
-                        ));
+                    "image" => {
+                        images.push(anthropic_image_source(part, param)?);
+                    }
+                    "image_url" => {
+                        images.push(anthropic_image_source(part, param)?);
                     }
                     _ => {}
                 }
             }
-            Ok(out)
+            Ok((out, images))
         }
         other => Err(anthropic_error(gpt2apirs_core::AppError::invalid_param(
             format!("content 类型不支持：{other}"),
             param,
         ))),
+    }
+}
+
+/// 从一个 Anthropic 图片块里取出图片来源。
+///
+/// 官方两种写法：`source.type = base64`（带 media_type 与 data）与 `source.type = url`。
+fn anthropic_image_source(
+    part: &Value,
+    param: &str,
+) -> Result<gpt2apirs_generate::inputs::ImageSource, ApiError> {
+    use base64::Engine as _;
+    use gpt2apirs_generate::inputs::ImageSource;
+
+    let source = part.get("source");
+    let kind = source
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("base64");
+    match kind {
+        "url" => {
+            let url = source
+                .and_then(|value| value.get("url"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    anthropic_error(gpt2apirs_core::AppError::invalid_param(
+                        "图片 url 为空",
+                        param,
+                    ))
+                })?;
+            Ok(ImageSource::RemoteUrl(url.to_string()))
+        }
+        _ => {
+            let data = source
+                .and_then(|value| value.get("data"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anthropic_error(gpt2apirs_core::AppError::invalid_param(
+                        "图片缺少 data",
+                        param,
+                    ))
+                })?;
+            let mime = source
+                .and_then(|value| value.get("media_type"))
+                .and_then(Value::as_str)
+                .unwrap_or("image/png")
+                .to_string();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data.trim())
+                .map_err(|_| {
+                    anthropic_error(gpt2apirs_core::AppError::invalid_param(
+                        "图片 data 不是合法 base64",
+                        param,
+                    ))
+                })?;
+            Ok(ImageSource::Inline {
+                data: bytes,
+                filename: String::new(),
+                mime,
+            })
+        }
     }
 }
 
@@ -113,10 +177,11 @@ fn blocks_text(value: &Value, param: &str) -> Result<String, ApiError> {
 fn normalize_parts(
     system: Option<&Value>,
     messages: &[AnthropicMessage],
-) -> Result<Vec<(String, String)>, ApiError> {
+) -> Result<(Vec<(String, String)>, Vec<gpt2apirs_generate::inputs::ImageSource>), ApiError> {
     let mut out: Vec<(String, String)> = Vec::new();
+    let mut images = Vec::new();
     if let Some(system) = system {
-        let text = blocks_text(system, "system")?;
+        let (text, _) = block_content(system, "system")?;
         if !text.trim().is_empty() {
             out.push(("system".to_string(), text));
         }
@@ -132,12 +197,13 @@ fn normalize_parts(
                 )));
             }
         }
-        let text = blocks_text(&message.content, "messages")?;
+        let (text, mut found) = block_content(&message.content, "messages")?;
+        images.append(&mut found);
         if !text.trim().is_empty() {
             out.push((role, text));
         }
     }
-    Ok(out)
+    Ok((out, images))
 }
 
 /// `POST /v1/messages`
@@ -163,8 +229,8 @@ pub async fn create_message(
         )));
     }
 
-    let messages = normalize_parts(request.system.as_ref(), &request.messages)?;
-    if messages.iter().all(|(_, text)| text.trim().is_empty()) {
+    let (messages, images) = normalize_parts(request.system.as_ref(), &request.messages)?;
+    if messages.iter().all(|(_, text)| text.trim().is_empty()) && images.is_empty() {
         return Err(anthropic_error(gpt2apirs_core::AppError::invalid_param(
             "messages 里没有非空文本",
             "messages",
@@ -176,11 +242,11 @@ pub async fn create_message(
 
     // 真流式：命中时直接返回 SSE，不走「先跑完再切块」
     if request.stream.unwrap_or(false) {
-        let handle = start_text_stream(&state, messages.clone(), &model, deadline).await?;
+        let handle = start_text_stream(&state, messages.clone(), images.clone(), &model, deadline).await?;
         return Ok(build_live_stream(handle, &model).into_response());
     }
 
-    let outcome = run_text(&state, &messages, &model, deadline).await?;
+    let outcome = run_text(&state, &messages, &images, &model, deadline).await?;
 
     let input_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
     let output_tokens = gpt2apirs_core::tokens::count_text_tokens(&outcome.result.text, &model);
@@ -228,7 +294,7 @@ pub async fn count_tokens(
         )));
     }
 
-    let messages = normalize_parts(request.system.as_ref(), &request.messages)?;
+    let (messages, _images) = normalize_parts(request.system.as_ref(), &request.messages)?;
     let model = resolve_model(request.model.as_deref());
     let input_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
 

@@ -9,7 +9,7 @@ use anyhow::Result;
 use gpt2apirs_core::Deadline;
 use gpt2apirs_http::Client;
 use gpt2apirs_protocol::conversation::{
-    build_text_conversation_payload, build_text_conversation_payload_messages,
+    build_text_conversation_payload, build_text_conversation_payload_with_images,
 };
 use gpt2apirs_protocol::endpoints::{CONVERSATION, url as upstream_url};
 use gpt2apirs_protocol::text_stream::{TextAccumulator, collect_text};
@@ -35,6 +35,8 @@ pub struct TextRequest {
     pub history: String,
     /// 多轮消息（非空时优先于 `prompt`）。
     pub messages: Vec<(String, String)>,
+    /// 已上传到上游的参考图（挂在最后一条 user 消息上）。
+    pub images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
 }
 
 impl TextRequest {
@@ -47,12 +49,22 @@ impl TextRequest {
             user_agent: DEFAULT_USER_AGENT.to_string(),
             history: String::new(),
             messages: Vec::new(),
+            images: Vec::new(),
         }
     }
 
     /// 带上多轮消息（chat/completions 用）。
     pub fn with_messages(mut self, messages: Vec<(String, String)>) -> Self {
         self.messages = messages;
+        self
+    }
+
+    /// 带上参考图（图文对话用）。
+    pub fn with_images(
+        mut self,
+        images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
+    ) -> Self {
+        self.images = images;
         self
     }
 }
@@ -103,8 +115,9 @@ pub async fn generate_text(
             &if request.messages.is_empty() {
                 build_text_conversation_payload(&request.prompt, &request.upstream_model)
             } else {
-                build_text_conversation_payload_messages(
+                build_text_conversation_payload_with_images(
                     &request.messages,
+                    &request.images,
                     &request.upstream_model,
                 )
             },
@@ -281,7 +294,11 @@ pub async fn generate_text_stream(
     } else {
         request.messages.clone()
     };
-    let payload = build_text_conversation_payload_messages(&messages, &request.upstream_model);
+    let payload = build_text_conversation_payload_with_images(
+        &messages,
+        &request.images,
+        &request.upstream_model,
+    );
 
     let started = client
         .post_sse_stream(
