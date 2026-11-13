@@ -135,7 +135,7 @@ pub async fn edit_images(
     let requested_model = parsed
         .model
         .clone()
-        .unwrap_or_else(|| gpt2apirs_generate::models::default_model().to_string());
+        .unwrap_or_else(|| gpt2apirs_generate::models::default_image_model().to_string());
     let base_url = state.public_base_url(&scheme, &host);
     let deadline = default_request_deadline(&state.settings);
 

@@ -181,8 +181,8 @@ pub async fn submit(
     let requested_model = body
         .model
         .clone()
-        .unwrap_or_else(|| gpt2apirs_generate::models::default_model().to_string());
-    if !gpt2apirs_generate::models::is_supported(&requested_model) {
+        .unwrap_or_else(|| gpt2apirs_generate::models::default_image_model().to_string());
+    if !gpt2apirs_generate::models::is_supported_image(&requested_model) {
         let supported = gpt2apirs_generate::models::SUPPORTED_MODELS.join(", ");
         return Err(ApiError::openai(AppError::invalid_param(
             format!("不支持的模型 {requested_model:?}；当前支持: {supported}"),
@@ -244,11 +244,10 @@ pub async fn get_one(
 ) -> Result<Json<TaskView>, ApiError> {
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ApiError::openai(AppError::invalid_param("任务 id 不是合法 UUID", "id")))?;
-    let task = state.image_tasks.get(uuid).ok_or_else(|| {
-        ApiError::openai(AppError::NotFound {
-            message: "任务不存在".to_string(),
-        })
-    })?;
+    let task = state
+        .image_tasks
+        .get(uuid)
+        .ok_or_else(|| ApiError::openai(AppError::not_found("任务不存在")))?;
     Ok(Json(task_view(&task)))
 }
 
@@ -260,9 +259,7 @@ pub async fn delete(
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ApiError::openai(AppError::invalid_param("任务 id 不是合法 UUID", "id")))?;
     if !state.image_tasks.delete(uuid) {
-        return Err(ApiError::openai(AppError::NotFound {
-            message: "任务不存在".to_string(),
-        }));
+        return Err(ApiError::openai(AppError::not_found("任务不存在")));
     }
     Ok(Json(serde_json::json!({ "deleted": true, "id": id })))
 }

@@ -13,9 +13,10 @@ use crate::state::AppState;
 
 /// 按请求路径决定错误响应格式。
 ///
-/// 按路径选格式：`/v1/messages` → Anthropic，其余 `/v1*` → OpenAI，其他 → 管理面。
+/// 按路径选格式：`/v1/messages` 及其子路径（`count_tokens`）→ Anthropic，
+/// 其余 `/v1*` → OpenAI，其他 → 管理面。
 pub fn error_format_for_path(path: &str) -> ErrorFormat {
-    if path == "/v1/messages" {
+    if path == "/v1/messages" || path.starts_with("/v1/messages/") {
         return ErrorFormat::Anthropic;
     }
     if path == "/v1" || path.starts_with("/v1/") {
@@ -120,30 +121,59 @@ pub async fn require_admin(
     }
 }
 
+/// 从 `x-api-key` 头取 key。
+///
+/// Anthropic 的客户端只发这个头，不发 `Authorization`。空值按缺失处理。
+pub fn extract_x_api_key(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+}
+
+/// 取调用方凭据：`Authorization: Bearer` 优先，其次 `x-api-key`。
+pub fn extract_call_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    let bearer = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    if let Some(token) = extract_bearer_token(bearer) {
+        return Some(token);
+    }
+    // Anthropic 客户端用这个头发 key
+    let x_api_key = headers.get("x-api-key").and_then(|value| value.to_str().ok());
+    extract_x_api_key(x_api_key)
+}
+
 /// axum 中间件：要求 API key。
 ///
 /// 只认数据库里的 API key；后台登录口令在这里一定失败。
+/// 凭据两种形态等价：`Authorization: Bearer <key>` 与 `x-api-key: <key>`。
+/// 错误体按路径选格式 —— `/v1/messages` 的客户端只解析 Anthropic 格式。
 pub async fn require_api_key(
     State(state): State<Arc<AppState>>,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    let header = request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    let Some(token) = extract_bearer_token(header) else {
-        return Err(ApiError::openai(AppError::Unauthorized {
-            message: "缺少 API key".to_string(),
-        }));
+    let format = error_format_for_path(request.uri().path());
+    let Some(token) = extract_call_token(request.headers()) else {
+        return Err(ApiError {
+            error: AppError::Unauthorized {
+                message: "缺少 API key（Authorization: Bearer 或 x-api-key）".to_string(),
+            },
+            format,
+        });
     };
     match state.api_keys.verify(&token).await {
         Ok(Some(_)) => Ok(next.run(request).await),
-        Ok(None) => Err(ApiError::openai(AppError::Unauthorized {
-            message: "API key 无效或已吊销".to_string(),
-        })),
-        Err(error) => Err(ApiError::openai(AppError::Internal(anyhow::anyhow!(
-            "校验 API key 失败: {error}"
-        )))),
+        Ok(None) => Err(ApiError {
+            error: AppError::Unauthorized {
+                message: "API key 无效或已吊销".to_string(),
+            },
+            format,
+        }),
+        Err(error) => Err(ApiError {
+            error: AppError::Internal(anyhow::anyhow!("校验 API key 失败: {error}")),
+            format,
+        }),
     }
 }

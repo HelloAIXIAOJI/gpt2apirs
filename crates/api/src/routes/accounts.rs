@@ -444,9 +444,9 @@ pub async fn update_account(
         .patch(body.id, &patch)
         .await
         .map_err(|error| match error {
-            gpt2apirs_account::AccountError::NotFound(id) => ApiError::openai(AppError::NotFound {
-                message: format!("账号不存在: {id}"),
-            }),
+            gpt2apirs_account::AccountError::NotFound(id) => {
+                ApiError::openai(AppError::not_found(format!("账号不存在: {id}")))
+            }
             other => internal(other),
         })?;
     let _ = state.pool.reload().await;
@@ -576,9 +576,7 @@ pub async fn get_operation(
         .get(id)
         .map(Json)
         .ok_or_else(|| {
-            ApiError::openai(AppError::NotFound {
-                message: format!("操作 {id} 不存在或已过期"),
-            })
+            ApiError::openai(AppError::not_found(format!("操作 {id} 不存在或已过期")))
         })
 }
 
@@ -632,8 +630,8 @@ pub async fn test_account(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| gpt2apirs_generate::models::default_model().to_string());
-    if !gpt2apirs_generate::models::is_supported(&model) {
+        .unwrap_or_else(|| gpt2apirs_generate::models::default_image_model().to_string());
+    if !gpt2apirs_generate::models::is_supported_image(&model) {
         return Err(ApiError::openai(AppError::invalid_param(
             format!("不支持的模型 {model:?}"),
             "model",

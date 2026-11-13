@@ -48,6 +48,26 @@ pub struct MessagesRequest {
     pub tools: Option<Value>,
 }
 
+/// `POST /v1/messages/count_tokens` 的请求体。
+///
+/// 与 [`MessagesRequest`] 的区别：`max_tokens` 不必填（Anthropic 规范如此），
+/// 其余字段含义一致。
+#[derive(Debug, Deserialize)]
+pub struct CountTokensRequest {
+    /// 模型名。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 系统提示：字符串，或 `[{type:"text",text}]`。
+    #[serde(default)]
+    pub system: Option<Value>,
+    /// 消息列表。
+    #[serde(default)]
+    pub messages: Vec<AnthropicMessage>,
+    /// 工具（**不支持**，与 `/v1/messages` 一致）。
+    #[serde(default)]
+    pub tools: Option<Value>,
+}
+
 fn anthropic_error(error: impl Into<gpt2apirs_core::AppError>) -> ApiError {
     ApiError::anthropic(error)
 }
@@ -86,17 +106,22 @@ fn blocks_text(value: &Value, param: &str) -> Result<String, ApiError> {
     }
 }
 
-fn normalize_messages(
-    request: &MessagesRequest,
+/// 把顶层 `system` 与消息列表归一成 `(role, text)`。
+///
+/// `/v1/messages` 与 `/v1/messages/count_tokens` 共用：两边的 token 口径必须一致，
+/// 否则「预估能放下、实际被截断」。
+fn normalize_parts(
+    system: Option<&Value>,
+    messages: &[AnthropicMessage],
 ) -> Result<Vec<(String, String)>, ApiError> {
-    let mut messages: Vec<(String, String)> = Vec::new();
-    if let Some(system) = &request.system {
+    let mut out: Vec<(String, String)> = Vec::new();
+    if let Some(system) = system {
         let text = blocks_text(system, "system")?;
         if !text.trim().is_empty() {
-            messages.push(("system".to_string(), text));
+            out.push(("system".to_string(), text));
         }
     }
-    for message in &request.messages {
+    for message in messages {
         let role = message.role.trim().to_ascii_lowercase();
         match role.as_str() {
             "user" | "assistant" => {}
@@ -109,10 +134,10 @@ fn normalize_messages(
         }
         let text = blocks_text(&message.content, "messages")?;
         if !text.trim().is_empty() {
-            messages.push((role, text));
+            out.push((role, text));
         }
     }
-    Ok(messages)
+    Ok(out)
 }
 
 /// `POST /v1/messages`
@@ -138,7 +163,7 @@ pub async fn create_message(
         )));
     }
 
-    let messages = normalize_messages(&request)?;
+    let messages = normalize_parts(request.system.as_ref(), &request.messages)?;
     if messages.iter().all(|(_, text)| text.trim().is_empty()) {
         return Err(anthropic_error(gpt2apirs_core::AppError::invalid_param(
             "messages 里没有非空文本",
@@ -182,6 +207,33 @@ pub async fn create_message(
         "usage": { "input_tokens": input_tokens, "output_tokens": output_tokens },
     }))
     .into_response())
+}
+
+/// `POST /v1/messages/count_tokens`
+///
+/// 只算不取号：不查账号池、不写调用日志的账号字段、不消耗配额。
+/// 口径与 `/v1/messages` 的 `usage.input_tokens` 完全一致（同一个函数）。
+pub async fn count_tokens(
+    Json(request): Json<CountTokensRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if crate::routes::text_common::has_tools(&request.tools) {
+        return Err(ApiError::anthropic(
+            crate::routes::text_common::tools_not_supported("anthropic.tools"),
+        ));
+    }
+    if request.messages.is_empty() {
+        return Err(anthropic_error(gpt2apirs_core::AppError::invalid_param(
+            "messages 不能为空",
+            "messages",
+        )));
+    }
+
+    let messages = normalize_parts(request.system.as_ref(), &request.messages)?;
+    let model = resolve_model(request.model.as_deref());
+    let input_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
+
+    tracing::debug!(model = %model, input_tokens, "anthropic count_tokens");
+    Ok(Json(json!({ "input_tokens": input_tokens })))
 }
 
 /// 把流式 handle 变成 axum SSE 响应（Anthropic 事件格式）。

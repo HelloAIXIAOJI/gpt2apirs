@@ -37,6 +37,8 @@ pub enum AppError {
     NotFound {
         /// 人类可读消息。
         message: String,
+        /// 覆盖默认错误码（如 `model_not_found`）；`None` 用状态码默认值。
+        code: Option<String>,
     },
 
     /// 冲突（409）。
@@ -136,6 +138,12 @@ impl AppError {
         if let AppError::ServiceUnavailable { code, .. } = self {
             return code.clone();
         }
+        if let AppError::NotFound {
+            code: Some(code), ..
+        } = self
+        {
+            return code.clone();
+        }
         default_error_code(self.status()).to_string()
     }
 
@@ -153,7 +161,7 @@ impl AppError {
             AppError::InvalidRequest { message, .. }
             | AppError::Unauthorized { message }
             | AppError::Forbidden { message }
-            | AppError::NotFound { message }
+            | AppError::NotFound { message, .. }
             | AppError::Conflict { message }
             | AppError::RateLimited { message, .. }
             | AppError::Upstream { message, .. }
@@ -190,6 +198,22 @@ impl AppError {
             message: message.into(),
             param: Some(param.into()),
             code: None,
+        }
+    }
+
+    /// 快捷构造：资源不存在。
+    pub fn not_found(message: impl Into<String>) -> Self {
+        AppError::NotFound {
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    /// 快捷构造：资源不存在，但对外错误码要具体（如 `model_not_found`）。
+    pub fn not_found_coded(message: impl Into<String>, code: impl Into<String>) -> Self {
+        AppError::NotFound {
+            message: message.into(),
+            code: Some(code.into()),
         }
     }
 

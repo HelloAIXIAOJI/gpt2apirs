@@ -206,14 +206,33 @@ async fn models_requires_auth() {
 }
 
 #[tokio::test]
-async fn models_lists_supported_only() {
+async fn models_lists_image_model_and_keeps_text_model_out_of_image_validation() {
     let (status, body) = get_json(state(None), "/v1/models", Some(AUTH_KEY)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["object"], "list");
     let data = body["data"].as_array().expect("data 应为数组");
-    assert!(!data.is_empty());
     let ids: Vec<&str> = data.iter().filter_map(|m| m["id"].as_str()).collect();
-    assert_eq!(ids, vec!["gpt-image-2"], "只应宣告真正支持的模型");
+    assert!(ids.contains(&"gpt-image-2"), "图片模型必须出现在目录里：{ids:?}");
+    // 目录里的文本模型不能反过来变成合法的图片模型
+    let text_ids: Vec<&str> = data
+        .iter()
+        .filter(|m| m["kind"] == "text")
+        .filter_map(|m| m["id"].as_str())
+        .collect();
+    assert!(!text_ids.is_empty(), "目录应包含文本模型");
+    for id in text_ids {
+        let (status, rejected) = post_image(
+            state(None),
+            serde_json::json!({"prompt": "a cat", "model": id}),
+            Some(AUTH_KEY),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "文本模型 {id} 不该被图片接口接受：{rejected}"
+        );
+    }
     for item in data {
         assert_eq!(item["object"], "model");
         assert_eq!(item["owned_by"], "gpt2apirs");

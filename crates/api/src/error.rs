@@ -160,6 +160,15 @@ mod tests {
     }
 
     #[test]
+    fn not_found_code_can_be_overridden() {
+        assert_eq!(AppError::not_found("x").error_code(), "bad_request");
+        let coded = AppError::not_found_coded("模型 x 不存在", "model_not_found");
+        assert_eq!(coded.status(), 404);
+        assert_eq!(coded.error_code(), "model_not_found");
+        assert_eq!(coded.error_type(), "invalid_request_error");
+    }
+
+    #[test]
     fn status_codes_map_correctly() {
         assert_eq!(AppError::invalid("x").status(), 400);
         assert_eq!(AppError::unauthorized("x").status(), 401);
@@ -170,13 +179,7 @@ mod tests {
             .status(),
             403
         );
-        assert_eq!(
-            AppError::NotFound {
-                message: "x".into()
-            }
-            .status(),
-            404
-        );
+        assert_eq!(AppError::not_found("x").status(), 404);
         assert_eq!(
             AppError::RateLimited {
                 message: "x".into(),

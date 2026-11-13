@@ -32,11 +32,16 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // /v1/* 只认 API key；后台登录口令在这里一定失败。
     let v1 = Router::new()
         .route("/v1/models", get(routes::v1_models::list_models))
+        .route("/v1/models/{id}", get(routes::v1_models::get_model))
         .route("/v1/images/generations", post(routes::v1_images::generate))
         .route("/v1/images/edits", post(routes::v1_image_edits::edit_images))
         .route("/v1/chat/completions", post(routes::v1_chat::chat_completions))
         .route("/v1/responses", post(routes::v1_responses::create_response))
         .route("/v1/messages", post(routes::v1_messages::create_message))
+        .route(
+            "/v1/messages/count_tokens",
+            post(routes::v1_messages::count_tokens),
+        )
         .route("/v1/search", post(routes::v1_search::search))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -169,7 +174,5 @@ async fn ping() -> axum::Json<serde_json::Value> {
 
 /// 统一 404。
 async fn not_found() -> ApiError {
-    ApiError::openai(gpt2apirs_core::AppError::NotFound {
-        message: "Not Found".to_string(),
-    })
+    ApiError::openai(gpt2apirs_core::AppError::not_found("Not Found"))
 }
