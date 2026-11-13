@@ -86,6 +86,14 @@ tiktoken-rs = "0.9"
 # .env 加载（与可执行文件同目录）
 dotenvy = "0.15"
 
+# dev/test 只留行号表：默认可执行各带一份上百 MB 的 .pdb，
+# 而测试二进制反复重编会在 build/ 下越堆越多，几周就能吃掉几十 GB。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
