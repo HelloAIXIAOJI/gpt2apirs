@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 
 /// 首页：带 `c/<build>/_` 的 script src 才让 parse_pow_resources 认出 data-build。
 const HOME_HTML: &str = r#"<!doctype html><html><head>
@@ -43,6 +43,22 @@ const FINALIZE_JSON: &str =
 
 /// 会话 SSE：两条 append 补丁 + 结束标记，拼出来是「本地回复」。
 pub const CONVERSATION_SSE: &str = "data: \"v1\"\n\ndata: {\"conversation_id\":\"mock-conv-1\"}\n\ndata: {\"o\":\"patch\",\"v\":[{\"p\":\"/message/content/parts/0\",\"o\":\"append\",\"v\":\"本地\"}]}\n\ndata: {\"o\":\"patch\",\"v\":[{\"p\":\"/message/content/parts/0\",\"o\":\"append\",\"v\":\"回复\"}]}\n\ndata: [DONE]\n\n";
+
+/// 图片链路：会话准备返回的 conduit token。
+pub const CONDUIT_TOKEN: &str = "mock-conduit-token";
+
+/// 图片链路：会话准备响应。
+const PREPARE_CONVERSATION_JSON: &str =
+    r#"{"conduit_token":"mock-conduit-token","status":"ok"}"#;
+
+/// 图片链路：SSE 里要能被识别出的文件 id（`file_` + 8 个 0 + 24 位十六进制）。
+pub const IMAGE_FILE_ID: &str = "file_00000000aabbccddeeff001122334455";
+
+/// 图片链路：会话 id。
+pub const IMAGE_CONVERSATION_ID: &str = "mock-image-conv";
+
+/// 图片链路：下载路径的固定后缀，用于区分「解析地址」与「取字节」。
+pub const IMAGE_ASSET_PATH: &str = "/mock-asset.png";
 
 /// mock 上游的回复正文，测试可直接断言。
 pub const REPLY_TEXT: &str = "本地回复";
@@ -74,6 +90,26 @@ impl MockUpstream {
     }
 }
 
+/// 图片会话 SSE：正文里带 file-service 指针 + conversation_id。
+fn image_sse() -> String {
+    format!(
+        "data: {{\"conversation_id\":\"{IMAGE_CONVERSATION_ID}\"}}\n\n\
+data: {{\"o\":\"patch\",\"v\":[{{\"p\":\"/message/content/parts/0\",\"o\":\"append\",\
+\"v\":\"{{\\\"asset_pointer\\\":\\\"file-service://{IMAGE_FILE_ID}\\\"}}\"}}]}}\n\n\
+data: [DONE]\n\n"
+    )
+}
+
+/// 一张 2x2 的合法 PNG，供下载步骤读取。
+fn png_bytes() -> Vec<u8> {
+    let image = image::RgbImage::from_pixel(2, 2, image::Rgb([10, 20, 30]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    image
+        .write_to(&mut out, image::ImageFormat::Png)
+        .expect("编码 PNG");
+    out.into_inner()
+}
+
 async fn handle(
     State(hits): State<Arc<Mutex<Vec<String>>>>,
     request: Request,
@@ -102,17 +138,38 @@ async fn handle(
         "/" => HOME_HTML.to_string().into_response(),
         p if p.ends_with("/sentinel/chat-requirements/prepare") => json(PREPARE_JSON),
         p if p.ends_with("/sentinel/chat-requirements/finalize") => json(FINALIZE_JSON),
-        "/backend-api/f/conversation" => (
-            [("content-type", "text/event-stream")],
-            CONVERSATION_SSE,
-        )
-            .into_response(),
+        "/backend-api/f/conversation/prepare" => json(PREPARE_CONVERSATION_JSON),
+        "/backend-api/f/conversation" => {
+            // 图片链路一定带 conduit token，文本链路一定不带
+            let is_image = request.headers().contains_key("x-conduit-token");
+            let body = if is_image {
+                image_sse()
+            } else {
+                CONVERSATION_SSE.to_string()
+            };
+            ([("content-type", "text/event-stream")], body).into_response()
+        }
+        p if p.starts_with("/backend-api/files/") && p.ends_with("/download") => {
+            let host = request
+                .headers()
+                .get("host")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("127.0.0.1");
+            json_text(format!(
+                "{{\"download_url\":\"http://{host}{IMAGE_ASSET_PATH}\"}}"
+            ))
+        }
+        IMAGE_ASSET_PATH => ([("content-type", "image/png")], png_bytes()).into_response(),
         other => (
             axum::http::StatusCode::NOT_FOUND,
             format!("mock 未定义该路径: {other}"),
         )
             .into_response(),
     }
+}
+
+fn json_text(body: String) -> Response {
+    ([(axum::http::header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
 fn json(body: &'static str) -> Response {
@@ -191,11 +248,10 @@ pub async fn spawn() -> MockUpstream {
         return existing.clone();
     }
     let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // 兜底路由接住所有路径：图片链路的下载地址是动态的，逐个注册不现实
     let app = Router::new()
-        .route("/", get(handle))
-        .route("/backend-api/f/conversation", post(handle))
-        .route("/backend-api/sentinel/chat-requirements/prepare", post(handle))
-        .route("/backend-api/sentinel/chat-requirements/finalize", post(handle))
+        .route("/", get(handle).post(handle))
+        .fallback(handle)
         .with_state(hits.clone());
 
     // 服务必须活过**任何一个**用例的运行时：用例各自 new 一个 Runtime，
