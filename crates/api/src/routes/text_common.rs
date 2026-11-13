@@ -1,8 +1,10 @@
 //! 三个文本端点（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）的共用流程。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use gpt2apirs_account::{PoolError, SelectionFilter};
+use gpt2apirs_account::{AccountLease, PoolError, SelectionFilter};
+use gpt2apirs_generate::error::GenerateError;
 use gpt2apirs_core::{AppError, Deadline};
 use gpt2apirs_generate::FlowDiagnostics;
 use gpt2apirs_generate::models;
@@ -33,6 +35,122 @@ pub fn dispatch_messages(
         crate::routes::rich_text::apply_guard(&mut dispatch);
     }
     (dispatch, billing)
+}
+
+/// 池层失败转对外错误。
+///
+/// 「池里没号」必须和「上游失败」分开：前者是运维该去导号，后者是上游问题。
+fn pool_error(error: PoolError) -> ApiError {
+    match error {
+        PoolError::NoCandidate { .. } => ApiError::openai(AppError::ServiceUnavailable {
+            message: "无可用账号，请先通过 POST /api/accounts 导入".to_string(),
+            code: "no_available_account".to_string(),
+        }),
+        PoolError::DeadlineExceeded => ApiError::openai(AppError::ServiceUnavailable {
+            message: "等待账号槽位超时，请稍后重试".to_string(),
+            code: "account_pool_timeout".to_string(),
+        }),
+        other => ApiError::openai(AppError::Internal(anyhow::anyhow!("{other}"))),
+    }
+}
+
+/// 上游失败转对外错误。
+///
+/// 分类由 generate 层给出；拿不到分类说明错误在传输层，按可重试处理。
+fn upstream_error(error: Option<anyhow::Error>) -> ApiError {
+    let message = error
+        .as_ref()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "上游未返回结果".to_string());
+    let classified = error
+        .as_ref()
+        .and_then(|value| value.downcast_ref::<GenerateError>());
+    ApiError::openai(AppError::Upstream {
+        message,
+        code: classified
+            .map(|failure| failure.kind.code().to_string())
+            .unwrap_or_else(|| "upstream_error".to_string()),
+        retryable: classified.map(|failure| failure.kind.retryable()).unwrap_or(true),
+        status: 502,
+    })
+}
+
+fn attempts_limit(state: &AppState) -> usize {
+    state
+        .settings
+        .get_i64("text_max_account_attempts")
+        .max(1) as usize
+}
+
+/// 取号 + 执行，失败按分类换号重试。
+///
+/// 与生图那条 `image_flow::with_retry` 是同一套判断（`switch_account` 决定要不要换），
+/// 差别只有两处：筛选用文本用途（允许 limited 账号）、记账走 `mark_text_result`（不扣图片配额）。
+/// **成功不在这里记账**：流式要等流结束才算成功，由调用方决定时机。
+async fn with_text_retry<T, F, Fut>(
+    state: &Arc<AppState>,
+    deadline: Deadline,
+    mut op: F,
+) -> Result<(T, uuid::Uuid, AccountLease), ApiError>
+where
+    F: FnMut(Arc<gpt2apirs_http::Client>, String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let max_attempts = attempts_limit(state);
+    let mut excluded: HashSet<uuid::Uuid> = HashSet::new();
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for _ in 0..max_attempts {
+        let filter = SelectionFilter {
+            exclude: excluded.clone(),
+            ..SelectionFilter::for_text()
+        };
+        let lease = match state.pool.acquire(&filter, deadline).await {
+            Ok(lease) => lease,
+            // 排除掉失败账号后没号了：把上一次的失败原因带出去
+            Err(PoolError::NoCandidate { .. }) if !excluded.is_empty() => break,
+            Err(error) => return Err(pool_error(error)),
+        };
+        let account_id = lease.id();
+        crate::call_log::note_account(account_id);
+
+        let client = state
+            .client_for(lease.account().proxy.trim())
+            .map_err(|error| {
+                ApiError::openai(AppError::Internal(anyhow::anyhow!(
+                    "代理客户端构建失败：{error}"
+                )))
+            })?;
+        let token = lease.access_token().to_string();
+
+        match op(client, token).await {
+            Ok(value) => return Ok((value, account_id, lease)),
+            Err(error) => {
+                let _ = state.pool.mark_text_result(account_id, false).await;
+                let classified = error.downcast_ref::<GenerateError>();
+                if let Some(failure) = classified {
+                    if failure.kind.blames_account() {
+                        state
+                            .pool
+                            .handle_invalid(account_id, &failure.message)
+                            .await
+                            .ok();
+                    }
+                    if !failure.kind.switch_account() {
+                        // 内容策略 / 验证码：换号没用，立刻停
+                        last_error = Some(error);
+                        break;
+                    }
+                }
+                tracing::warn!(account = %account_id, %error, "文本生成失败，换号重试");
+                excluded.insert(account_id);
+                last_error = Some(error);
+            }
+        }
+        drop(lease);
+    }
+
+    Err(upstream_error(last_error))
 }
 
 /// 一次文本生成的产物（已记账、槽位已归还）。
@@ -77,54 +195,21 @@ pub async fn run_text(
         });
     }
 
-    let lease = state
-        .pool
-        .acquire(&SelectionFilter::for_text(), deadline)
-        .await
-        .map_err(|error| match error {
-            PoolError::NoCandidate { .. } => ApiError::openai(AppError::ServiceUnavailable {
-                message: "无可用账号，请先通过 POST /api/accounts 导入".to_string(),
-                code: "no_available_account".to_string(),
-            }),
-            PoolError::DeadlineExceeded => ApiError::openai(AppError::ServiceUnavailable {
-                message: "等待账号槽位超时，请稍后重试".to_string(),
-                code: "account_pool_timeout".to_string(),
-            }),
-            other => ApiError::openai(AppError::Internal(anyhow::anyhow!("{other}"))),
-        })?;
-    let account_id = lease.id();
-    crate::call_log::note_account(account_id);
-
     let mut request = TextRequest::new(String::new()).with_messages(messages.to_vec());
     request.model = requested_model.to_string();
     request.upstream_model = models::upstream_model_for(requested_model).to_string();
 
-    let client = state.client_for(lease.account().proxy.trim()).map_err(|error| {
-        ApiError::openai(AppError::Internal(anyhow::anyhow!("代理客户端构建失败：{error}")))
-    })?;
-    let outcome = generate_text(&client, lease.access_token(), &request, deadline).await;
-    let succeeded = outcome.is_ok();
+    // 换号重试：401/限流/配额这类换号有意义的失败会换下一个账号
+    let ((mut result, diag), account_id, lease) = with_text_retry(state, deadline, |client, token| {
+        let request = request.clone();
+        async move { generate_text(client.as_ref(), &token, &request, deadline).await }
+    })
+    .await?;
     // 文本记账不扣图片配额：两套额度互相独立
-    let _ = state.pool.mark_text_result(account_id, succeeded).await;
+    let _ = state.pool.mark_text_result(account_id, true).await;
     drop(lease);
 
-    let (result, diag) = outcome.map_err(|error| {
-        tracing::warn!(account = %account_id, %error, "文本生成失败");
-        // 分类来自 generate 层；流式路径一直用它，非流式曾经固定成 upstream_error，
-        // 同一个失败在两个路径报不同错误码
-        let classified = error.downcast_ref::<gpt2apirs_generate::error::GenerateError>();
-        ApiError::openai(AppError::Upstream {
-            message: error.to_string(),
-            code: classified
-                .map(|failure| failure.kind.code().to_string())
-                .unwrap_or_else(|| "upstream_error".to_string()),
-            retryable: classified.map(|failure| failure.kind.retryable()).unwrap_or(true),
-            status: 502,
-        })
-    })?;
-
     // 输出侧：剥掉模型坚持要发的自闭合富文本组件
-    let mut result = result;
     if policy.strip() {
         let stripped = crate::routes::rich_text::strip_rich_text(&result.text);
         if stripped.removed > 0 {
@@ -243,24 +328,6 @@ pub async fn start_text_stream(
 ) -> Result<StreamHandle, ApiError> {
     use futures_util::StreamExt;
 
-    let lease = state
-        .pool
-        .acquire(&SelectionFilter::for_text(), deadline)
-        .await
-        .map_err(|error| match error {
-            PoolError::NoCandidate { .. } => ApiError::openai(AppError::ServiceUnavailable {
-                message: "无可用账号，请先通过 POST /api/accounts 导入".to_string(),
-                code: "no_available_account".to_string(),
-            }),
-            PoolError::DeadlineExceeded => ApiError::openai(AppError::ServiceUnavailable {
-                message: "等待账号槽位超时，请稍后重试".to_string(),
-                code: "account_pool_timeout".to_string(),
-            }),
-            other => ApiError::openai(AppError::Internal(anyhow::anyhow!("{other}"))),
-        })?;
-    let account_id = lease.id();
-    crate::call_log::note_account(account_id);
-
     // ---- 富文本策略（流式同样注入 guard，输出侧用增量剥离器）----
     let policy = rich_text_policy(state);
     let (dispatch, billing) = dispatch_messages(policy, messages);
@@ -269,25 +336,21 @@ pub async fn start_text_stream(
     request.model = requested_model.to_string();
     request.upstream_model = models::upstream_model_for(requested_model).to_string();
 
-    let stream_client = state.client_for(lease.account().proxy.trim()).map_err(|error| {
-        ApiError::openai(AppError::Internal(anyhow::anyhow!("代理客户端构建失败：{error}")))
-    })?;
-    let stream = gpt2apirs_generate::text::generate_text_stream(
-        stream_client.as_ref(),
-        lease.access_token(),
-        &request,
-        deadline,
-    )
-    .await
-    .map_err(|error| {
-        tracing::warn!(account = %account_id, %error, "文本流式生成失败");
-        ApiError::openai(AppError::Upstream {
-            message: error.to_string(),
-            code: error.kind.code().to_string(),
-            retryable: error.kind.retryable(),
-            status: 502,
-        })
-    })?;
+    // 起流之前失败还能换号；流开始之后就不再重试（部分内容已经吐出去了）
+    let (stream, account_id, lease) = with_text_retry(state, deadline, |client, token| {
+        let request = request.clone();
+        async move {
+            gpt2apirs_generate::text::generate_text_stream(
+                client.as_ref(),
+                &token,
+                &request,
+                deadline,
+            )
+            .await
+            .map_err(anyhow::Error::from)
+        }
+    })
+    .await?;
 
     let snapshot = stream.snapshot.clone();
     let pool = state.pool.clone();

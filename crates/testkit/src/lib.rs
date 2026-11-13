@@ -118,6 +118,18 @@ async fn handle(
     if let Ok(mut guard) = hits.lock() {
         guard.push(path.clone());
     }
+    // 「前 N 次失败」要在路由之前判定：每次命中消耗一次配额
+    if path == "/backend-api/f/conversation"
+        && let Some(Fault::FailFirstConversations { status, .. }) = current_fault()
+    {
+        let left = REMAINING_FAILURES.load(std::sync::atomic::Ordering::SeqCst);
+        if left > 0 {
+            REMAINING_FAILURES.store(left - 1, std::sync::atomic::Ordering::SeqCst);
+            let code = axum::http::StatusCode::from_u16(status)
+                .unwrap_or(axum::http::StatusCode::UNAUTHORIZED);
+            return (code, "{\"detail\":\"mock: fail-first\"}".to_string()).into_response();
+        }
+    }
     match current_fault() {
         Some(Fault::Status { path_contains, status, body }) if path.contains(path_contains) => {
             let code = axum::http::StatusCode::from_u16(status)
@@ -201,9 +213,23 @@ pub enum Fault {
     },
     /// 会话 SSE 只发前 N 字节就以 200 结束（模拟中途断流）。
     TruncateSse(usize),
+    /// 前 `times` 次会话请求返回 401，之后恢复正常。
+    ///
+    /// 用来验证「换号重试」：第一个账号吃到 401，网关应换下一个账号重试。
+    /// 401 带 `blames_account()` 语义，所以换号之后还要能落账。
+    FailFirstConversations {
+        /// 失败次数。
+        times: usize,
+        /// 返回的状态码。
+        status: u16,
+    },
 }
 
 static FAULT: Mutex<Option<Fault>> = Mutex::new(None);
+
+/// `FailFirstConversations` 的剩余失败次数。
+static REMAINING_FAILURES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 fn current_fault() -> Option<Fault> {
     FAULT.lock().ok().and_then(|guard| *guard)
@@ -213,6 +239,11 @@ fn set_fault(fault: Option<Fault>) {
     if let Ok(mut guard) = FAULT.lock() {
         *guard = fault;
     }
+    let remaining = match fault {
+        Some(Fault::FailFirstConversations { times, .. }) => times,
+        _ => 0,
+    };
+    REMAINING_FAILURES.store(remaining, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// 故障注入期间持有的串行令牌；**丢弃时自动清除故障**。

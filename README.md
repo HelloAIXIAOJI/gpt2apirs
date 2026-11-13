@@ -237,7 +237,7 @@ python tools\account_gui.py
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/settings` | 读全部设置：**13 项数值** + **2 项字符串**（含 `rich_text_policy`）|
+| GET | `/api/settings` | 读全部设置：**14 项数值** + **2 项字符串**（含 `rich_text_policy`）|
 | PUT | `/api/settings` | 改设置：**先全校验 → 再落库 → 热重载**；未知键拒收（`unknown_setting_key`）|
 
 > `PUT` 的校验顺序是刻意的：半途失败不会留下改了一半的设置。
@@ -315,9 +315,13 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-generate,--feature
 :: 故障分类：401 / 429 / 配额 / 内容策略 / SSE 断流
 powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-generate,--features,tls,--test,mock_faults
 powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_faults_api
+
+:: 换号重试：第一个账号 401，第二个必须接手
+powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_switch_account_live
 ```
 
-后两条需要 `DATABASE_URL`（账号池读库），缺则自动跳过。
+后三条需要 `DATABASE_URL`（账号池读库），缺则自动跳过。
+换号用例造的账号必须带 future `exp` 的 JWT，否则池子的凭证准入会跳过它们。
 
 ---
 
