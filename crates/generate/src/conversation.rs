@@ -6,7 +6,7 @@
 use gpt2apirs_core::Deadline;
 use gpt2apirs_http::Client;
 use gpt2apirs_protocol::conversation::{parse_conversation_detail, ConversationDetail};
-use gpt2apirs_protocol::endpoints::BASE_URL;
+use gpt2apirs_protocol::endpoints::{base_url, url as upstream_url};
 
 use crate::error::{GenerateError, classify_http};
 use crate::stage_budget;
@@ -29,9 +29,9 @@ pub async fn fetch_conversation_payload(
     let mut headers: Vec<(&'static str, String)> =
         gpt2apirs_http::api_headers(user_agent, token, &path);
     headers.retain(|(name, _)| !name.eq_ignore_ascii_case("referer"));
-    headers.push(("Referer", format!("{BASE_URL}/c/{conversation_id}")));
+    headers.push(("Referer", format!("{}/c/{conversation_id}", base_url())));
     let response = client
-        .get_text(&format!("{BASE_URL}{path}"), &headers, Some(budget))
+        .get_text(&upstream_url(&path), &headers, Some(budget))
         .await
         .map_err(|error| {
             GenerateError::new(crate::error::FailureKind::Network, format!("会话详情请求失败: {error}"))

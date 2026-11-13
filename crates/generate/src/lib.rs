@@ -29,7 +29,8 @@ use gpt2apirs_protocol::download::{
     plan_download_targets,
 };
 use gpt2apirs_protocol::endpoints::{
-    BASE_URL, CONVERSATION, CONVERSATION_PREPARE, HOME, SENTINEL_FINALIZE, SENTINEL_PREPARE,
+    CONVERSATION, CONVERSATION_PREPARE, HOME, SENTINEL_FINALIZE, SENTINEL_PREPARE, base_url,
+    url as upstream_url,
 };
 use gpt2apirs_protocol::pow::{build_legacy_requirements_token, build_proof_token};
 use gpt2apirs_protocol::pow_config::build_pow_config;
@@ -337,7 +338,7 @@ pub async fn handshake(
     // ---- 1. bootstrap ----
     let budget = stage_budget(deadline, "bootstrap", stage_caps::BOOTSTRAP)?;
     let home = client
-        .get_text(&format!("{BASE_URL}{HOME}"), &headers, Some(budget))
+        .get_text(&upstream_url(HOME), &headers, Some(budget))
         .await?;
     diag.bootstrap_status = home.status;
     diag.html_len = home.body.len();
@@ -358,7 +359,7 @@ pub async fn handshake(
     let budget = stage_budget(deadline, "sentinel_prepare", stage_caps::SENTINEL)?;
     let prepare = client
         .post_json(
-            &format!("{BASE_URL}{SENTINEL_PREPARE}"),
+            &upstream_url(SENTINEL_PREPARE),
             &gpt2apirs_http::api_headers(user_agent, token, SENTINEL_PREPARE),
             &build_prepare_payload(&p_token),
             Some(budget),
@@ -397,7 +398,7 @@ pub async fn handshake(
     let budget = stage_budget(deadline, "sentinel_finalize", stage_caps::SENTINEL)?;
     let finalize = client
         .post_json(
-            &format!("{BASE_URL}{SENTINEL_FINALIZE}"),
+            &upstream_url(SENTINEL_FINALIZE),
             &gpt2apirs_http::api_headers(user_agent, token, SENTINEL_FINALIZE),
             &build_finalize_payload(&prepared.prepare_token, &proof_token, ""),
             Some(budget),
@@ -439,7 +440,7 @@ async fn generate_one(
     let budget = stage_budget(deadline, "conversation_prepare", stage_caps::CONVERSATION_PREPARE)?;
     let prep = client
         .post_json(
-            &format!("{BASE_URL}{CONVERSATION_PREPARE}"),
+            &upstream_url(CONVERSATION_PREPARE),
             &image_headers(
                 &request.user_agent,
                 token,
@@ -478,7 +479,7 @@ async fn generate_one(
     let budget = stage_budget(deadline, "sse", stage_caps::SSE)?;
     let sse = client
         .post_sse(
-            &format!("{BASE_URL}{CONVERSATION}"),
+            &upstream_url(CONVERSATION),
             &image_headers(
                 &request.user_agent,
                 token,
@@ -596,7 +597,7 @@ async fn download_urls(
 ) -> std::result::Result<(), GenerateError> {
     for url in urls {
         let mut headers = vec![("User-Agent", user_agent.to_string())];
-        if is_same_origin(BASE_URL, url) {
+        if is_same_origin(base_url(), url) {
             headers.push(("Authorization", auth.to_string()));
         }
         let Ok(budget) = stage_budget(deadline, "download", stage_caps::DOWNLOAD) else {
@@ -824,13 +825,13 @@ async fn resolve_url(
         ("User-Agent", user_agent.to_string()),
         ("Accept", "application/json".to_string()),
         ("Authorization", auth.to_string()),
-        ("Origin", BASE_URL.to_string()),
-        ("Referer", format!("{BASE_URL}/")),
+        ("Origin", base_url().to_string()),
+        ("Referer", format!("{}/", base_url())),
         ("X-OpenAI-Target-Path", path.to_string()),
         ("X-OpenAI-Target-Route", path.to_string()),
     ];
     let response = client
-        .get_text(&format!("{BASE_URL}{path}"), &headers, Some(budget))
+        .get_text(&upstream_url(path), &headers, Some(budget))
         .await?;
     if response.status != 200 {
         return Ok(None);

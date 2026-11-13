@@ -58,6 +58,13 @@ async fn run() -> Result<()> {
     for warning in &config.warnings {
         tracing::warn!("{warning}");
     }
+    if let Some(upstream) = gpt2apirs_protocol::endpoints::base_url_override() {
+        tracing::warn!(
+            upstream,
+            env = gpt2apirs_protocol::endpoints::BASE_URL_ENV,
+            "上游站点被环境变量覆盖，所有出站请求都不会打到默认主机"
+        );
+    }
 
     // 数据目录（顺带创建，失败早报）
     match paths::data_dir() {

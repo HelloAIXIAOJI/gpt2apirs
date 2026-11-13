@@ -33,7 +33,10 @@ pub use conversation::{
     DEFAULT_MODEL, build_conversation_payload, build_conversation_prepare_payload,
     parse_conduit_token,
 };
-pub use endpoints::{BASE_URL, CONVERSATION, CONVERSATION_PREPARE, SENTINEL_FINALIZE, SENTINEL_PREPARE};
+pub use endpoints::{
+    BASE_URL, BASE_URL_ENV, CONVERSATION, CONVERSATION_PREPARE, SENTINEL_FINALIZE,
+    SENTINEL_PREPARE, base_url, base_url_override, url,
+};
 pub use sentinel::{
     PowChallenge, SentinelFinalize, SentinelPrepare, build_finalize_payload,
     build_prepare_payload, parse_finalize, parse_prepare,
