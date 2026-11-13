@@ -32,4 +32,4 @@ pub use accounts::{
 };
 pub use v1_image_edits::edit_images;
 pub use v1_images::{ImageGenerationRequest, ImageGenerationResponse, generate};
-pub use v1_models::list_models;
+pub use v1_models::{get_model, list_models};

@@ -222,3 +222,55 @@ async fn created_key_works_and_revoked_key_stops_working() {
     let (status, _, _) = send(state, "GET", "/v1/models", None, Some(&plaintext), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "吊销后的 key 必须失效");
 }
+
+#[tokio::test]
+async fn x_api_key_header_works_like_bearer() {
+    // Anthropic 客户端只发 x-api-key，不发 Authorization
+    let (state, api_key) = state();
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/models")
+                .header("x-api-key", &api_key)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("响应");
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn x_api_key_header_cannot_enter_admin() {
+    let (state, api_key) = state();
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/keys")
+                .header("x-api-key", &api_key)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("响应");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "x-api-key 不该能进后台");
+}
+
+#[tokio::test]
+async fn x_api_key_with_admin_key_still_fails_v1() {
+    let (state, _) = state();
+    let response = build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/models")
+                .header("x-api-key", ADMIN_KEY)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("响应");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "登录口令不该因换个头就通过");
+}

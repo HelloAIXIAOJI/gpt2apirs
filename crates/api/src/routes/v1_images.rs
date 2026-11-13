@@ -150,8 +150,8 @@ pub async fn generate(
     let requested_model = body
         .model
         .clone()
-        .unwrap_or_else(|| gpt2apirs_generate::models::default_model().to_string());
-    if !gpt2apirs_generate::models::is_supported(&requested_model) {
+        .unwrap_or_else(|| gpt2apirs_generate::models::default_image_model().to_string());
+    if !gpt2apirs_generate::models::is_supported_image(&requested_model) {
         let supported = gpt2apirs_generate::models::SUPPORTED_MODELS.join(", ");
         let mut message = format!("不支持的模型 {requested_model:?}；当前支持: {supported}");
         if gpt2apirs_generate::models::NOT_YET_SUPPORTED_MODELS

@@ -85,7 +85,8 @@ if ($existing -ne $content) {
 $env:CMAKE_GENERATOR = 'Ninja'
 $env:CMAKE_TOOLCHAIN_FILE = $toolchain
 
-$cargo = @($CargoArgs)
+# powershell -File 把 "a,b,c" 整体塞进一个元素，这里拆开
+$cargo = @($CargoArgs | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' })
 if ($Release -and $cargo -notcontains '--release') { $cargo += '--release' }
 
 Write-Host "cargo $($cargo -join ' ')"

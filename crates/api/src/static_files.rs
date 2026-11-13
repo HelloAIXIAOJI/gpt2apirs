@@ -32,9 +32,7 @@ pub async fn serve_image(
                 ([(header::CONTENT_TYPE, mime)], bytes).into_response()
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                ApiError::openai(AppError::NotFound {
-                    message: "图片不存在".to_string(),
-                })
+                ApiError::openai(AppError::not_found("图片不存在"))
                 .into_response()
             }
             Err(err) => {
@@ -50,9 +48,7 @@ pub async fn serve_image(
 fn resolve_path(relative: &str) -> Result<PathBuf, ApiError> {
     let cleaned = relative.trim_start_matches('/');
     if cleaned.is_empty() {
-        return Err(ApiError::openai(AppError::NotFound {
-            message: "图片不存在".to_string(),
-        }));
+        return Err(ApiError::openai(AppError::not_found("图片不存在")));
     }
     // 拒绝路径穿越
     if cleaned.split(['/', '\\']).any(|segment| segment == "..") {

@@ -25,7 +25,10 @@
 | 起服务（.env → 配置 → 日志 → 池 → 迁移 → HTTP） | ✅ | 启动 10 步日志全过 |
 | `POST /v1/images/generations`（`b64_json`） | ✅ | 14.7s / 1,882,214 字节 PNG / 1312×1199 |
 | `POST /v1/images/generations`（`url`） | ✅ | 96.9s / 2,273,901 字节 / 1402×1122 |
-| `GET /v1/models` | ✅ | 只宣告真正支持的模型 |
+| `GET /v1/models` | ✅ | 文本 + 图片两个模型，带 `kind`；只宣告真正支持的 |
+| `GET /v1/models/{id}` | ✅ | 未知 id → 404 `model_not_found`（与列表口径一致）|
+| `POST /v1/messages/count_tokens` | ✅ | 离线可验：`hello` → 8，与 usage 同一条 tiktoken 口径 |
+| `x-api-key` 头 | ✅ | 与 Bearer 等价；进后台仍然 401 |
 | `GET /images/{path}` 静态服务 | ✅ | 路径穿越防护 + MIME 正确 |
 | `GET /health` `/health/ready` `/version` | ✅ | 就绪探针 DB 不可用返回 503 |
 | PostgreSQL 迁移 | ✅ | 可重复执行，幂等 |
@@ -180,13 +183,18 @@ python tools\account_gui.py
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/v1/models` | 模型列表（只列真正支持的） |
+| GET | `/v1/models` | 模型列表（文本 + 图片，带 `kind`；只列真正支持的） |
+| GET | `/v1/models/{id}` | 单个模型；未知 id 返回 404 `model_not_found` |
 | POST | `/v1/images/generations` | 文生图（`b64_json` / `url`；`output_format` = png / jpeg / webp / gif，gif 配 `frame_count` / `frame_duration_ms`） |
 | POST | `/v1/images/edits` | **图生图**（multipart / JSON，支持 mask；同样支持 `output_format`） |
 | POST | `/v1/chat/completions` | **文本对话**（流式 + 非流式，真实 token 计数） |
 | POST | `/v1/responses` | **OpenAI Responses API**（`input` / `instructions`）|
 | POST | `/v1/search` | **联网搜索**（返回答案 + 来源，URL 已去追踪参数）|
 | POST | `/v1/messages` | **Anthropic Messages API**（`system` / `max_tokens`，事件流格式对齐）|
+| POST | `/v1/messages/count_tokens` | 只算 token 不取号，口径与 `/v1/messages` 的 `usage.input_tokens` 同一函数 |
+
+> `/v1/*` 的 API key 两种头都收：`Authorization: Bearer <key>` 与 `x-api-key: <key>`（后者给 Anthropic 客户端）。
+> 鉴权失败的响应体也按路径选格式：`/v1/messages*` 是 Anthropic 的 `{"type":"error",…}`，其余 `/v1/*` 是 OpenAI 的 `{"error":{…}}`。
 
 ### 账号池管理
 
