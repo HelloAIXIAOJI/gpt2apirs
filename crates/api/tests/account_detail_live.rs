@@ -18,7 +18,11 @@ use uuid::Uuid;
 
 mod support;
 
-const CASE_PREFIX: &str = "gpt2apirs-detail-";
+// 每个用例独占一个前缀：setup 会先清理自己前缀下的残留，
+// 共用前缀时并行跑会把别的用例刚建的账号删掉（实测报 404 而非 200）。
+const PREFIX_DETAIL: &str = "gpt2apirs-detail-one-";
+const PREFIX_MISSING: &str = "gpt2apirs-detail-missing-";
+const PREFIX_SCOPE: &str = "gpt2apirs-detail-scope-";
 
 /// 登录口令：与管理面其它用例一致，从环境变量取。
 fn admin_key() -> String {
@@ -63,8 +67,8 @@ async fn make_account(pool: &PgPool, token: &str, email: &str) -> Uuid {
 /// 详情返回的字段必须与入库的一致，且结构与列表项相同。
 #[tokio::test]
 async fn detail_returns_the_account() {
-    let Some((state, pool)) = support::setup_with(CASE_PREFIX).await else { return };
-    let token = format!("{CASE_PREFIX}detail");
+    let Some((state, pool)) = support::setup_with(PREFIX_DETAIL).await else { return };
+    let token = format!("{PREFIX_DETAIL}detail");
     let id = make_account(&pool, &token, "detail@test.local").await;
 
     let (status, body) = get(&state, &format!("/api/accounts/{id}")).await;
@@ -80,13 +84,13 @@ async fn detail_returns_the_account() {
         "详情不能把 access_token 明文泄出去：{body}"
     );
 
-    support::cleanup_with(&pool, CASE_PREFIX).await;
+    support::cleanup_with(&pool, PREFIX_DETAIL).await;
 }
 
 /// 不存在的 id → 404，而不是空对象或 500。
 #[tokio::test]
 async fn missing_account_is_404() {
-    let Some((state, pool)) = support::setup_with(CASE_PREFIX).await else { return };
+    let Some((state, pool)) = support::setup_with(PREFIX_MISSING).await else { return };
     let missing = Uuid::new_v4();
 
     let (status, body) = get(&state, &format!("/api/accounts/{missing}")).await;
@@ -96,16 +100,18 @@ async fn missing_account_is_404() {
         .or_else(|| body["detail"]["message"].as_str())
         .unwrap_or("");
     assert!(message.contains("账号不存在"), "{body}");
+    // 404 不该报成 bad_request —— 客户端靠 code 分支
+    assert_eq!(body["error"]["code"], "account_not_found", "{body}");
 
-    support::cleanup_with(&pool, CASE_PREFIX).await;
+    support::cleanup_with(&pool, PREFIX_MISSING).await;
 }
 
 /// 取的是路径里那个账号，不是「随便一个」。
 #[tokio::test]
 async fn detail_is_scoped_to_the_path_id() {
-    let Some((state, pool)) = support::setup_with(CASE_PREFIX).await else { return };
-    let first = make_account(&pool, &format!("{CASE_PREFIX}a"), "a@test.local").await;
-    let second = make_account(&pool, &format!("{CASE_PREFIX}b"), "b@test.local").await;
+    let Some((state, pool)) = support::setup_with(PREFIX_SCOPE).await else { return };
+    let first = make_account(&pool, &format!("{PREFIX_SCOPE}a"), "a@test.local").await;
+    let second = make_account(&pool, &format!("{PREFIX_SCOPE}b"), "b@test.local").await;
 
     let (status, body) = get(&state, &format!("/api/accounts/{second}")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -113,5 +119,5 @@ async fn detail_is_scoped_to_the_path_id() {
     assert_eq!(body["email"], "b@test.local", "{body}");
     assert_ne!(body["id"], first.to_string(), "{body}");
 
-    support::cleanup_with(&pool, CASE_PREFIX).await;
+    support::cleanup_with(&pool, PREFIX_SCOPE).await;
 }
