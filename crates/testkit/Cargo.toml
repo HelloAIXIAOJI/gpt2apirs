@@ -14,3 +14,4 @@ axum = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 gpt2apirs-protocol = { workspace = true }
+image = { workspace = true }
