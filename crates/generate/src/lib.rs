@@ -133,6 +133,10 @@ pub struct ImageRequest {
     pub frame_count: Option<u32>,
     /// 动图每帧时长（毫秒，仅 GIF 有意义）。
     pub frame_duration_ms: Option<u32>,
+    /// 目标尺寸（`宽x高`，已校验）。`None` 表示不干预。
+    ///
+    /// **上游没有尺寸参数**：这里只拼进提示词当倾向，不保证精确。
+    pub size: Option<String>,
     /// 参考图（**已上传到上游**）。非空即图生图。
     ///
     /// 上传必须在拿到账号 token 之后做，所以由调用方先上传再填这里 ——
@@ -151,6 +155,7 @@ impl ImageRequest {
             upstream_model: DEFAULT_MODEL.to_string(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
             n: 1,
+            size: None,
             output_format: None,
             frame_count: None,
             frame_duration_ms: None,
@@ -168,24 +173,23 @@ impl ImageRequest {
         self
     }
 
-    /// 真正发给上游的提示词：原文 + 格式/帧指令。
+    /// 真正发给上游的提示词：原文 + 格式/帧/尺寸指令。
+    ///
+    /// 这是提示词的**唯一装配点**：新增参数要影响上游，就加在这里，别在调用方另拼。
     pub fn effective_prompt(&self) -> String {
-        let Some(format) = self.output_format else {
-            // 没指定格式就不该改动提示词；帧参数单独给也只追加帧行。
-            if self.frame_count.is_none() && self.frame_duration_ms.is_none() {
-                return self.prompt.clone();
-            }
-            let mut lines = Vec::new();
-            if let Some(count) = self.frame_count {
-                lines.push(format!("frame_count: {count}"));
-            }
-            if let Some(duration) = self.frame_duration_ms {
-                lines.push(format!("frame_duration_ms: {duration}"));
-            }
-            return crate::format::with_prompt_hints(&self.prompt, &lines.join("\n"));
-        };
-        let hints = crate::format::prompt_hints(format, self.frame_count, self.frame_duration_ms);
+        let hints = crate::format::prompt_hints(
+            self.output_format,
+            self.frame_count,
+            self.frame_duration_ms,
+            self.size.as_deref(),
+        );
         crate::format::with_prompt_hints(&self.prompt, &hints)
+    }
+
+    /// 带上目标尺寸（调用方保证已校验成 `宽x高`）。
+    pub fn with_size(mut self, size: Option<String>) -> Self {
+        self.size = size;
+        self
     }
 
     /// 指定输出格式。

@@ -41,7 +41,7 @@ async fn image_pipeline_runs_against_local_mock() {
     let mock = spawn().await;
 
     let client = Client::new(ClientOptions::default()).expect("客户端");
-    let request = ImageRequest::new("画一只猫");
+    let request = ImageRequest::new("画一只猫").with_size(Some("1024x1024".to_string()));
     let deadline = Deadline::after(Duration::from_secs(30));
 
     let (result, diag) = generate_images(&client, "mock-token", &request, deadline)
@@ -55,6 +55,28 @@ async fn image_pipeline_runs_against_local_mock() {
         result.file_ids
     );
     assert_eq!(result.images.len(), 1, "应下载并落盘一张图");
+
+    // 尺寸不是上游参数，只能体现在提示词里：断言它真的到了 payload 里
+    let payload = mock
+        .last_body("/backend-api/f/conversation")
+        .expect("应请求过会话端点");
+    let parsed: serde_json::Value = serde_json::from_str(&payload).expect("payload 应是 JSON");
+    let prompt_text = parsed["messages"]
+        .as_array()
+        .and_then(|messages| messages.last())
+        .and_then(|message| message["content"]["parts"].as_array())
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| part.as_str())
+                .collect::<Vec<_>>()
+                .join("")
+        })
+        .unwrap_or_default();
+    assert!(
+        prompt_text.contains("输出图片尺寸为 1024x1024。"),
+        "提示词里应带上尺寸指令，实际：{prompt_text}"
+    );
 
     let image = &result.images[0];
     assert!(!image.bytes.is_empty(), "落盘字节数应大于 0：{image:?}");
