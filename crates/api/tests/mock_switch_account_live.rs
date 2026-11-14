@@ -15,6 +15,10 @@
 //! # 条件
 //!
 //! 需要 `--features tls` 与 `DATABASE_URL`（账号池读库），缺则跳过。
+//!
+//! **注意**：池子里如果有别的可用账号，它可能被选中当「第一个」，
+//! 因此断言写成「恰好一个账号的失败计数增加」而不是绑定具体账号；
+//! 清理按邮箱前缀做 —— 造的是假 JWT，token 加前缀会解不出 exp。
 
 #![cfg(feature = "tls")]
 
@@ -45,7 +49,7 @@ async fn seed_accounts(pool: &PgPool, count: usize) -> Vec<Uuid> {
     for index in 0..count {
         let new = gpt2apirs_account::repo::NewAccount {
             access_token: fake_jwt(3600),
-            email: Some(format!("switch-{index}@test.local")),
+            email: Some(format!("{PREFIX}{index}@test.local")),
             quota: 1,
             quota_confirmed: true,
             ..Default::default()
@@ -126,5 +130,10 @@ async fn text_request_survives_one_bad_account() {
         "应恰好一个账号记到失败，实际 {increased:?}"
     );
 
+    // token 是假 JWT（加前缀会解不出 exp），所以按邮箱前缀清理
+    let _ = sqlx::query("delete from accounts where email like $1")
+        .bind(format!("{PREFIX}%"))
+        .execute(&pool)
+        .await;
     support::cleanup_with(&pool, PREFIX).await;
 }
