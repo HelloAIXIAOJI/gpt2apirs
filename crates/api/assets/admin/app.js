@@ -179,7 +179,7 @@ const JSON_TYPE = { 'Content-Type': 'application/json' };
 const ACCOUNT_STATUS = [
   ['', '全部'], ['normal', '正常'], ['limited', '限流'], ['abnormal', '异常'], ['disabled', '禁用'],
 ];
-const accountState = { page: 1, pageSize: 20, total: 0, status: '', plan: '', keyword: '', selected: new Set() };
+const accountState = { page: 1, pageSize: 20, total: 0, status: '', plan: '', group: '', keyword: '', selected: new Set() };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -189,6 +189,7 @@ function accountQuery(page) {
   params.set('page_size', String(accountState.pageSize));
   if (accountState.status) params.set('status', accountState.status);
   if (accountState.plan) params.set('plan', accountState.plan);
+  if (accountState.group) params.set('group', accountState.group);
   if (accountState.keyword) params.set('keyword', accountState.keyword);
   return params.toString();
 }
@@ -515,6 +516,21 @@ renderers.accounts = async () => {
   accountState.total = payload.total || 0;
   accountStats(counts);
 
+  const groupSelect = $('#account-group');
+  const currentGroup = accountState.group;
+  groupSelect.textContent = '';
+  const allOption = document.createElement('option');
+  allOption.value = '';
+  allOption.textContent = '全部分组';
+  groupSelect.appendChild(allOption);
+  (groups || []).forEach((group) => {
+    const option = document.createElement('option');
+    option.value = group.id;
+    option.textContent = group.name + '（' + group.members + '）';
+    groupSelect.appendChild(option);
+  });
+  groupSelect.value = currentGroup;
+
   const body = $('#accounts tbody');
   body.textContent = '';
   items.forEach((item) => body.appendChild(accountRow(item, groups)));
@@ -533,6 +549,7 @@ $('#account-search').addEventListener('click', () => {
   accountState.keyword = $('#account-keyword').value.trim();
   accountState.status = $('#account-status').value;
   accountState.plan = $('#account-plan').value;
+  accountState.group = $('#account-group').value;
   accountState.page = 1;
   renderers.accounts().catch((failure) => toast(failure.message, true));
 });
@@ -541,15 +558,18 @@ $('#account-reset').addEventListener('click', () => {
   $('#account-keyword').value = '';
   $('#account-status').value = '';
   $('#account-plan').value = '';
+  $('#account-group').value = '';
   accountState.keyword = '';
   accountState.status = '';
   accountState.plan = '';
+  accountState.group = '';
   accountState.page = 1;
   renderers.accounts().catch((failure) => toast(failure.message, true));
 });
 
 $('#account-status').addEventListener('change', () => $('#account-search').click());
 $('#account-plan').addEventListener('change', () => $('#account-search').click());
+$('#account-group').addEventListener('change', () => $('#account-search').click());
 $('#account-keyword').addEventListener('keydown', (event) => { if (event.key === 'Enter') $('#account-search').click(); });
 
 $('#account-all').addEventListener('change', (event) => {
@@ -690,6 +710,8 @@ renderers.logs = async () => {
   });
   const path = $('#log-path').value.trim();
   if (path) params.set('path', path);
+  const account = $('#log-account').value.trim();
+  if (account) params.set('account', account);
 
   const payload = await api('/api/logs?' + params.toString());
   const items = payload.data || [];
@@ -728,8 +750,10 @@ $('#refresh-logs').addEventListener('click', () => { logsState.page = 1; reloadL
 $('#log-status').addEventListener('change', () => { logsState.page = 1; reloadLogs(); });
 $('#log-hours').addEventListener('change', () => { logsState.page = 1; reloadLogs(); });
 $('#log-path').addEventListener('keydown', (event) => { if (event.key === 'Enter') { logsState.page = 1; reloadLogs(); } });
+$('#log-account').addEventListener('keydown', (event) => { if (event.key === 'Enter') { logsState.page = 1; reloadLogs(); } });
 $('#log-reset').addEventListener('click', () => {
   $('#log-path').value = '';
+  $('#log-account').value = '';
   $('#log-status').value = 'all';
   $('#log-hours').value = '24';
   logsState.page = 1;
@@ -790,8 +814,17 @@ renderers.proxies = async () => {
     actionCell.appendChild(remove);
 
     const countCell = document.createElement('td');
-    countCell.textContent = group.members;
-    countCell.title = '组内账号数；改组地址会让这些账号一次性换线';
+    countCell.title = '点一下到账号池看这一组的账号；改组地址会让这些账号一次性换线';
+    const members = document.createElement('a');
+    members.href = '#';
+    members.textContent = group.members + ' 个';
+    members.addEventListener('click', (event) => {
+      event.preventDefault();
+      accountState.group = group.id;
+      accountState.page = 1;
+      openTab('accounts');
+    });
+    countCell.appendChild(members);
 
     body.appendChild(row([nameInput, urlCell, countCell, actionCell]));
   });

@@ -209,6 +209,20 @@ const INTERACTIONS = [
     ],
   },
   {
+    name: '分组账号数联动到账号池',
+    steps: [
+      // 池里可能一个分组都没有，先造一个临时分组，用完删掉
+      "document.querySelector('#tabs button[data-tab=\"proxies\"]').click()",
+      "new Promise((resolve) => setTimeout(resolve, 600))",
+      "fetch('/api/proxy-groups',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'e2e-temp-group',url:''})}).then((r) => r.status)",
+      "new Promise((resolve) => setTimeout(() => { renderers.proxies(); resolve(true); }, 200))",
+      "new Promise((resolve) => setTimeout(resolve, 1200))",
+      "(() => { const link = document.querySelector('#groups tbody a'); if (link) link.click(); return true; })()",
+      "new Promise((resolve) => setTimeout(() => { const select = document.getElementById('account-group'); const view = document.querySelector('[data-view=\"accounts\"]'); globalThis.__linkOk = Boolean(view && !view.hidden && select && select.value !== ''); resolve(globalThis.__linkOk); }, 1800))",
+      "fetch('/api/proxy-groups').then((r) => r.json()).then((payload) => Promise.all((payload.data || []).filter((g) => g.name === 'e2e-temp-group').map((g) => fetch('/api/proxy-groups/' + g.id, { method: 'DELETE' })))).then((r) => (globalThis.__linkOk !== false))",
+    ],
+  },
+  {
     name: '设置恢复默认按钮可用',
     steps: [
       "document.querySelector('#tabs button[data-tab=\"settings\"]').click()",

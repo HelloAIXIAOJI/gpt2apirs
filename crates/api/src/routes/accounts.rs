@@ -216,6 +216,8 @@ pub struct ListQuery {
     pub source: Option<String>,
     /// 关键词。
     pub keyword: Option<String>,
+    /// 代理分组过滤。
+    pub group: Option<Uuid>,
     /// 页码（从 1 开始）。
     pub page: Option<i64>,
     /// 每页数量。
@@ -251,6 +253,7 @@ pub async fn list_accounts(
         plan: query.plan.as_deref().map(Plan::parse),
         source: query.source.as_deref().map(Source::parse),
         keyword: query.keyword.clone(),
+        proxy_group_id: query.group,
         offset: (page - 1) * page_size,
         limit: page_size,
     };
