@@ -10,6 +10,7 @@ pub mod auth;
 pub mod call_log;
 pub mod error;
 pub mod image_tasks;
+pub mod login_throttle;
 pub mod routes;
 pub mod session;
 pub mod state;
@@ -156,7 +157,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         ));
 
     // 登录接口本身不能要求已登录。
-    let login = Router::new().route("/admin/login", post(routes::admin::login));
+    let login = Router::new().route(
+        "/admin/login",
+        post(routes::admin::login).layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            login_throttle::guard,
+        )),
+    );
 
     // 页面外壳与静态资源公开：真正的数据都在需要会话的 /api/* 后面
     let ui = Router::new()

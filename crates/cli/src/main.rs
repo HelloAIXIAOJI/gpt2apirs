@@ -179,7 +179,10 @@ async fn run() -> Result<()> {
     let local = listener.local_addr().context("读取监听地址失败")?;
     tracing::info!("监听 http://{local}");
 
-    axum::serve(listener, app)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("HTTP 服务异常退出")?;

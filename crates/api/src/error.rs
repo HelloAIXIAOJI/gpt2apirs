@@ -118,6 +118,17 @@ impl IntoResponse for ApiError {
 
         let code = self.error.error_code().to_string();
         let mut response = (status, Json(payload)).into_response();
+        if let AppError::RateLimited {
+            retry_after: Some(secs),
+            ..
+        } = &self.error
+        {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
         // 中间件据此把错误码写进调用日志
         response.extensions_mut().insert(ErrorCodeTag(code));
         response

@@ -37,6 +37,8 @@ pub struct AppState {
     pub started_at: DateTime<Utc>,
     /// 异步生图任务存储。
     pub image_tasks: Arc<crate::image_tasks::ImageTaskStore>,
+    /// 管理面登录失败节流。
+    pub login_throttle: Arc<crate::login_throttle::LoginThrottle>,
 }
 
 impl AppState {
@@ -66,6 +68,7 @@ impl AppState {
             client_cache: Arc::new(RwLock::new(HashMap::new())),
             started_at: Utc::now(),
             image_tasks: Arc::new(crate::image_tasks::ImageTaskStore::new(task_concurrency)),
+            login_throttle: Arc::new(crate::login_throttle::LoginThrottle::new()),
         }
     }
 
