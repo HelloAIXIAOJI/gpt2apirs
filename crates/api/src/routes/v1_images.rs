@@ -175,6 +175,7 @@ pub async fn generate(
     let frame_count = body.frame_count;
     let frame_duration_ms = body.frame_duration_ms;
     let size = crate::routes::image_common::checked_size(body.size.as_deref())?;
+    let quality = crate::routes::image_common::checked_quality(body.quality.as_deref())?;
 
     let mut image_request = ImageRequest::new(prompt.clone()).with_n(n);
     image_request.model = requested_model.clone();
@@ -184,8 +185,9 @@ pub async fn generate(
     image_request.frame_count = frame_count;
     image_request.frame_duration_ms = frame_duration_ms;
     image_request.size = size;
+    image_request.quality = quality.clone();
 
-    let quality = body.quality.clone().unwrap_or_else(|| "auto".to_string());
+    let quality = quality.unwrap_or_else(|| "auto".to_string());
     let base_url = state.public_base_url(&scheme, &host);
 
     let deadline = default_request_deadline(&state.settings);

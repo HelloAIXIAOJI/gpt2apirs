@@ -41,7 +41,9 @@ async fn image_pipeline_runs_against_local_mock() {
     let mock = spawn().await;
 
     let client = Client::new(ClientOptions::default()).expect("客户端");
-    let request = ImageRequest::new("画一只猫").with_size(Some("1024x1024".to_string()));
+    let request = ImageRequest::new("画一只猫")
+        .with_size(Some("1024x1024".to_string()))
+        .with_quality(Some("high".to_string()));
     let deadline = Deadline::after(Duration::from_secs(30));
 
     let (result, diag) = generate_images(&client, "mock-token", &request, deadline)
@@ -76,6 +78,10 @@ async fn image_pipeline_runs_against_local_mock() {
     assert!(
         prompt_text.contains("输出图片尺寸为 1024x1024。"),
         "提示词里应带上尺寸指令，实际：{prompt_text}"
+    );
+    assert!(
+        prompt_text.contains("输出图片质量为 high。"),
+        "提示词里应带上质量指令，实际：{prompt_text}"
     );
 
     let image = &result.images[0];

@@ -133,6 +133,10 @@ pub struct ImageRequest {
     pub frame_count: Option<u32>,
     /// 动图每帧时长（毫秒，仅 GIF 有意义）。
     pub frame_duration_ms: Option<u32>,
+    /// 目标质量（`low`/`medium`/`high`，已校验）。`None` 表示不干预。
+    ///
+    /// **上游没有质量参数**：只拼进提示词当倾向；token 估算另按此值算。
+    pub quality: Option<String>,
     /// 目标尺寸（`宽x高`，已校验）。`None` 表示不干预。
     ///
     /// **上游没有尺寸参数**：这里只拼进提示词当倾向，不保证精确。
@@ -155,6 +159,7 @@ impl ImageRequest {
             upstream_model: DEFAULT_MODEL.to_string(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
             n: 1,
+            quality: None,
             size: None,
             output_format: None,
             frame_count: None,
@@ -182,8 +187,15 @@ impl ImageRequest {
             self.frame_count,
             self.frame_duration_ms,
             self.size.as_deref(),
+            self.quality.as_deref(),
         );
         crate::format::with_prompt_hints(&self.prompt, &hints)
+    }
+
+    /// 带上目标质量（调用方保证已校验）。
+    pub fn with_quality(mut self, quality: Option<String>) -> Self {
+        self.quality = quality;
+        self
     }
 
     /// 带上目标尺寸（调用方保证已校验成 `宽x高`）。
