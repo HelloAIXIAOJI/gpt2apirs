@@ -1,4 +1,4 @@
-name: 编译检查（全特性）
+name: 编译（全特性，含 TLS）
 
 on:
   push:
@@ -10,7 +10,7 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,4 +18,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: 安装 BoringSSL 需要的工具
         run: sudo apt-get update && sudo apt-get install -y cmake ninja-build nasm
-      - run: cargo check --workspace --all-features --all-targets
+      - run: cargo build --workspace --all-features --all-targets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt2apirs-linux-x86_64-tls
+          path: target/debug/gpt2apirs
+          if-no-files-found: error
