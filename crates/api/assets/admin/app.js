@@ -909,6 +909,58 @@ function imageFigure(item) {
   return figure;
 }
 
+function taskRow(task) {
+  const statusCell = cell(task.status);
+  if (task.status === 'failed') statusCell.className = 'error';
+
+  const resultCell = document.createElement('td');
+  if (task.error) {
+    resultCell.className = 'error';
+    resultCell.textContent = summarizeError(task.error);
+    resultCell.title = task.error;
+  } else if (task.data && task.data.length) {
+    const link = document.createElement('a');
+    link.href = task.data[0].url || '#';
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '查看结果（' + task.data.length + ' 张）';
+    resultCell.appendChild(link);
+  } else {
+    resultCell.className = 'muted';
+    resultCell.textContent = task.status === 'succeeded' ? '无结果' : '处理中…';
+  }
+
+  const actionCell = document.createElement('td');
+  const remove = document.createElement('button');
+  remove.textContent = '删除';
+  remove.className = 'ghost';
+  remove.addEventListener('click', async () => {
+    try {
+      await api('/api/admin/image-tasks/' + task.id, { method: 'DELETE' });
+      await renderTasks();
+    } catch (failure) { toast(failure.message, true); }
+  });
+  actionCell.appendChild(remove);
+
+  const when = cell(relativeTime(task.created_at));
+  when.title = task.created_at || '';
+  const idCell = cell(String(task.id).slice(0, 8));
+  idCell.className = 'mono';
+  const promptCell = cell(task.prompt);
+  promptCell.style.maxWidth = '300px';
+  promptCell.style.wordBreak = 'break-all';
+  return row([idCell, statusCell, promptCell, when, resultCell, actionCell]);
+}
+
+async function renderTasks() {
+  const tasks = await api('/api/admin/image-tasks');
+  const body = $('#tasks tbody');
+  body.textContent = '';
+  (tasks || []).forEach((task) => body.appendChild(taskRow(task)));
+  if (!(tasks || []).length) body.appendChild(row(['（还没有异步任务）', '', '', '', '', '']));
+  $('#tasks-hint').textContent = '共 ' + (tasks || []).length + ' 个任务（内存态，重启清空）';
+}
+
 renderers.images = async () => {
   const offset = (imagesState.page - 1) * imagesState.pageSize;
   const [stats, payload] = await Promise.all([
@@ -929,6 +981,8 @@ renderers.images = async () => {
   $('#images-prev').disabled = imagesState.page <= 1;
   $('#images-next').disabled = items.length < imagesState.pageSize;
 
+  await renderTasks();
+
 };
 
 $('#images-prev').addEventListener('click', () => {
@@ -941,6 +995,29 @@ $('#images-prev').addEventListener('click', () => {
 $('#images-next').addEventListener('click', () => {
   imagesState.page += 1;
   renderers.images().catch((failure) => toast(failure.message, true));
+});
+
+
+$('#tasks-refresh').addEventListener('click', () => {
+  renderTasks().catch((failure) => toast(failure.message, true));
+});
+
+$('#task-submit').addEventListener('click', async () => {
+  const prompt = $('#task-prompt').value.trim();
+  if (!prompt) { toast('请填写提示词', true); return; }
+  try {
+    $('#tasks-hint').textContent = '提交中…';
+    await api('/api/admin/image-tasks', {
+      method: 'POST',
+      headers: JSON_TYPE,
+      body: JSON.stringify({ prompt, size: $('#task-size').value.trim() || undefined }),
+    });
+    $('#task-prompt').value = '';
+    toast('任务已提交');
+    await renderTasks();
+  } catch (failure) {
+    toast(failure.message, true);
+  }
 });
 
 // 设置：按用途分组，标签与说明直接用后端返回的 description
