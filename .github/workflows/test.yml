@@ -1,0 +1,36 @@
+name: 测试
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gpt2apirs
+          POSTGRES_PASSWORD: gpt2apirs
+          POSTGRES_DB: gpt2apirs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U gpt2apirs"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://gpt2apirs:gpt2apirs@localhost:5432/gpt2apirs?sslmode=disable
+      AUTH_KEY: ci-only-auth-key
+      ADMIN_KEY: ci-only-admin-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
