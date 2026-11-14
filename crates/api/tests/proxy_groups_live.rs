@@ -381,6 +381,68 @@ async fn delete_group_detaches_members_and_keeps_proxy() {
     clean(&pool).await;
 }
 
+#[tokio::test]
+async fn test_group_reports_egress_result() {
+    let Some((state, pool)) = state().await else { return };
+    let _guard = lock();
+    clean(&pool).await;
+
+    // 直连：能不能连出去取决于环境，所以只断言接口本身正常返回结构
+    let (status, created) = send(
+        &state,
+        "POST",
+        "/api/proxy-groups",
+        Some(admin_key()),
+        Some(json!({ "name": format!("{TEST_PREFIX}probe"), "url": "" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let direct_id = Uuid::parse_str(created["id"].as_str().expect("id")).expect("uuid");
+
+    let (status, body) = send(
+        &state,
+        "POST",
+        &format!("/api/proxy-groups/{direct_id}/test"),
+        Some(admin_key()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "探活接口应返回 200: {body}");
+    assert!(body["ok"].is_boolean(), "应带 ok 字段: {body}");
+    assert!(body["duration_ms"].is_number(), "应带耗时: {body}");
+    assert_eq!(body["proxy"], "(直连)", "空代理串应标成直连: {body}");
+
+    // 代理串非法：参数错误，不能当成 500
+    let (status, broken) = send(
+        &state,
+        "POST",
+        "/api/proxy-groups",
+        Some(admin_key()),
+        Some(json!({ "name": format!("{TEST_PREFIX}probe-bad"), "url": "///" })),
+    )
+    .await;
+    if status == StatusCode::OK {
+        let bad_id = Uuid::parse_str(broken["id"].as_str().expect("id")).expect("uuid");
+        let (status, body) = send(
+            &state,
+            "POST",
+            &format!("/api/proxy-groups/{bad_id}/test"),
+            Some(admin_key()),
+            None,
+        )
+        .await;
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::OK,
+            "非法代理不应 500: {status} {body}"
+        );
+        if status == StatusCode::BAD_REQUEST {
+            assert_eq!(body["detail"]["param"], "url", "错误应指向 url 字段: {body}");
+        }
+    }
+
+    clean(&pool).await;
+}
+
 static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn lock() -> std::sync::MutexGuard<'static, ()> {

@@ -79,6 +79,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             put(routes::proxy_groups::update_group).delete(routes::proxy_groups::delete_group),
         )
         .route(
+            "/api/proxy-groups/{id}/test",
+            post(routes::proxy_groups::test_group),
+        )
+        .route(
             "/api/accounts/{id}/proxy-group",
             post(routes::proxy_groups::assign_group),
         )

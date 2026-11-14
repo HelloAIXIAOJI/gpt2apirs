@@ -808,8 +808,30 @@ renderers.proxies = async () => {
 
     const urlCell = document.createElement('td');
     urlCell.appendChild(url);
+    const probe = document.createElement('button');
+    probe.textContent = '测试出口';
+    probe.className = 'ghost';
+    probe.addEventListener('click', async () => {
+      probe.disabled = true;
+      probe.textContent = '测试中…';
+      try {
+        const result = await api('/api/proxy-groups/' + group.id + '/test', { method: 'POST' });
+        const detail = result.ok
+          ? '出口正常：HTTP ' + result.status + '，' + result.duration_ms + ' ms'
+          : '出口不通：' + (result.error || ('HTTP ' + result.status)) + '（' + result.duration_ms + ' ms）';
+        toast(detail, !result.ok);
+      } catch (failure) {
+        toast(failure.message, true);
+      } finally {
+        probe.disabled = false;
+        probe.textContent = '测试出口';
+      }
+    });
+
     const actionCell = document.createElement('td');
     actionCell.appendChild(save);
+    actionCell.appendChild(document.createTextNode(' '));
+    actionCell.appendChild(probe);
     actionCell.appendChild(document.createTextNode(' '));
     actionCell.appendChild(remove);
 
