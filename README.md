@@ -335,7 +335,8 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls
 
 | 限制 | 说明 |
 |---|---|
-| 生图 `size` 不精确 | 上游没有尺寸参数，只能写进提示词当倾向；`auto`/空表示不干预，非法值 400。要精确尺寸得走 Codex 链路（未实现） |
+| 生图 `size` 不精确 | 上游没有尺寸参数，只能写进提示词当倾向：实测请求 1792×1024 出图 1659×948，**纵横比对、总像素由上游决定**；`auto`/空表示不干预，非法值 400。要精确尺寸得走 Codex 链路（未实现） |
+| 生图 `quality` 同样只是提示词 | 上游没有质量参数，`low`/`medium`/`high` 会写进提示词；但它**确实影响计费**（按档位算 token），实测 high 档 1659×948 = 6338 tokens |
 | 生图 `stream: true` 不支持 | 上游没有逐块图片流（SSE 只给指针，字节另行下载）；要进度请用 `/api/image-tasks` |
 | `temperature` / `top_p` / `max_tokens` 接受但忽略 | 上游 web 会话没有这些旋钮；`modalities` 例外，非 text 直接 400 |
 | Codex 模型 | `codex-gpt-image-2` 等走另一条上游链路，未实现，对外不宣告 |

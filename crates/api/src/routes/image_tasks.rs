@@ -205,6 +205,7 @@ pub async fn submit(
         gpt2apirs_generate::models::upstream_model_for(&requested_model).to_string();
     image_request.output_format = output_format;
     image_request.size = crate::routes::image_common::checked_size(body.size.as_deref())?;
+    image_request.quality = crate::routes::image_common::checked_quality(body.quality.as_deref())?;
 
     let base_url = state.public_base_url(&scheme, &host);
     let now = chrono::Utc::now();

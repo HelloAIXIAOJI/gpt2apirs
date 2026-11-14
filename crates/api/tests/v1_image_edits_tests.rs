@@ -263,6 +263,21 @@ async fn rejects_malformed_size() {
 }
 
 #[tokio::test]
+async fn rejects_unknown_quality() {
+    let (status, body) = post_multipart(
+        vec![
+            Part::File("image", "a.png", tiny_png()),
+            Part::Text("prompt", "换个背景".to_string()),
+            Part::Text("quality", "ultra".to_string()),
+        ],
+        Some(AUTH_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["param"], "quality", "错误应指向 quality: {body}");
+}
+
+#[tokio::test]
 async fn multipart_valid_body_reaches_account_pool() {
     // 解析与校验都通过后，才会去取号；池空  503 no_available_account。
     // 这一步证明 multipart 解析真的走通了。

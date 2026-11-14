@@ -133,7 +133,8 @@ pub async fn edit_images(
     let frame_count = parsed.frame_count;
     let frame_duration_ms = parsed.frame_duration_ms;
     let size = crate::routes::image_common::checked_size(parsed.size.as_deref())?;
-    let quality = parsed.quality.as_deref().unwrap_or("auto").to_string();
+    let quality_option = crate::routes::image_common::checked_quality(parsed.quality.as_deref())?;
+    let quality = quality_option.clone().unwrap_or_else(|| "auto".to_string());
     let requested_model = parsed
         .model
         .clone()
@@ -188,6 +189,7 @@ pub async fn edit_images(
     image_request.frame_count = frame_count;
     image_request.frame_duration_ms = frame_duration_ms;
     image_request.size = size;
+    image_request.quality = quality_option;
 
     let slots = run_edit(&state, image_request, prepared.clone(), deadline).await?;
 
