@@ -111,14 +111,17 @@ impl SelectionFilter {
 }
 
 /// 池的运行参数。
+///
+/// 校验不在选号时做：选号只过本地凭证门（JWT 未过期），远端校验走
+/// `AccountPool::needs_verification` 的新鲜度规则，由 watcher 周期跑、
+/// 或管理面「同步配额」手动触发。别再往这里加「选号时远端校验」的开关 ——
+/// 那会让每次取号多一次往返，而失败后本来就会标异常并进后台复核。
 #[derive(Debug, Clone)]
 pub struct PoolConfig {
     /// 单账号同时最多几个生图请求（对应 `image_account_concurrency`）。
     pub image_concurrency: u32,
     /// 失效时是否直接删除账号。`false` = 只标异常（**默认，非破坏性**）。
     pub auto_remove_invalid: bool,
-    /// 是否每次选号都做远端校验。
-    pub verify_on_select: bool,
 }
 
 impl Default for PoolConfig {
@@ -127,7 +130,6 @@ impl Default for PoolConfig {
             // 默认单账号 1 个并发：上游对同账号并发很敏感
             image_concurrency: 1,
             auto_remove_invalid: false,
-            verify_on_select: crate::consts::VERIFY_ON_SELECT,
         }
     }
 }
