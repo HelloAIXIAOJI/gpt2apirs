@@ -37,6 +37,57 @@ pub async fn list_groups(State(state): State<Arc<AppState>>) -> Result<Json<Valu
     Ok(Json(json!({ "data": groups })))
 }
 
+/// `POST /api/proxy-groups/{id}/test`
+///
+/// 用该组的代理串请求上游探活地址：只关心「能不能连出去」，
+/// 不看业务语义，所以故意挑一个很轻的路径。
+pub async fn test_group(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, ApiError> {
+    let repo = ProxyGroupRepo::new(state.db.clone());
+    let group = repo
+        .get(id)
+        .await
+        .map_err(internal)?
+        .ok_or_else(|| ApiError::admin(AppError::not_found(format!("分组 {id} 不存在"))))?;
+    let proxy = group.url.trim().to_string();
+
+    let options = gpt2apirs_http::ClientOptions {
+        proxy: if proxy.is_empty() { None } else { Some(proxy.clone()) },
+        timeout_secs: Some(15),
+        ..Default::default()
+    };
+    let client = gpt2apirs_http::Client::new(options).map_err(|error| {
+        ApiError::admin(AppError::invalid_param(
+            format!("代理地址不可用：{error}"),
+            "url",
+        ))
+    })?;
+
+    let probe = gpt2apirs_protocol::endpoints::url("/backend-api/models");
+    let started = std::time::Instant::now();
+    let outcome = client.get_text(&probe, &[], None).await;
+    let duration_ms = started.elapsed().as_millis() as i64;
+
+    Ok(Json(match outcome {
+        Ok(response) => json!({
+            "ok": (200..400).contains(&response.status),
+            "status": response.status,
+            "duration_ms": duration_ms,
+            "proxy": if proxy.is_empty() { "(直连)".to_string() } else { proxy },
+            "error": Value::Null,
+        }),
+        Err(error) => json!({
+            "ok": false,
+            "status": Value::Null,
+            "duration_ms": duration_ms,
+            "proxy": if proxy.is_empty() { "(直连)".to_string() } else { proxy },
+            "error": error.to_string(),
+        }),
+    }))
+}
+
 /// `POST /api/proxy-groups`
 pub async fn create_group(
     State(state): State<Arc<AppState>>,
