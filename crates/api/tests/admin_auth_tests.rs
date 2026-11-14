@@ -126,6 +126,34 @@ async fn login_rejects_wrong_key() {
 }
 
 #[tokio::test]
+async fn repeated_failures_lock_the_source() {
+    let (state, _) = state();
+    for _ in 0..gpt2apirs_api::login_throttle::MAX_FAILURES {
+        let (status, _, _) = send(
+            state.clone(),
+            "POST",
+            "/admin/login",
+            Some(serde_json::json!({ "key": "wrong" })),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    // 锁定期内即使口令正确也拒绝
+    let (status, body, _) = send(
+        state.clone(),
+        "POST",
+        "/admin/login",
+        Some(serde_json::json!({ "key": ADMIN_KEY })),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+}
+
+#[tokio::test]
 async fn api_key_cannot_enter_admin() {
     let (state, api_key) = state();
     let (status, _, _) = send(state, "GET", "/api/keys", None, Some(&api_key), None).await;
