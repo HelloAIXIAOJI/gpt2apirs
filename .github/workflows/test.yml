@@ -21,7 +21,6 @@ jobs:
           POSTGRES_DB: gpt2apirs
         ports: ["5432:5432"]
         options: >-
-          --max_connections=300
           --health-cmd "pg_isready -U gpt2apirs"
           --health-interval 5s
           --health-timeout 5s
