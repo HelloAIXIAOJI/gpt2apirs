@@ -279,6 +279,10 @@ pub struct FlowDiagnostics {
     pub pow_difficulty: String,
     /// Turnstile 是否被要求。
     pub turnstile_required: bool,
+    /// 上游给的 Turnstile 字节码长度（0 表示没给）。
+    pub turnstile_dx_len: usize,
+    /// 本次送进 finalize 的 Turnstile token 长度（0 表示空串）。
+    pub turnstile_token_len: usize,
     /// finalize 状态码。
     pub finalize_status: u16,
     /// conversation/prepare 状态码。
@@ -400,6 +404,40 @@ pub async fn handshake(
     }
     diag.pow_required = prepared.pow.is_some();
     diag.turnstile_required = prepared.turnstile_required;
+    diag.turnstile_dx_len = prepared
+        .turnstile_dx
+        .as_deref()
+        .map(str::len)
+        .unwrap_or(0);
+
+    // Turnstile 求解：拿到 dx 才算得出来，算不出来就发空串（与旧行为一致）
+    let turnstile_token = match (prepared.turnstile_required, prepared.turnstile_dx.as_deref()) {
+        (true, Some(dx)) => {
+            // 排错/写 fixture 用：只有显式设了目录才落盘，平时不在磁盘留上游挑战
+            if let Ok(dir) = std::env::var("GPT2APIRS_CAPTURE_TURNSTILE") {
+                if !dir.trim().is_empty() {
+                    match gpt2apirs_protocol::turnstile::capture(
+                        std::path::Path::new(dir.trim()),
+                        dx,
+                        &p_token,
+                    ) {
+                        Ok(path) => tracing::info!(target = %path.display(), "已落盘 Turnstile 挑战"),
+                        Err(error) => tracing::warn!(%error, "落盘 Turnstile 挑战失败"),
+                    }
+                }
+            }
+            let solved = gpt2apirs_protocol::turnstile::solve_challenge(dx, &p_token);
+            if solved.is_none() {
+                tracing::warn!(
+                    dx_len = dx.len(),
+                    "Turnstile 求解失败，按空 token 继续（上游当前不强制校验）"
+                );
+            }
+            solved.unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    diag.turnstile_token_len = turnstile_token.len();
 
     let proof_token = match &prepared.pow {
         Some(challenge) if challenge.is_usable() => {
@@ -416,7 +454,7 @@ pub async fn handshake(
         .post_json(
             &upstream_url(SENTINEL_FINALIZE),
             &gpt2apirs_http::api_headers(user_agent, token, SENTINEL_FINALIZE),
-            &build_finalize_payload(&prepared.prepare_token, &proof_token, ""),
+            &build_finalize_payload(&prepared.prepare_token, &proof_token, &turnstile_token),
             Some(budget),
         )
         .await?;

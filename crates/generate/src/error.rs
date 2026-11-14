@@ -74,6 +74,8 @@ impl FailureKind {
         match self {
             Self::ContentPolicy | Self::InvalidRequest => 400,
             Self::QuotaExhausted | Self::RateLimited => 429,
+            // 人机验证：账号需要人工处理，不是调用方的错，也不是服务端挂了
+            Self::TurnstileRequired | Self::ArkoseRequired => 503,
             _ => 502,
         }
     }
@@ -84,7 +86,12 @@ impl FailureKind {
     pub fn blames_account(self) -> bool {
         matches!(
             self,
-            Self::TokenInvalid | Self::Blocked | Self::RateLimited
+            Self::TokenInvalid
+                | Self::Blocked
+                | Self::RateLimited
+                // 验证码卡住等于账号当前不可用：标异常，管理面才看得见
+                | Self::TurnstileRequired
+                | Self::ArkoseRequired
         )
     }
 }
@@ -231,6 +238,12 @@ mod tests {
         // 账号问题不能回 401/403：那是调用方自己的 key 错了的意思
         assert_eq!(FailureKind::TokenInvalid.status(), 502);
         assert_eq!(FailureKind::EmptyReply.status(), 502);
+        // 需要人工验证：503，且要标异常让管理面看得见
+        assert_eq!(FailureKind::TurnstileRequired.status(), 503);
+        assert_eq!(FailureKind::ArkoseRequired.status(), 503);
+        assert!(FailureKind::TurnstileRequired.blames_account());
+        assert!(FailureKind::ArkoseRequired.blames_account());
+        assert!(!FailureKind::TurnstileRequired.switch_account());
     }
 
     #[test]
