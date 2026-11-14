@@ -195,6 +195,23 @@ python tools\account_gui.py
 | POST | `/v1/messages/count_tokens` | 只算 token 不取号，口径与 `/v1/messages` 的 `usage.input_tokens` 同一函数 |
 
 > `/v1/*` 的 API key 两种头都收：`Authorization: Bearer <key>` 与 `x-api-key: <key>`（后者给 Anthropic 客户端）。
+
+### 上游失败的分类与状态码
+
+同一类失败在流式与非流式上报同一个错误码；状态码按「谁的问题」分：
+
+| 错误码 | 状态码 | 含义 | 该怎么做 |
+|---|---:|---|---|
+| `upstream_invalid_request` | 400 | 请求本身有问题（参数/模型/上下文超长） | 改请求，重试无用 |
+| `content_policy_violation` | 400 | 触发上游内容策略 | 改提示词，换号无用 |
+| `rate_limited` | 429 | 账号被限流 | 退避后重试，会换号 |
+| `account_quota_exhausted` | 429 | 账号额度耗尽 | 换号或等恢复 |
+| `account_token_invalid` / `upstream_blocked` | 502 | 账号侧问题（**不是调用方 key 的问题**） | 会自动换号并标异常 |
+| `upstream_empty_reply` | 502 | 上游正常结束但没吐文本 | 可重试，不换号 |
+| `upstream_protocol_error` / `upstream_network_error` | 502 | 协议不符 / 网络失败 | 可重试 |
+| `turnstile_required` / `arkose_required` | 502 | 上游要人机验证 | 换号无用，需人工处理 |
+
+> 账号问题故意不回 401/403：那会让调用方以为自己传错了 key。
 > 鉴权失败的响应体也按路径选格式：`/v1/messages*` 是 Anthropic 的 `{"type":"error",…}`，其余 `/v1/*` 是 OpenAI 的 `{"error":{…}}`。
 
 ### 账号池管理

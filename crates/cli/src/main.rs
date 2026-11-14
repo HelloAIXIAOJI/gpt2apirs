@@ -127,7 +127,6 @@ async fn run() -> Result<()> {
     let pool_config = PoolConfig {
         image_concurrency,
         auto_remove_invalid: false,
-        verify_on_select: true,
     };
     let accounts = Arc::new(
         AccountPool::new(account_repo, pool_config.clone())

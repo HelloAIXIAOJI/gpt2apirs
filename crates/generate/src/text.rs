@@ -143,7 +143,7 @@ pub async fn generate_text(
     if text.trim().is_empty() {
         // 空回复要能诊断：把 SSE 的头尾留下来
         return Err(GenerateError::new(
-            FailureKind::Protocol,
+            FailureKind::EmptyReply,
             format!(
                 "上游没有返回文本（SSE {} 字节）：{}",
                 sse.body.len(),

@@ -7,9 +7,6 @@
 /// 候选账号远端校验结果的新鲜期（秒）。上游配额按分钟量级变化。
 pub const ACCOUNT_FRESHNESS_SECS: i64 = 300;
 
-/// 选号时是否每次都做远端校验。默认关闭：每次调 `/me` 都多一次往返。
-pub const VERIFY_ON_SELECT: bool = false;
-
 /// 槽位等待的轮询上限（毫秒）。作 `Notify` 的保护性兜底，防止丢失唤醒后无限挂起。
 pub const SLOT_WAIT_MAX_MS: u64 = 1_000;
 

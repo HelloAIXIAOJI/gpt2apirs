@@ -23,6 +23,10 @@ pub enum FailureKind {
     Protocol,
     /// 上游跑完了但没给图。
     EmptyImages,
+    /// 上游判定「请求本身有问题」（改请求才有用，换号没用）。
+    InvalidRequest,
+    /// 上游正常结束但没吐任何文本。
+    EmptyReply,
 }
 
 impl FailureKind {
@@ -41,7 +45,7 @@ impl FailureKind {
 
     /// 是否属于「换号或重试有意义」。（内容策略/验证码换号也没用）
     pub fn retryable(self) -> bool {
-        self.switch_account() || matches!(self, Self::Protocol)
+        self.switch_account() || matches!(self, Self::Protocol | Self::EmptyReply)
     }
 
     /// 对外错误码。
@@ -57,6 +61,20 @@ impl FailureKind {
             Self::Network => "upstream_network_error",
             Self::Protocol => "upstream_protocol_error",
             Self::EmptyImages => "upstream_no_image",
+            Self::InvalidRequest => "upstream_invalid_request",
+            Self::EmptyReply => "upstream_empty_reply",
+        }
+    }
+
+    /// 对外的 HTTP 状态码。
+    ///
+    /// 账号问题不能回 401/403：那会让调用方以为**自己的 API key** 有问题；
+    /// 请求问题必须回 400，否则客户端会当服务端故障去重试。
+    pub fn status(self) -> u16 {
+        match self {
+            Self::ContentPolicy | Self::InvalidRequest => 400,
+            Self::QuotaExhausted | Self::RateLimited => 429,
+            _ => 502,
         }
     }
 
@@ -112,17 +130,46 @@ pub fn classify_http(status: u16, body: &str) -> FailureKind {
     if lowered.contains("arkose") {
         return FailureKind::ArkoseRequired;
     }
+    // 正文里的配额信号优先于状态码：429 之外的限流也会带这句话
+    if lowered.contains("quota")
+        || lowered.contains("limit reached")
+        || lowered.contains("reached your limit")
+        || lowered.contains("reached the limit")
+        || lowered.contains("usage limit") {
+        return FailureKind::QuotaExhausted;
+    }
+    // token 失效的正文信号：上游不一定用 401，别误判成请求错误
+    if [
+        "token is expired",
+        "token_expired",
+        "invalid_token",
+        "token has expired",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+    {
+        return FailureKind::TokenInvalid;
+    }
+    // 请求级问题的信号：改请求才有用，换号纯属浪费
+    if [
+        "invalid_request",
+        "unsupported",
+        "model_not_found",
+        "context_length_exceeded",
+        "string_above_max_length",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+    {
+        return FailureKind::InvalidRequest;
+    }
+
     match status {
         401 | 403 => FailureKind::TokenInvalid,
         429 => FailureKind::RateLimited,
         402 => FailureKind::QuotaExhausted,
-        _ => {
-            if lowered.contains("quota") || lowered.contains("limit reached") {
-                FailureKind::QuotaExhausted
-            } else {
-                FailureKind::Protocol
-            }
-        }
+        400 | 422 => FailureKind::InvalidRequest,
+        _ => FailureKind::Protocol,
     }
 }
 
@@ -136,6 +183,72 @@ impl From<anyhow::Error> for GenerateError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn request_level_signals_are_recognised() {
+        // 请求本身有问题：换号没用，必须回 400
+        for body in [
+            r#"{"error":{"type":"invalid_request_error"}}"#,
+            r#"{"detail":"model_not_found"}"#,
+            r#"{"error":"unsupported model"}"#,
+            r#"{"detail":"context_length_exceeded"}"#,
+        ] {
+            assert_eq!(classify_http(400, body), FailureKind::InvalidRequest, "{body}");
+        }
+        assert_eq!(classify_http(422, ""), FailureKind::InvalidRequest);
+        assert_eq!(classify_http(400, ""), FailureKind::InvalidRequest);
+    }
+
+    #[test]
+    fn expired_token_in_body_is_not_a_request_error() {
+        // 真实遇到过：上游用 400 报「token 过期」，归成请求错误就不会换号了
+        assert_eq!(
+            classify_http(400, r#"{"error":{"message":"Provided authentication token is expired"}}"#),
+            FailureKind::TokenInvalid
+        );
+        assert_eq!(classify_http(403, "token_expired"), FailureKind::TokenInvalid);
+    }
+
+    #[test]
+    fn quota_in_body_beats_status() {
+        // 429 之外也可能带「额度」字样，别当成请求错误
+        assert_eq!(
+            classify_http(429, r#"{"detail":"usage limit reached"}"#),
+            FailureKind::QuotaExhausted
+        );
+        assert_eq!(
+            classify_http(400, r#"{"detail":"you have reached your limit"}"#),
+            FailureKind::QuotaExhausted
+        );
+    }
+
+    #[test]
+    fn client_status_follows_failure_scope() {
+        assert_eq!(FailureKind::InvalidRequest.status(), 400);
+        assert_eq!(FailureKind::ContentPolicy.status(), 400);
+        assert_eq!(FailureKind::QuotaExhausted.status(), 429);
+        assert_eq!(FailureKind::RateLimited.status(), 429);
+        // 账号问题不能回 401/403：那是调用方自己的 key 错了的意思
+        assert_eq!(FailureKind::TokenInvalid.status(), 502);
+        assert_eq!(FailureKind::EmptyReply.status(), 502);
+    }
+
+    #[test]
+    fn request_errors_do_not_switch_accounts() {
+        assert!(!FailureKind::InvalidRequest.switch_account());
+        assert!(!FailureKind::InvalidRequest.retryable());
+        assert!(!FailureKind::InvalidRequest.blames_account());
+        // 空回复不是账号的错，换号也没意义
+        assert!(!FailureKind::EmptyReply.switch_account());
+        assert!(FailureKind::EmptyReply.retryable());
+        assert!(!FailureKind::EmptyReply.blames_account());
+    }
+
+    #[test]
+    fn new_kinds_have_codes() {
+        assert_eq!(FailureKind::InvalidRequest.code(), "upstream_invalid_request");
+        assert_eq!(FailureKind::EmptyReply.code(), "upstream_empty_reply");
+    }
 
     #[test]
     fn unauthorized_means_token_invalid() {

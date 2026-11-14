@@ -71,7 +71,8 @@ fn upstream_error(error: Option<anyhow::Error>) -> ApiError {
             .map(|failure| failure.kind.code().to_string())
             .unwrap_or_else(|| "upstream_error".to_string()),
         retryable: classified.map(|failure| failure.kind.retryable()).unwrap_or(true),
-        status: 502,
+        // 状态码由分类决定：请求级问题必须回 400，否则调用方会当服务端故障去重试
+        status: classified.map(|failure| failure.kind.status()).unwrap_or(502),
     })
 }
 
