@@ -149,6 +149,37 @@ async fn rejects_bad_response_format() {
 }
 
 #[tokio::test]
+async fn rejects_malformed_size() {
+    let (status, body) = post_image(
+        state(None),
+        serde_json::json!({"prompt": "a cat", "size": "big"}),
+        Some(AUTH_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["param"], "size", "错误应指向 size: {body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("宽x高"),
+        "应说明正确写法: {body}"
+    );
+}
+
+#[tokio::test]
+async fn accepts_auto_size() {
+    // auto 表示「不干预」，不该被当成非法值；池空 → 503 说明过了参数校验
+    let (status, body) = post_image(
+        state(None),
+        serde_json::json!({"prompt": "a cat", "size": "auto"}),
+        Some(AUTH_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+}
+
+#[tokio::test]
 async fn rejects_stream() {
     let (status, body) = post_image(
         state(None),

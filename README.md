@@ -186,7 +186,7 @@ python tools\account_gui.py
 |---|---|---|
 | GET | `/v1/models` | 模型列表（文本 + 图片，带 `kind`；只列真正支持的） |
 | GET | `/v1/models/{id}` | 单个模型；未知 id 返回 404 `model_not_found` |
-| POST | `/v1/images/generations` | 文生图（`b64_json` / `url`；`output_format` = png / jpeg / webp / gif，gif 配 `frame_count` / `frame_duration_ms`） |
+| POST | `/v1/images/generations` | 文生图（`b64_json` / `url`；`output_format` = png / jpeg / webp / gif，gif 配 `frame_count` / `frame_duration_ms`；`size` 只是提示词倾向，见已知限制） |
 | POST | `/v1/images/edits` | **图生图**（multipart / JSON，支持 mask；同样支持 `output_format`） |
 | POST | `/v1/chat/completions` | **文本对话**（流式 + 非流式，真实 token 计数） |
 | POST | `/v1/responses` | **OpenAI Responses API**（`input` / `instructions`）|
@@ -335,6 +335,7 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls
 
 | 限制 | 说明 |
 |---|---|
+| 生图 `size` 不精确 | 上游没有尺寸参数，只能写进提示词当倾向；`auto`/空表示不干预，非法值 400。要精确尺寸得走 Codex 链路（未实现） |
 | 生图 `stream: true` 不支持 | 上游没有逐块图片流（SSE 只给指针，字节另行下载）；要进度请用 `/api/image-tasks` |
 | `temperature` / `top_p` / `max_tokens` 接受但忽略 | 上游 web 会话没有这些旋钮；`modalities` 例外，非 text 直接 400 |
 | Codex 模型 | `codex-gpt-image-2` 等走另一条上游链路，未实现，对外不宣告 |

@@ -47,6 +47,7 @@ struct EditRequest {
     prompt: String,
     model: Option<String>,
     n: Option<u32>,
+    size: Option<String>,
     quality: Option<String>,
     response_format: Option<String>,
     output_format: Option<String>,
@@ -131,6 +132,7 @@ pub async fn edit_images(
     };
     let frame_count = parsed.frame_count;
     let frame_duration_ms = parsed.frame_duration_ms;
+    let size = crate::routes::image_common::checked_size(parsed.size.as_deref())?;
     let quality = parsed.quality.as_deref().unwrap_or("auto").to_string();
     let requested_model = parsed
         .model
@@ -185,6 +187,7 @@ pub async fn edit_images(
     image_request.output_format = output_format;
     image_request.frame_count = frame_count;
     image_request.frame_duration_ms = frame_duration_ms;
+    image_request.size = size;
 
     let slots = run_edit(&state, image_request, prepared.clone(), deadline).await?;
 
@@ -287,6 +290,7 @@ fn scalar_into(parsed: &mut EditRequest, key: &str, value: &str) {
         "prompt" => parsed.prompt = value.to_string(),
         "model" => parsed.model = Some(value.to_string()),
         "n" => parsed.n = value.trim().parse().ok(),
+        "size" => parsed.size = Some(value.to_string()),
         "quality" => parsed.quality = Some(value.to_string()),
         "response_format" => parsed.response_format = Some(value.to_string()),
         "output_format" => parsed.output_format = Some(value.to_string()),

@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod backup;
 pub mod admin;
+pub mod image_common;
 pub mod image_flow;
 pub mod image_tasks;
 pub mod images;
