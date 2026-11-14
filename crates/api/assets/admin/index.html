@@ -228,7 +228,19 @@
       </p>
       <div id="images" class="grid"></div>
 
-      <p class="muted">异步生图任务走 API key 鉴权（<code>POST /api/image-tasks/generations</code>），不在这里管理；本页只列出已经落盘的图片。</p>
+      <h3>异步生图任务</h3>
+      <p style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="task-prompt" placeholder="提示词，例如 一只戴墨镜的柴犬" style="min-width:320px">
+        <input id="task-size" value="1024x1024" style="width:110px">
+        <button id="task-submit">提交任务</button>
+        <button id="tasks-refresh" class="ghost">刷新任务</button>
+        <span id="tasks-hint" class="muted"></span>
+      </p>
+      <table id="tasks">
+        <thead><tr><th>任务</th><th>状态</th><th>提示词</th><th>创建</th><th>结果 / 错误</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="muted">客户端走 API key 的 <code>POST /api/image-tasks/generations</code>；这里用管理会话走同一套任务。</p>
     </section>
 
     <section data-view="settings" class="panel" hidden>

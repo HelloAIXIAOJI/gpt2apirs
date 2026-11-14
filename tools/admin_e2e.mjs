@@ -144,7 +144,8 @@ const PAGES = [
       const cards = document.querySelectorAll('#images > *').length;
       const summary = (document.querySelector('#images-summary') || {}).textContent || '';
       const page = (document.getElementById('images-page') || {}).textContent || '';
-      return { ok: summary.length > 0 && page.includes('页'), detail: '图片块 ' + cards + '，分页「' + page.trim() + '」，摘要「' + summary.trim().slice(0, 24) + '」' };
+      const tasks = document.querySelectorAll('#tasks tbody tr').length;
+      return { ok: summary.length > 0 && page.includes('页') && tasks >= 1, detail: '图片块 ' + cards + '，任务行 ' + tasks + '，摘要「' + summary.trim().slice(0, 20) + '」' };
     })()`,
   },
   {
