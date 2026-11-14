@@ -1,4 +1,4 @@
-name: 编译检查（默认特性）
+name: 编译（默认特性）
 
 on:
   push:
@@ -10,10 +10,15 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-targets
+      - run: cargo build --workspace --all-targets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt2apirs-linux-x86_64
+          path: target/debug/gpt2apirs
+          if-no-files-found: error
