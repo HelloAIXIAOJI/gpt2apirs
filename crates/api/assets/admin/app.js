@@ -761,7 +761,7 @@ renderers.proxies = async () => {
         const result = await api('/api/proxy-groups/' + group.id, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: group.name, url: url.value.trim() })
+          body: JSON.stringify({ name: nameInput.value.trim() || group.name, url: url.value.trim() })
         });
         toast('已保存，同步了 ' + (result.synced_accounts || 0) + ' 个账号');
         await renderers.proxies();
@@ -778,13 +778,22 @@ renderers.proxies = async () => {
         await renderers.proxies();
       } catch (failure) { toast(failure.message, true); }
     });
+    const nameInput = document.createElement('input');
+    nameInput.value = group.name || '';
+    nameInput.style.width = '100%';
+
     const urlCell = document.createElement('td');
     urlCell.appendChild(url);
     const actionCell = document.createElement('td');
     actionCell.appendChild(save);
     actionCell.appendChild(document.createTextNode(' '));
     actionCell.appendChild(remove);
-    body.appendChild(row([group.name, urlCell, group.members, actionCell]));
+
+    const countCell = document.createElement('td');
+    countCell.textContent = group.members;
+    countCell.title = '组内账号数；改组地址会让这些账号一次性换线';
+
+    body.appendChild(row([nameInput, urlCell, countCell, actionCell]));
   });
   if (!groups.length) body.appendChild(row(['（还没有分组）', '', '', '']));
 };

@@ -174,6 +174,51 @@ const PAGES = [
   },
 ];
 
+// 交互检查：渲染对了不代表按钮能用，这里点一遍关键按钮
+const INTERACTIONS = [
+  {
+    name: '概览切换时间范围',
+    steps: [
+      "document.querySelector('#tabs button[data-tab=\"overview\"]').click()",
+      "(() => { const select = document.getElementById('metrics-hours'); select.value = '1'; select.dispatchEvent(new Event('change')); return true; })()",
+      "new Promise((resolve) => setTimeout(() => resolve(document.querySelectorAll('#metrics .card').length >= 6), 1200))",
+    ],
+  },
+  {
+    name: '日志重置清空筛选',
+    steps: [
+      "document.querySelector('#tabs button[data-tab=\"logs\"]').click()",
+      "(() => { document.getElementById('log-path').value = '/v1/images'; document.getElementById('log-reset').click(); return true; })()",
+      "new Promise((resolve) => setTimeout(() => resolve(document.getElementById('log-path').value === ''), 800))",
+    ],
+  },
+  {
+    name: '账号池打开并取消编辑弹窗',
+    steps: [
+      "document.querySelector('#tabs button[data-tab=\"accounts\"]').click()",
+      "new Promise((resolve) => setTimeout(resolve, 900))",
+      "(() => { const row = document.querySelector('#accounts tbody tr'); const selects = row.querySelectorAll('select'); const action = selects[selects.length - 1]; action.value = 'edit'; action.dispatchEvent(new Event('change')); return true; })()",
+      "new Promise((resolve) => setTimeout(() => resolve(document.getElementById('account-dialog').open === true), 500))",
+    ],
+  },
+  {
+    name: '编辑弹窗取消后关闭',
+    steps: [
+      "(() => { document.getElementById('edit-cancel').click(); return true; })()",
+      "new Promise((resolve) => setTimeout(() => resolve(document.getElementById('account-dialog').open === false), 500))",
+    ],
+  },
+  {
+    name: '设置恢复默认按钮可用',
+    steps: [
+      "document.querySelector('#tabs button[data-tab=\"settings\"]').click()",
+      "new Promise((resolve) => setTimeout(resolve, 1000))",
+      "(() => { const row = document.querySelector('#settings-groups tbody tr'); const input = row.querySelector('input, select, textarea'); input.value = '99999'; row.querySelector('button').click(); return true; })()",
+      "new Promise((resolve) => setTimeout(() => { const row = document.querySelector('#settings-groups tbody tr'); const input = row.querySelector('input, select, textarea'); resolve(String(input.value) !== '99999'); }, 400))",
+    ],
+  },
+];
+
 async function main() {
   const url = await connect();
   const { WebSocket } = await import('node:worker_threads').then(() => ({ WebSocket: globalThis.WebSocket }));
@@ -208,9 +253,14 @@ async function main() {
   if (loggedIn !== 200) throw new Error('登录失败，HTTP ' + loggedIn);
 
   await send('Page.navigate', { url: BASE + '/admin' });
-  await sleep(1800);
 
-  const session = await evaluate("document.getElementById('session-state').textContent");
+  // 页面自己会先查会话再渲染，固定等待会抢跑：等它明确进入已登录态
+  let session = '';
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await sleep(250);
+    session = await evaluate("document.getElementById('session-state').textContent");
+    if (session && session.includes('已登录')) break;
+  }
   const failures = [];
   console.log('会话：' + session);
   console.log('');
@@ -236,6 +286,25 @@ async function main() {
     const note = verdict.detail + (clean ? '' : ' | 异常：' + exceptions.map((item) => item.text).join(' / '));
     console.log(page.name.padEnd(12, ' ') + '  ' + (ok ? 'PASS' : 'FAIL') + '  ' + note);
     if (!ok) failures.push(page.name);
+  }
+
+  console.log('');
+  console.log('交互检查      结果');
+  console.log('------------  ----------------------------------------------');
+  for (const item of INTERACTIONS) {
+    exceptions.length = 0;
+    let passed = false;
+    try {
+      let last;
+      for (const step of item.steps) last = await evaluate(step);
+      passed = Boolean(last);
+    } catch (error) {
+      passed = false;
+    }
+    const clean = exceptions.length === 0;
+    const ok = passed && clean;
+    console.log(item.name.padEnd(14, ' ') + (ok ? 'PASS' : 'FAIL') + (clean ? '' : '  异常：' + exceptions.map((e) => e.text).join(' / ')));
+    if (!ok) failures.push(item.name);
   }
 
   console.log('');
