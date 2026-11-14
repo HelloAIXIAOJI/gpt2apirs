@@ -73,6 +73,9 @@
           <option value="plus">Plus</option>
           <option value="pro">Pro</option>
         </select>
+        <select id="account-group">
+          <option value="">全部分组</option>
+        </select>
         <button id="account-search">查询</button>
         <button id="account-reset" class="ghost">重置</button>
         <span id="accounts-hint" class="muted"></span>
@@ -183,6 +186,7 @@
           <option value="720">近 30 天</option>
         </select>
         <input id="log-path" placeholder="路径前缀，例如 /v1/images" style="min-width:200px">
+        <input id="log-account" placeholder="账号 ID（uuid）" style="min-width:200px">
         <button id="refresh-logs">查询</button>
         <button id="log-reset" class="ghost">重置</button>
         <span id="logs-hint" class="muted"></span>

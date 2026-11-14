@@ -90,6 +90,8 @@ pub struct AccountFilter {
     pub source: Option<Source>,
     /// 关键词（匹配 email / 上游 account_id / token sha 前缀）。
     pub keyword: Option<String>,
+    /// 代理分组（只列该组账号）。
+    pub proxy_group_id: Option<Uuid>,
     /// 分页：偏移。
     pub offset: i64,
     /// 分页：数量（0 表示不限）。
@@ -852,6 +854,10 @@ fn build_filter(filter: &AccountFilter) -> (String, Vec<String>) {
         binds.push(source.as_str().to_string());
         clauses.push(format!("source = ${}", binds.len()));
     }
+    if let Some(group) = filter.proxy_group_id {
+        binds.push(group.to_string());
+        clauses.push(format!("proxy_group_id = ${}::uuid", binds.len()));
+    }
     if let Some(keyword) = filter.keyword.as_deref() {
         let trimmed = keyword.trim();
         if !trimmed.is_empty() {
@@ -901,6 +907,18 @@ mod tests {
         assert!(sql.contains("status = $1"), "{sql}");
         assert!(sql.contains("plan = $2"), "{sql}");
         assert_eq!(binds, vec!["normal".to_string(), "plus".to_string()]);
+    }
+
+    #[test]
+    fn group_filter_binds_uuid() {
+        let group = Uuid::nil();
+        let filter = AccountFilter {
+            proxy_group_id: Some(group),
+            ..Default::default()
+        };
+        let (sql, binds) = build_filter(&filter);
+        assert!(sql.contains("proxy_group_id = $1::uuid"), "{sql}");
+        assert_eq!(binds, vec![group.to_string()]);
     }
 
     #[test]
