@@ -58,8 +58,8 @@ pub struct SentinelPrepare {
     pub arkose_required: bool,
     /// 是否要求 Turnstile。
     pub turnstile_required: bool,
-    /// Turnstile 字节码（`dx`），当前不使用但保留。
-    pub turnstile_dx_len: usize,
+    /// Turnstile 字节码（`dx`，base64）。求解 token 的输入之一。
+    pub turnstile_dx: Option<String>,
 }
 
 /// 解析 prepare 响应。
@@ -102,18 +102,18 @@ pub fn parse_prepare(body: &Value) -> SentinelPrepare {
         .and_then(|value| value.get("required"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let turnstile_dx_len = turnstile
+    let turnstile_dx = turnstile
         .and_then(|value| value.get("dx"))
         .and_then(Value::as_str)
-        .map(str::len)
-        .unwrap_or(0);
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     SentinelPrepare {
         prepare_token,
         pow,
         arkose_required,
         turnstile_required,
-        turnstile_dx_len,
+        turnstile_dx,
     }
 }
 
@@ -180,7 +180,7 @@ mod tests {
         assert!(pow.is_usable());
         assert!(!parsed.arkose_required);
         assert!(parsed.turnstile_required);
-        assert_eq!(parsed.turnstile_dx_len, 10);
+        assert_eq!(parsed.turnstile_dx.as_deref(), Some("abcdefghij"));
     }
 
     #[test]

@@ -116,7 +116,8 @@ cargo run -p gpt2apirs-cli --features tls
 > 「gpt2apirs-http 未启用 tls feature」。
 >
 > Windows 上 BoringSSL 对环境敏感（VS 生成器找不到 cl、Ninja 下把 cl 当汇编器）。
-> 直接跑 `powershell -File tools\build.ps1`，它把 vcvars、Ninja、NASM 和工具链文件都配好。
+> 直接跑 `powershell -File tools| Turnstile token 正确性无法验证 | 求解器能对真实挑战解出 token（约 8 字符）并交给 finalize；但实测上游**不校验**该 token（空串与垃圾 base64 都返回 200），所以「解出来」不等于「解对了」。上游一旦开始较真，会表现为 503 `turnstile_required` 并标记账号需人工验证；排错时设 `GPT2APIRS_CAPTURE_TURNSTILE=<目录>` 可把真实 `dx`+`p` 落盘做离线 fixture |
+build.ps1`，它把 vcvars、Ninja、NASM 和工具链文件都配好。
 
 ### 3. 导入账号
 
@@ -356,6 +357,7 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls
 | 生图 `quality` 同样只是提示词 | 上游没有质量参数，`low`/`medium`/`high` 会写进提示词；但它**确实影响计费**（按档位算 token），实测 high 档 1659×948 = 6338 tokens |
 | 生图 `stream: true` 不支持 | 上游没有逐块图片流（SSE 只给指针，字节另行下载）；要进度请用 `/api/image-tasks` |
 | `temperature` / `top_p` / `max_tokens` 接受但忽略 | 上游 web 会话没有这些旋钮；`modalities` 例外，非 text 直接 400 |
+| Turnstile 求解未完成 | PoW 已实现；Turnstile 的字节码解释器（`dx`+`p`）能解码真实挑战、跑满 600+ 步，但产出算子拿不到有效值，因此**不产出 token**（取不到值时绝不编码字面量冒充）。上游目前不强制校验（空 token 也能握手），一旦较真会报 `turnstile_required`(503) 并标记账号需人工验证；排错时设 `GPT2APIRS_CAPTURE_TURNSTILE=<目录>` 可把真实 `dx`+`p` 落盘做离线 fixture |
 | Codex 模型 | `codex-gpt-image-2` 等走另一条上游链路，未实现，对外不宣告 |
 | 单实例假设 | 选号游标在进程内存，多实例部署槽位不共享 |
 | 账号必须有额度 | `quota=0` 时不会出图；上游说 0 就是 0，等 `restore_at` 或换号 |

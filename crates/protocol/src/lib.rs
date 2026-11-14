@@ -18,6 +18,7 @@ pub mod sentinel;
 pub mod sse;
 pub mod sse_framer;
 pub mod text_stream;
+pub mod turnstile;
 pub mod util;
 
 pub use pow::{
