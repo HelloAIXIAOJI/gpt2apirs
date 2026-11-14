@@ -319,6 +319,9 @@ powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls
 :: 换号重试：第一个账号 401，第二个必须接手
 powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_switch_account_live
 
+:: 管理后台冒烟：真浏览器登录，逐页检查渲染与控制台异常（需要先起服务）
+node tools\admin_e2e.mjs --key <ADMIN_KEY>
+
 :: 图文对话：图片真的上传，且会话 payload 是多模态
 powershell -File tools\build.ps1 -CargoArgs test,-p,gpt2apirs-api,--features,tls,--test,mock_upstream_image_input
 ```
