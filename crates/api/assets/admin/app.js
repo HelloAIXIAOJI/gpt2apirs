@@ -712,6 +712,8 @@ renderers.logs = async () => {
   if (path) params.set('path', path);
   const account = $('#log-account').value.trim();
   if (account) params.set('account', account);
+  const code = $('#log-code').value.trim();
+  if (code) params.set('code', code);
 
   const payload = await api('/api/logs?' + params.toString());
   const items = payload.data || [];
@@ -751,9 +753,11 @@ $('#log-status').addEventListener('change', () => { logsState.page = 1; reloadLo
 $('#log-hours').addEventListener('change', () => { logsState.page = 1; reloadLogs(); });
 $('#log-path').addEventListener('keydown', (event) => { if (event.key === 'Enter') { logsState.page = 1; reloadLogs(); } });
 $('#log-account').addEventListener('keydown', (event) => { if (event.key === 'Enter') { logsState.page = 1; reloadLogs(); } });
+$('#log-code').addEventListener('keydown', (event) => { if (event.key === 'Enter') { logsState.page = 1; reloadLogs(); } });
 $('#log-reset').addEventListener('click', () => {
   $('#log-path').value = '';
   $('#log-account').value = '';
+  $('#log-code').value = '';
   $('#log-status').value = 'all';
   $('#log-hours').value = '24';
   logsState.page = 1;

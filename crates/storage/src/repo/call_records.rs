@@ -59,6 +59,8 @@ pub struct CallRecordQuery {
     pub path_prefix: Option<String>,
     /// 账号过滤。
     pub account_id: Option<Uuid>,
+    /// 错误码（精确匹配）。
+    pub error_code: Option<String>,
     /// 起始时间。
     pub since: Option<DateTime<Utc>>,
     /// 返回条数上限。
@@ -122,6 +124,7 @@ impl CallRecordRepo {
             .bind(query.since)
             .bind(query.limit.clamp(1, 500))
             .bind(query.offset.max(0))
+            .bind(query.error_code.clone())
             .fetch_all(&self.pool)
             .await?;
         Ok(rows)
@@ -169,6 +172,7 @@ const SQL_LIST: &str = r#"select id, created_at, method, path, status, duration_
      and ($3::text is null or path like $3 || '%')
      and ($4::uuid is null or account_id = $4)
      and ($5::timestamptz is null or created_at >= $5)
+     and ($8::text is null or error_code = $8)
    order by created_at desc
    limit $6 offset $7"#;
 

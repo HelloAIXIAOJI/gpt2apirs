@@ -123,7 +123,8 @@ const PAGES = [
     check: `(() => {
       const rows = document.querySelectorAll('#logs tbody tr').length;
       const page = (document.getElementById('logs-page') || {}).textContent || '';
-      const filters = document.getElementById('log-path') && document.getElementById('log-hours');
+      const filters = document.getElementById('log-path') && document.getElementById('log-hours')
+        && document.getElementById('log-account') && document.getElementById('log-code');
       return { ok: rows >= 1 && filters && page.includes('页'), detail: '日志行 ' + rows + '，分页「' + page.trim() + '」' };
     })()`,
   },

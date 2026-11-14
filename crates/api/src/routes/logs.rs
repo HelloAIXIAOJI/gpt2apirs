@@ -31,6 +31,9 @@ pub struct LogQuery {
     /// 账号 ID。
     #[serde(default)]
     pub account: Option<Uuid>,
+    /// 错误码。
+    #[serde(default)]
+    pub code: Option<String>,
     /// 近 N 小时。
     #[serde(default)]
     pub hours: Option<i64>,
@@ -60,6 +63,7 @@ pub async fn list_logs(
         status_range: status_range(params.status.as_deref()),
         path_prefix: params.path.filter(|value| !value.trim().is_empty()),
         account_id: params.account,
+        error_code: params.code.filter(|value| !value.trim().is_empty()),
         since: params
             .hours
             .map(|hours| chrono::Utc::now() - chrono::Duration::hours(hours.clamp(1, 24 * 30))),
