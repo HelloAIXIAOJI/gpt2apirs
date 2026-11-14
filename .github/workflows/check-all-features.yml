@@ -1,0 +1,21 @@
+name: 编译检查（全特性）
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 安装 BoringSSL 需要的工具
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build nasm
+      - run: cargo check --workspace --all-features --all-targets
