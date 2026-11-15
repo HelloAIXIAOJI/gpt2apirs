@@ -7,69 +7,11 @@
 </header>
 
 <section id="overview" class="stats">
-  <h2 class="section-title">账号</h2>
-  {% if !accounts.error.is_empty() %}
-  <p class="stat-error">{{ accounts.error }}</p>
-  {% endif %}
+  {% for group in groups %}
+  <h2 class="section-title">{{ group.title }}</h2>
   <div class="stat-grid">
-    <article class="stat">
-      <span class="stat-label">账号总数</span>
-      <span class="stat-value">{{ accounts.total }}</span>
-      <span class="stat-badges">
-        <span class="badge">正常 {{ accounts.normal }}</span>
-        <span class="badge">限流 {{ accounts.limited }}</span>
-        <span class="badge">异常 {{ accounts.abnormal }}</span>
-        <span class="badge">禁用 {{ accounts.disabled }}</span>
-      </span>
-    </article>
-    <article class="stat">
-      <span class="stat-label">正常账号配额总和</span>
-      <span class="stat-value">{{ accounts.quota_total }}</span>
-    </article>
-    <article class="stat">
-      <span class="stat-label">累计成功 / 失败</span>
-      <span class="stat-value">{{ accounts.success }} / {{ accounts.fail }}</span>
-    </article>
+    {% for card in group.cards %}{{ card|safe }}{% endfor %}
   </div>
-
-  <h2 class="section-title">资源</h2>
-  <div class="stat-grid">
-    <article class="stat">
-      <span class="stat-label">图片存储</span>
-      <span class="stat-value">{{ images.count }} 张</span>
-      <span class="stat-sub">{{ images.bytes }}</span>
-      {% if !images.error.is_empty() %}<span class="stat-error">{{ images.error }}</span>{% endif %}
-    </article>
-    <article class="stat">
-      <span class="stat-label">活跃密钥</span>
-      <span class="stat-value">{{ active_keys }}</span>
-    </article>
-  </div>
-
-  <h2 class="section-title">出口</h2>
-  <div class="stat-grid">
-    <article class="stat">
-      <span class="stat-label">代理出口</span>
-      <span class="stat-value">{{ egress.state }}</span>
-      <span class="stat-sub">节点 {{ egress.nodes }} 个 · 当前 {{ egress.selected }}</span>
-      <span class="stat-sub">跳过 {{ egress.skipped }} 个</span>
-    </article>
-  </div>
-
-  <h2 class="section-title">系统</h2>
-  <div class="stat-grid">
-    <article class="stat">
-      <span class="stat-label">运行时长</span>
-      <span class="stat-value">{{ system.uptime }}</span>
-    </article>
-    <article class="stat">
-      <span class="stat-label">版本</span>
-      <span class="stat-value">{{ system.version }}</span>
-    </article>
-    <article class="stat">
-      <span class="stat-label">数据库</span>
-      <span class="stat-value">{{ system.database }}</span>
-    </article>
-  </div>
+  {% endfor %}
 </section>
 {% endblock %}

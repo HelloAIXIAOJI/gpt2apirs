@@ -18,6 +18,10 @@ use crate::auth::is_admin_token;
 use crate::session;
 use crate::state::AppState;
 
+mod card;
+
+use card::StatCard;
+
 /// 提供给浏览器的 htmx 脚本。
 pub const HTMX_JS: &str = include_str!("../../assets/htmx.min.js");
 
@@ -31,52 +35,18 @@ struct LoginPage {
     error: String,
 }
 
-/// 账号指标。
-struct AccountBlock {
-    error: String,
-    total: String,
-    normal: String,
-    limited: String,
-    abnormal: String,
-    disabled: String,
-    quota_total: String,
-    success: String,
-    fail: String,
-}
-
-/// 图片占用。
-struct ImageBlock {
-    error: String,
-    count: String,
-    bytes: String,
-}
-
-/// 出口状态。
-struct EgressBlock {
-    state: String,
-    nodes: String,
-    selected: String,
-    skipped: String,
-}
-
-/// 系统信息。
-struct SystemBlock {
-    uptime: String,
-    version: String,
-    database: String,
+/// 卡片的展示分组。
+struct StatGroup {
+    title: &'static str,
+    cards: Vec<StatCard>,
 }
 
 /// 概览页。
 #[derive(Template)]
 #[template(path = "overview.html")]
 struct OverviewPage {
-    accounts: AccountBlock,
-    images: ImageBlock,
-    active_keys: String,
-    egress: EgressBlock,
-    system: SystemBlock,
+    groups: Vec<StatGroup>,
 }
-
 /// 登录表单。
 #[derive(Debug, Deserialize)]
 pub struct LoginForm {
@@ -139,84 +109,76 @@ pub async fn overview(State(state): State<Arc<AppState>>, headers: HeaderMap) ->
 }
 
 async fn build_overview(state: &AppState) -> OverviewPage {
-    let accounts = match state.pool.stats().await {
-        Ok(stats) => AccountBlock {
-            error: String::new(),
-            total: stats.total.to_string(),
-            normal: stats.normal.to_string(),
-            limited: stats.limited.to_string(),
-            abnormal: stats.abnormal.to_string(),
-            disabled: stats.disabled.to_string(),
-            quota_total: stats.total_quota.to_string(),
-            success: stats.total_success.to_string(),
-            fail: stats.total_fail.to_string(),
-        },
-        Err(error) => AccountBlock {
-            error: format!("读取失败（{error}）"),
-            ..empty_accounts()
-        },
-    };
+    let mut groups = Vec::new();
 
-    let images = match ImageAssetRepo::new(state.db.clone()).stats(None).await {
-        Ok(stats) => ImageBlock {
-            error: String::new(),
-            count: stats.count.to_string(),
-            bytes: format_bytes(stats.bytes.max(0) as u64),
-        },
-        Err(error) => ImageBlock {
-            error: format!("读取失败（{error}）"),
-            count: "-".to_string(),
-            bytes: "-".to_string(),
-        },
+    let accounts_cards = match state.pool.stats().await {
+        Ok(stats) => vec![
+            StatCard::new("账号总数", stats.total.to_string())
+                .badge(format!("正常 {}", stats.normal))
+                .badge(format!("限流 {}", stats.limited))
+                .badge(format!("异常 {}", stats.abnormal))
+                .badge(format!("禁用 {}", stats.disabled)),
+            StatCard::new("正常账号配额总和", stats.total_quota.to_string()),
+            StatCard::new("累计成功 / 失败", format!("{} / {}", stats.total_success, stats.total_fail)),
+        ],
+        Err(error) => vec![
+            StatCard::failed("账号总数", format!("读取失败（{error}）")),
+            StatCard::failed("正常账号配额总和", format!("读取失败（{error}）")),
+            StatCard::failed("累计成功 / 失败", format!("读取失败（{error}）")),
+        ],
     };
+    groups.push(StatGroup {
+        title: "账号",
+        cards: accounts_cards,
+    });
 
+    let images_card = match ImageAssetRepo::new(state.db.clone()).stats(None).await {
+        Ok(stats) => StatCard::new("图片存储", format!("{} 张", stats.count))
+            .sub(format_bytes(stats.bytes.max(0) as u64)),
+        Err(error) => StatCard::failed("图片存储", format!("读取失败（{error}）")),
+    };
     let active_keys = match state.api_keys.active_count().await {
-        Ok(count) => count.to_string(),
-        Err(error) => format!("读取失败（{error}）"),
+        Ok(count) => StatCard::new("活跃密钥", count.to_string()),
+        Err(error) => StatCard::failed("活跃密钥", format!("读取失败（{error}）")),
     };
+    groups.push(StatGroup {
+        title: "资源",
+        cards: vec![images_card, active_keys],
+    });
 
     let status = state.proxy_service.status();
-    let egress = EgressBlock {
-        state: if status.running { "运行中" } else { "未运行（直连）" }.to_string(),
-        nodes: status.node_count.to_string(),
-        selected: status.selected.unwrap_or_else(|| "未选择".to_string()),
-        skipped: status.skipped.len().to_string(),
-    };
+    let egress_card = StatCard::new(
+        "代理出口",
+        if status.running { "运行中" } else { "未运行（直连）" },
+    )
+    .sub(format!("节点 {} 个", status.node_count))
+    .sub(format!(
+        "当前 {}",
+        status.selected.unwrap_or_else(|| "未选择".to_string())
+    ))
+    .sub(format!("跳过 {} 个", status.skipped.len()));
+    groups.push(StatGroup {
+        title: "出口",
+        cards: vec![egress_card],
+    });
 
     let database = match sqlx::query_scalar::<_, i32>("select 1")
         .fetch_one(&state.db)
         .await
     {
-        Ok(_) => "就绪".to_string(),
-        Err(error) => format!("不可用（{error}）"),
+        Ok(_) => StatCard::new("数据库", "就绪"),
+        Err(error) => StatCard::failed("数据库", format!("不可用（{error}）")),
     };
-    let system = SystemBlock {
-        uptime: format_uptime(state.uptime_secs().max(0) as u64),
-        version: crate::system::APP_VERSION.to_string(),
-        database,
-    };
+    groups.push(StatGroup {
+        title: "系统",
+        cards: vec![
+            StatCard::new("运行时长", format_uptime(state.uptime_secs().max(0) as u64)),
+            StatCard::new("版本", crate::system::APP_VERSION),
+            database,
+        ],
+    });
 
-    OverviewPage {
-        accounts,
-        images,
-        active_keys,
-        egress,
-        system,
-    }
-}
-
-fn empty_accounts() -> AccountBlock {
-    AccountBlock {
-        error: String::new(),
-        total: "-".to_string(),
-        normal: "-".to_string(),
-        limited: "-".to_string(),
-        abnormal: "-".to_string(),
-        disabled: "-".to_string(),
-        quota_total: "-".to_string(),
-        success: "-".to_string(),
-        fail: "-".to_string(),
-    }
+    OverviewPage { groups }
 }
 
 /// 秒数转「N 天 N 小时 N 分」，只保留两级，避免一行太长。
@@ -319,43 +281,23 @@ mod tests {
     }
 
     #[test]
-    fn overview_renders_all_blocks() {
+    fn overview_renders_grouped_cards() {
         let page = OverviewPage {
-            accounts: AccountBlock {
-                error: String::new(),
-                total: "5".to_string(),
-                normal: "3".to_string(),
-                limited: "1".to_string(),
-                abnormal: "1".to_string(),
-                disabled: "0".to_string(),
-                quota_total: "120".to_string(),
-                success: "400".to_string(),
-                fail: "9".to_string(),
-            },
-            images: ImageBlock {
-                error: String::new(),
-                count: "12".to_string(),
-                bytes: "3.5 MB".to_string(),
-            },
-            active_keys: "2".to_string(),
-            egress: EgressBlock {
-                state: "运行中".to_string(),
-                nodes: "44".to_string(),
-                selected: "日本专线".to_string(),
-                skipped: "3".to_string(),
-            },
-            system: SystemBlock {
-                uptime: "2 天 3 小时".to_string(),
-                version: "0.1.0".to_string(),
-                database: "就绪".to_string(),
-            },
+            groups: vec![
+                StatGroup {
+                    title: "账号",
+                    cards: vec![StatCard::new("账号总数", "5")
+                        .badge("正常 3")
+                        .badge("禁用 0")],
+                },
+                StatGroup {
+                    title: "系统",
+                    cards: vec![StatCard::failed("数据库", "不可用（超时）")],
+                },
+            ],
         };
         let html = page.render().expect("渲染概览页");
-        for expected in [
-            "账号总数", "正常 3", "限流 1", "异常 1", "禁用 0", "120", "400 / 9",
-            "12 张", "3.5 MB", "活跃密钥", "运行中", "44 个", "日本专线", "跳过 3 个",
-            "2 天 3 小时", "0.1.0", "数据库", "就绪",
-        ] {
+        for expected in ["账号", "账号总数", ">5<", "正常 3", "系统", "数据库", "stat--danger"] {
             assert!(html.contains(expected), "缺少 {expected}：{html}");
         }
     }

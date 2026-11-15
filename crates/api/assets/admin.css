@@ -195,6 +195,11 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* 读不到数据时数值转危险色，一眼能看出这格是坏的 */
+.stat--danger .stat-value {
+  color: var(--danger);
+}
+
 .stat-sub {
   font-size: 13px;
   color: var(--muted);
