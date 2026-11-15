@@ -7,22 +7,37 @@
 /// 上游默认模型 slug。
 pub use gpt2apirs_protocol::conversation::DEFAULT_MODEL;
 
-/// 唯一支持的图片模型对外名。
-pub const DEFAULT_IMAGE_MODEL: &str = "gpt-image-2";
+/// 对外只暴露两个模型名：`text` 与 `image`。
+///
+/// 具体走哪个上游型号由本项目决定，不写进对外契约——上游型号会逐周变化，
+/// 写死等于让调用方跟着一起改。需要按型号分流时由前面的网关自己包装。
+pub const EXPOSED_TEXT_MODEL: &str = "text";
+
+/// 对外图片模型名。
+pub const EXPOSED_IMAGE_MODEL: &str = "image";
+
+/// 旧名字仍然接受，但不再对外宣告（兼容已有调用方）。
+const LEGACY_TEXT_ALIASES: &[&str] = &["gpt-5-5", "gpt-5-6"];
+
+/// 旧的图片模型名，同上。
+const LEGACY_IMAGE_ALIASES: &[&str] = &["gpt-image-2"];
+
+/// 图片模型对外名（默认即 `image`）。
+pub const DEFAULT_IMAGE_MODEL: &str = EXPOSED_IMAGE_MODEL;
 
 /// 当前**真正支持**的图片模型对外名。
 pub const SUPPORTED_MODELS: &[&str] = &[DEFAULT_IMAGE_MODEL];
 
 /// 上游还有、但我们尚未实现的模型（仅用于文档与错误提示）。
 pub const NOT_YET_SUPPORTED_MODELS: &[&str] = &[
-    "codex-gpt-image-2",
-    "plus-codex-gpt-image-2",
-    "team-codex-gpt-image-2",
-    "pro-codex-gpt-image-2",
+    "codex-image",
+    "plus-codex-image",
+    "team-codex-image",
+    "pro-codex-image",
 ];
 
-/// 默认文本模型对外名。
-pub const DEFAULT_TEXT_MODEL: &str = "gpt-5-5";
+/// 文本模型对外名（默认即 `text`）。
+pub const DEFAULT_TEXT_MODEL: &str = EXPOSED_TEXT_MODEL;
 
 /// 文本模型的对外名。
 ///
@@ -81,7 +96,9 @@ pub fn default_image_model() -> &'static str {
 /// `/v1/images/generations` 会接受 `gpt-5-5`。
 pub fn is_supported_image(model: &str) -> bool {
     let trimmed = model.trim();
-    trimmed.is_empty() || SUPPORTED_MODELS.iter().any(|m| *m == trimmed)
+    trimmed.is_empty()
+        || SUPPORTED_MODELS.iter().any(|item| *item == trimmed)
+        || LEGACY_IMAGE_ALIASES.contains(&trimmed)
 }
 
 /// 按对外名查目录项。
@@ -90,7 +107,17 @@ pub fn find(model: &str) -> Option<&'static ModelInfo> {
     if trimmed.is_empty() {
         return None;
     }
-    MODEL_CATALOG.iter().find(|info| info.id == trimmed)
+    if let Some(info) = MODEL_CATALOG.iter().find(|info| info.id == trimmed) {
+        return Some(info);
+    }
+    // 旧名字归一到对外名，响应里回的就是对外名
+    if LEGACY_TEXT_ALIASES.contains(&trimmed) {
+        return MODEL_CATALOG.iter().find(|info| info.id == EXPOSED_TEXT_MODEL);
+    }
+    if LEGACY_IMAGE_ALIASES.contains(&trimmed) {
+        return MODEL_CATALOG.iter().find(|info| info.id == EXPOSED_IMAGE_MODEL);
+    }
+    None
 }
 
 /// 把对外模型名映射成上游 slug。

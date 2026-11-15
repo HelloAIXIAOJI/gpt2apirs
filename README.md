@@ -28,7 +28,7 @@ MIT · Rust 2024 · axum · PostgreSQL · BoringSSL
 | `GET /health`、`GET /health/ready`、`GET /version` | 存活 / 就绪（DB 不可用返回 503）|
 | `GET /api/*`、`GET /admin` | 管理后台（后台会话或 `ADMIN_KEY`）|
 
-模型：文本 `gpt-5-5`，图片 `gpt-image-2`。上游还有 `codex-*` 系列，本项目未实现。
+对外只暴露两个模型名：`text`（文本）与 `image`（生图/改图）。上游的具体型号由本项目内部决定，不写进对外契约——上游会换型号，写死等于让调用方跟着一起改。旧的 `gpt-5-5` / `gpt-image-2` 仍接受，但不再出现在 `/v1/models` 里。
 
 ---
 
@@ -86,7 +86,7 @@ curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $AUTH_KEY"
 curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Authorization: Bearer $AUTH_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gpt-5-5","messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"text","messages":[{"role":"user","content":"你好"}]}'
 ```
 
 账号通过管理后台「账号」页导入（token 或 OAuth 授权），导入后会自动同步上游配额。
