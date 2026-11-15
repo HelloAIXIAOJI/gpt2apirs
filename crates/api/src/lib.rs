@@ -72,14 +72,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/images/{id}",
             delete(routes::images::delete_image),
         )
-        .route(
-            "/api/proxy-groups",
-            get(routes::proxy_groups::list_groups).post(routes::proxy_groups::create_group),
-        )
-        .route(
-            "/api/proxy-groups/{id}",
-            put(routes::proxy_groups::update_group).delete(routes::proxy_groups::delete_group),
-        )
         // 管理面看同一批异步生图任务：客户端走 API key 的 /api/image-tasks，
         // 后台走会话鉴权的 /api/admin/image-tasks，两条路由共用 handler。
         .route(
@@ -89,14 +81,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/admin/image-tasks/{id}",
             delete(routes::image_tasks::delete),
-        )
-        .route(
-            "/api/proxy-groups/{id}/test",
-            post(routes::proxy_groups::test_group),
-        )
-        .route(
-            "/api/accounts/{id}/proxy-group",
-            post(routes::proxy_groups::assign_group),
         )
         .route("/api/proxy/status", get(routes::proxy::status))
         .route("/api/proxy/start", post(routes::proxy::start))

@@ -191,8 +191,6 @@ pub struct Account {
 
     /// 账号级代理（加入分组时是组地址的副本）。
     pub proxy: String,
-    /// 所属代理分组。
-    pub proxy_group_id: Option<Uuid>,
 
     /// 成功次数。
     pub success_count: i64,

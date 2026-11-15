@@ -90,8 +90,6 @@ pub struct AccountFilter {
     pub source: Option<Source>,
     /// 关键词（匹配 email / 上游 account_id / token sha 前缀）。
     pub keyword: Option<String>,
-    /// 代理分组（只列该组账号）。
-    pub proxy_group_id: Option<Uuid>,
     /// 分页：偏移。
     pub offset: i64,
     /// 分页：数量（0 表示不限）。
@@ -493,62 +491,6 @@ impl AccountRepo {
         Ok(row_to_account(&row))
     }
 
-    // ---- 代理分组 ----
-
-    /// 把账号加入分组：组地址同时写进 `proxy`。
-    pub async fn assign_proxy_group(
-        &self,
-        account_id: Uuid,
-        group_id: Uuid,
-        url: &str,
-    ) -> Result<Account, AccountError> {
-        let row = sqlx::query(&format!(
-            "update accounts set proxy_group_id = $2, proxy = $3, updated_at = now() where id = $1 \
-             returning {COLUMNS}"
-        ))
-        .bind(account_id)
-        .bind(group_id)
-        .bind(url)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row_to_account(&row))
-    }
-
-    /// 把账号移出分组（保留当前生效的代理串，不突然改路由）。
-    pub async fn clear_proxy_group(&self, account_id: Uuid) -> Result<Account, AccountError> {
-        let row = sqlx::query(&format!(
-            "update accounts set proxy_group_id = null, updated_at = now() where id = $1 \
-             returning {COLUMNS}"
-        ))
-        .bind(account_id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row_to_account(&row))
-    }
-
-    /// 组地址变了：同步组内账号。返回受影响条数。
-    pub async fn sync_proxy_group(&self, group_id: Uuid, url: &str) -> Result<u64, AccountError> {
-        let result = sqlx::query(
-            "update accounts set proxy = $2, updated_at = now() where proxy_group_id = $1",
-        )
-        .bind(group_id)
-        .bind(url)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
-
-    /// 删组前摘掉成员。
-    pub async fn detach_proxy_group(&self, group_id: Uuid) -> Result<u64, AccountError> {
-        let result = sqlx::query(
-            "update accounts set proxy_group_id = null, updated_at = now() where proxy_group_id = $1",
-        )
-        .bind(group_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
-
     /// 批量删除。返回删除数量。
     pub async fn delete_many(&self, ids: &[Uuid]) -> Result<u64, AccountError> {
         if ids.is_empty() {
@@ -671,7 +613,7 @@ const MIN_TOKEN_LOOKUP_LEN: usize = 32;
 /// 列清单（保持与 [`row_to_account`] 对齐）。
 const COLUMNS: &str = "\
     id, access_token, refresh_token, id_token, email, upstream_account_id, \
-    plan, source, status, quota, quota_confirmed, restore_at, proxy, proxy_group_id, \
+    plan, source, status, quota, quota_confirmed, restore_at, proxy, \
     success_count, fail_count, invalid_count, \
     last_used_at, last_invalid_at, last_error, last_error_at, \
     last_checked_at, last_refresh_at, created_at, updated_at";
@@ -697,7 +639,6 @@ fn row_to_account(row: &PgRow) -> Account {
         quota_confirmed: row.get("quota_confirmed"),
         restore_at: row.get("restore_at"),
         proxy: row.get("proxy"),
-        proxy_group_id: row.get("proxy_group_id"),
         success_count: row.get("success_count"),
         fail_count: row.get("fail_count"),
         invalid_count: row.get("invalid_count"),
@@ -860,10 +801,6 @@ fn build_filter(filter: &AccountFilter) -> (String, Vec<String>) {
         binds.push(source.as_str().to_string());
         clauses.push(format!("source = ${}", binds.len()));
     }
-    if let Some(group) = filter.proxy_group_id {
-        binds.push(group.to_string());
-        clauses.push(format!("proxy_group_id = ${}::uuid", binds.len()));
-    }
     if let Some(keyword) = filter.keyword.as_deref() {
         let trimmed = keyword.trim();
         if !trimmed.is_empty() {
@@ -913,18 +850,6 @@ mod tests {
         assert!(sql.contains("status = $1"), "{sql}");
         assert!(sql.contains("plan = $2"), "{sql}");
         assert_eq!(binds, vec!["normal".to_string(), "plus".to_string()]);
-    }
-
-    #[test]
-    fn group_filter_binds_uuid() {
-        let group = Uuid::nil();
-        let filter = AccountFilter {
-            proxy_group_id: Some(group),
-            ..Default::default()
-        };
-        let (sql, binds) = build_filter(&filter);
-        assert!(sql.contains("proxy_group_id = $1::uuid"), "{sql}");
-        assert_eq!(binds, vec![group.to_string()]);
     }
 
     #[test]

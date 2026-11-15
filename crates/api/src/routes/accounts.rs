@@ -65,8 +65,6 @@ pub struct AccountView {
     pub restore_at: Option<DateTime<Utc>>,
     /// 代理。
     pub proxy: String,
-    /// 所属代理分组。
-    pub proxy_group_id: Option<Uuid>,
     /// 成功次数。
     pub success_count: i64,
     /// 失败次数。
@@ -180,7 +178,6 @@ impl AccountView {
             quota_confirmed: account.quota_confirmed,
             restore_at: account.restore_at,
             proxy: account.proxy,
-            proxy_group_id: account.proxy_group_id,
             success_count: account.success_count,
             fail_count: account.fail_count,
             invalid_count: account.invalid_count,
@@ -261,7 +258,6 @@ pub async fn list_accounts(
         plan: query.plan.as_deref().map(Plan::parse),
         source,
         keyword: query.keyword.clone(),
-        proxy_group_id: query.group,
         offset: (page - 1) * page_size,
         limit: page_size,
     };
