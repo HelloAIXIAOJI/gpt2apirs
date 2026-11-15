@@ -143,17 +143,9 @@ impl RuntimeSettings {
             .collect()
     }
 
-    /// 取出原始 JSON 值。兼容两种存法：
-    ///
-    /// - 裸值：`{"image_poll_timeout_secs": 60}`
-    /// - 带包装：`{"image_poll_timeout_secs": {"v": 60}}`（为将来存元信息留余地）
+    /// 取出原始 JSON 值。存储里只放裸值，不认任何包装形状。
     fn lookup(&self, key: &str) -> Option<Value> {
-        let snapshot = self.snapshot();
-        let raw = snapshot.get(key)?;
-        match raw {
-            Value::Object(map) => map.get("v").cloned(),
-            other => Some(other.clone()),
-        }
+        self.snapshot().get(key).cloned()
     }
 
     /// 把原始值解成数字（字符串数字也接受）。
@@ -210,14 +202,7 @@ mod tests {
         assert_eq!(settings.get_i64("image_poll_timeout_secs"), 120);
     }
 
-    #[test]
-    fn wrapped_values_are_supported() {
-        let settings = RuntimeSettings::new(map(vec![
-            ("image_settle_secs", json!({"v": 2.5})),
-        ]));
-        assert_eq!(settings.get_f64("image_settle_secs"), 2.5);
-    }
-
+    
     #[test]
     fn bool_accepts_multiple_representations() {
         let settings = RuntimeSettings::new(map(vec![
