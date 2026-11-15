@@ -283,6 +283,90 @@ button.htmx-request::after,
   background: var(--danger-bg);
 }
 
+.flash {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: #067647;
+  background: #ecfdf3;
+  border: 1px solid #abefc6;
+  border-radius: 8px;
+}
+
+.import {
+  margin: 12px 0 20px;
+}
+
+.import summary {
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.import form {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.import textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 13px;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.import button {
+  justify-self: start;
+}
+
+.batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.pick {
+  width: 32px;
+  text-align: center;
+}
+
+.edit-form {
+  display: grid;
+  gap: 14px;
+  max-width: 560px;
+  margin-top: 16px;
+}
+
+.edit-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.edit-form input,
+.edit-form select {
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 10px;
+}
+
 .empty {
   padding: 32px;
   text-align: center;

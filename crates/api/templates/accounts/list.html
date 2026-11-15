@@ -5,7 +5,16 @@
 
 <section id="accounts" class="panel">
   <p class="summary">{{ summary }}</p>
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
   {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+
+  <details class="import">
+    <summary>导入账号</summary>
+    <form method="post" action="/accounts/import">
+      <textarea name="text" rows="6" placeholder="粘贴 access_token，或账号 JSON；每行一个也可以"></textarea>
+      <button type="submit">导入</button>
+    </form>
+  </details>
 
   <form class="filters" method="get" action="/accounts">
     <label>关键词<input name="keyword" value="{{ keyword }}" placeholder="邮箱 / 上游 ID / token 前缀"></label>
@@ -30,17 +39,30 @@
     <a class="btn btn--ghost" href="/accounts">重置</a>
   </form>
 
-  <table class="table">
-    <thead>
-      <tr>
-        <th>账号</th><th>状态</th><th>套餐</th><th>配额</th>
-        <th>成功 / 失败</th><th>出口</th><th>最近错误</th><th>操作</th>
-      </tr>
-    </thead>
-    <tbody id="accounts-body">
-      {% for row in rows %}{{ row|safe }}{% endfor %}
-    </tbody>
-  </table>
+  <form id="batch-form" method="post" action="/accounts/batch">
+    <div class="batch-bar">
+      <button class="btn btn--ghost" type="submit" name="action" value="sync">同步选中</button>
+      <button class="btn btn--ghost" type="submit" name="action" value="refresh">刷新令牌</button>
+      <button class="btn btn--ghost" type="submit" name="action" value="enable">启用</button>
+      <button class="btn btn--ghost" type="submit" name="action" value="disable">禁用</button>
+      <button class="btn btn--ghost" type="submit" name="action" value="export">导出</button>
+      <button class="btn btn--danger" type="submit" name="action" value="delete" onclick="return confirm('确定删除选中的账号？')">删除</button>
+      <span class="muted">不勾选表示「全部待处理账号」</span>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th class="pick"><input type="checkbox" onclick="document.querySelectorAll('#batch-form input[name=ids]').forEach((box) => box.checked = this.checked)"></th>
+          <th>账号</th><th>状态</th><th>套餐</th><th>配额</th>
+          <th>成功 / 失败</th><th>出口</th><th>最近错误</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="accounts-body">
+        {% for row in rows %}{{ row|safe }}{% endfor %}
+      </tbody>
+    </table>
+  </form>
 
   {% if rows.is_empty() && error.is_empty() %}
   <p class="empty">没有符合条件的账号。</p>
