@@ -46,11 +46,10 @@ pub fn note_account(account_id: uuid::Uuid) {
 }
 
 /// 不记录的路径前缀。
-const SKIP_PREFIXES: [&str; 5] = [
+const SKIP_PREFIXES: [&str; 4] = [
     "/health",
     "/version",
     "/images/",
-    "/admin/assets/",
     "/favicon",
 ];
 

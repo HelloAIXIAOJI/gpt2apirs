@@ -5,7 +5,6 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod admin_ui;
 pub mod auth;
 pub mod call_log;
 pub mod error;
@@ -173,9 +172,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     );
 
     // 页面外壳与静态资源公开：真正的数据都在需要会话的 /api/* 后面
-    let ui = Router::new()
-        .route("/admin", get(admin_ui::index))
-        .route("/admin/assets/{name}", get(admin_ui::asset));
+    let ui = Router::new();
 
     let public = Router::new()
         .route("/health", get(system::health))
