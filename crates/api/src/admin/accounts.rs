@@ -281,11 +281,7 @@ pub async fn delete_account(
     Path(id): Path<Uuid>,
 ) -> Response {
     match crate::routes::accounts::delete_account(State(state.clone()), Path(id)).await {
-        Ok(_) => {
-            let mut response = StatusCode::OK.into_response();
-            set_toast(&mut response, "账号已删除", "ok");
-            response
-        }
+        Ok(_) => toast_only(StatusCode::OK, "账号已删除", "ok"),
         Err(error) => toast_only(
             StatusCode::OK,
             &format!("删除失败：{}", error_message(&error)),
@@ -353,11 +349,7 @@ async fn row_response(state: &Arc<AppState>, id: Uuid, message: &str, level: &st
             }
             .render();
             match html {
-                Ok(html) => {
-                    let mut response = Html(html).into_response();
-                    set_toast(&mut response, message, level);
-                    response
-                }
+                Ok(html) => Html(format!("{html}{}", toast_oob(message, level))).into_response(),
                 Err(error) => toast_only(
                     StatusCode::OK,
                     &format!("渲染失败：{error}"),
@@ -369,18 +361,24 @@ async fn row_response(state: &Arc<AppState>, id: Uuid, message: &str, level: &st
     }
 }
 
-/// 只回 toast：用 `HX-Trigger` 让页面顶部弹一条，不换内容。
+/// 只回 toast：把提示作为 out-of-band 片段塞回页面，不换主内容。
+///
+/// 不用 `HX-Trigger` 头：HTTP 头只能是可见 ASCII，中文会被浏览器按 Latin-1 解成乱码。
 fn toast_only(status: StatusCode, message: &str, level: &str) -> Response {
-    let mut response = status.into_response();
-    set_toast(&mut response, message, level);
-    response
+    (status, Html(toast_oob(message, level))).into_response()
 }
 
-fn set_toast(response: &mut Response, message: &str, level: &str) {
-    let payload = serde_json::json!({ "toast": { "text": message, "level": level } });
-    if let Ok(value) = payload.to_string().parse() {
-        response.headers_mut().insert("hx-trigger", value);
-    }
+/// 生成 toast 的 OOB 片段。
+fn toast_oob(message: &str, level: &str) -> String {
+    let class = if level == "error" {
+        "toast toast--error"
+    } else {
+        "toast"
+    };
+    format!(
+        "<div id=\"toasts\" hx-swap-oob=\"beforeend\"><div class=\"{class}\">{}</div></div>",
+        escape(message)
+    )
 }
 
 fn error_message(error: &crate::error::ApiError) -> String {
@@ -449,6 +447,15 @@ mod tests {
             filters.query(40),
             "?status=normal&plan=&keyword=a%20b%26c&offset=40"
         );
+    }
+
+    #[test]
+    fn toast_fragment_is_oob_and_escaped() {
+        let html = toast_oob("刷新<失败>", "error");
+        assert!(html.contains("hx-swap-oob=\"beforeend\""), "{html}");
+        assert!(html.contains("toast--error"), "{html}");
+        assert!(html.contains("刷新&lt;失败&gt;"), "{html}");
+        assert!(!html.contains("<失败>"), "{html}");
     }
 
     #[test]
