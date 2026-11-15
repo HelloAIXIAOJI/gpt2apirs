@@ -92,6 +92,19 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 ---
 
+## 订阅出口（可选）
+
+服务器直连不到上游时，可以填一条 Clash 格式的订阅，把全部上游流量（文本、搜索、生图）走节点。
+
+- 代理核是**进程内嵌**的（`vendor/shoes` + `crates/proxy-core`），只有本地 `127.0.0.1` 监听，不碰系统代理
+- 支持 hysteria2 / vless（含 reality、vision）/ trojan；其它协议会被跳过并在页面上写明原因
+- 管理后台「图片」页顶部就是出口区：订阅地址、保存并启动、停止、全部测速、逐节点测速与切换
+- 账号自己配了 `proxy` 时以账号为准，否则走全局出口
+- 订阅拉取有 60 秒冷却：服务商对高频拉取会返回 403
+
+相关设置项：`proxy_enabled`、`proxy_subscription_url`、`proxy_selected_node`、
+`proxy_probe_url`、`proxy_probe_timeout_ms`、`proxy_auto_refresh_minutes`。
+
 ## 运行设置
 
 管理后台「设置」页，或 `PUT /api/settings`。改完即时生效，不用重启。常用几项：

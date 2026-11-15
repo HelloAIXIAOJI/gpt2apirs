@@ -367,6 +367,9 @@ mod tests {
             "refresh_account_interval_minute",
             "chat_cache_ttl_secs",
             "image_task_concurrency",
+            "proxy_enabled",
+            "proxy_auto_refresh_minutes",
+            "proxy_probe_timeout_ms",
         ];
         assert_eq!(NUMERIC_SPECS.len(), expected.len());
         for key in expected {
