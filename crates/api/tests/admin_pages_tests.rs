@@ -114,7 +114,8 @@ async fn correct_key_issues_cookie_and_opens_overview() {
 
     let overview = send("GET", "/overview", None, Some(&cookie)).await;
     assert_eq!(overview.status, StatusCode::OK);
-    assert!(overview.body.contains("账号数量"), "{}", overview.body);
+    assert!(overview.body.contains("账号总数"), "{}", overview.body);
+    assert!(overview.body.contains("数据库"), "{}", overview.body);
 }
 
 #[tokio::test]

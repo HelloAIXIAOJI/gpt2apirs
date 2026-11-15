@@ -9,8 +9,9 @@ use askama::Template;
 use axum::Form;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{Html, IntoResponse, Response, Redirect};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::Utc;
+use gpt2apirs_storage::repo::ImageAssetRepo;
 use serde::Deserialize;
 
 use crate::auth::is_admin_token;
@@ -30,11 +31,50 @@ struct LoginPage {
     error: String,
 }
 
+/// 账号指标。
+struct AccountBlock {
+    error: String,
+    total: String,
+    normal: String,
+    limited: String,
+    abnormal: String,
+    disabled: String,
+    quota_total: String,
+    success: String,
+    fail: String,
+}
+
+/// 图片占用。
+struct ImageBlock {
+    error: String,
+    count: String,
+    bytes: String,
+}
+
+/// 出口状态。
+struct EgressBlock {
+    state: String,
+    nodes: String,
+    selected: String,
+    skipped: String,
+}
+
+/// 系统信息。
+struct SystemBlock {
+    uptime: String,
+    version: String,
+    database: String,
+}
+
 /// 概览页。
 #[derive(Template)]
 #[template(path = "overview.html")]
 struct OverviewPage {
-    account_count: String,
+    accounts: AccountBlock,
+    images: ImageBlock,
+    active_keys: String,
+    egress: EgressBlock,
+    system: SystemBlock,
 }
 
 /// 登录表单。
@@ -90,16 +130,121 @@ pub async fn root(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Res
     render_login(String::new())
 }
 
-/// `GET /overview`：账号数量预览。
+/// `GET /overview`：账号、图片、密钥、出口、系统的当前指标。
 pub async fn overview(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    let account_count = match state.pool.stats().await {
-        Ok(stats) => stats.total.to_string(),
+    render(build_overview(&state).await)
+}
+
+async fn build_overview(state: &AppState) -> OverviewPage {
+    let accounts = match state.pool.stats().await {
+        Ok(stats) => AccountBlock {
+            error: String::new(),
+            total: stats.total.to_string(),
+            normal: stats.normal.to_string(),
+            limited: stats.limited.to_string(),
+            abnormal: stats.abnormal.to_string(),
+            disabled: stats.disabled.to_string(),
+            quota_total: stats.total_quota.to_string(),
+            success: stats.total_success.to_string(),
+            fail: stats.total_fail.to_string(),
+        },
+        Err(error) => AccountBlock {
+            error: format!("读取失败（{error}）"),
+            ..empty_accounts()
+        },
+    };
+
+    let images = match ImageAssetRepo::new(state.db.clone()).stats(None).await {
+        Ok(stats) => ImageBlock {
+            error: String::new(),
+            count: stats.count.to_string(),
+            bytes: format_bytes(stats.bytes.max(0) as u64),
+        },
+        Err(error) => ImageBlock {
+            error: format!("读取失败（{error}）"),
+            count: "-".to_string(),
+            bytes: "-".to_string(),
+        },
+    };
+
+    let active_keys = match state.api_keys.active_count().await {
+        Ok(count) => count.to_string(),
         Err(error) => format!("读取失败（{error}）"),
     };
-    render(OverviewPage { account_count })
+
+    let status = state.proxy_service.status();
+    let egress = EgressBlock {
+        state: if status.running { "运行中" } else { "未运行（直连）" }.to_string(),
+        nodes: status.node_count.to_string(),
+        selected: status.selected.unwrap_or_else(|| "未选择".to_string()),
+        skipped: status.skipped.len().to_string(),
+    };
+
+    let database = match sqlx::query_scalar::<_, i32>("select 1")
+        .fetch_one(&state.db)
+        .await
+    {
+        Ok(_) => "就绪".to_string(),
+        Err(error) => format!("不可用（{error}）"),
+    };
+    let system = SystemBlock {
+        uptime: format_uptime(state.uptime_secs().max(0) as u64),
+        version: crate::system::APP_VERSION.to_string(),
+        database,
+    };
+
+    OverviewPage {
+        accounts,
+        images,
+        active_keys,
+        egress,
+        system,
+    }
+}
+
+fn empty_accounts() -> AccountBlock {
+    AccountBlock {
+        error: String::new(),
+        total: "-".to_string(),
+        normal: "-".to_string(),
+        limited: "-".to_string(),
+        abnormal: "-".to_string(),
+        disabled: "-".to_string(),
+        quota_total: "-".to_string(),
+        success: "-".to_string(),
+        fail: "-".to_string(),
+    }
+}
+
+/// 秒数转「N 天 N 小时 N 分」，只保留两级，避免一行太长。
+fn format_uptime(secs: u64) -> String {
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3_600;
+    let minutes = (secs % 3_600) / 60;
+    if days > 0 {
+        format!("{days} 天 {hours} 小时")
+    } else if hours > 0 {
+        format!("{hours} 小时 {minutes} 分")
+    } else {
+        format!("{minutes} 分")
+    }
+}
+
+/// 字节数转 MB/GB，保留一位小数。
+fn format_bytes(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let value = bytes as f64;
+    if value >= GB {
+        format!("{:.1} GB", value / GB)
+    } else if value >= MB {
+        format!("{:.1} MB", value / MB)
+    } else {
+        format!("{} KB", bytes / 1024)
+    }
 }
 
 /// `POST /login`：校验口令，成功发会话 cookie 并跳到概览。
@@ -174,14 +319,55 @@ mod tests {
     }
 
     #[test]
-    fn overview_renders_account_count() {
-        let html = OverviewPage {
-            account_count: "7".to_string(),
+    fn overview_renders_all_blocks() {
+        let page = OverviewPage {
+            accounts: AccountBlock {
+                error: String::new(),
+                total: "5".to_string(),
+                normal: "3".to_string(),
+                limited: "1".to_string(),
+                abnormal: "1".to_string(),
+                disabled: "0".to_string(),
+                quota_total: "120".to_string(),
+                success: "400".to_string(),
+                fail: "9".to_string(),
+            },
+            images: ImageBlock {
+                error: String::new(),
+                count: "12".to_string(),
+                bytes: "3.5 MB".to_string(),
+            },
+            active_keys: "2".to_string(),
+            egress: EgressBlock {
+                state: "运行中".to_string(),
+                nodes: "44".to_string(),
+                selected: "日本专线".to_string(),
+                skipped: "3".to_string(),
+            },
+            system: SystemBlock {
+                uptime: "2 天 3 小时".to_string(),
+                version: "0.1.0".to_string(),
+                database: "就绪".to_string(),
+            },
+        };
+        let html = page.render().expect("渲染概览页");
+        for expected in [
+            "账号总数", "正常 3", "限流 1", "异常 1", "禁用 0", "120", "400 / 9",
+            "12 张", "3.5 MB", "活跃密钥", "运行中", "44 个", "日本专线", "跳过 3 个",
+            "2 天 3 小时", "0.1.0", "数据库", "就绪",
+        ] {
+            assert!(html.contains(expected), "缺少 {expected}：{html}");
         }
-        .render()
-        .expect("渲染概览页");
-        assert!(html.contains("账号数量"), "应显示指标名：{html}");
-        assert!(html.contains(">7<"), "应显示数量 7：{html}");
+    }
+
+    #[test]
+    fn formats_uptime_and_bytes() {
+        assert_eq!(format_uptime(30), "0 分");
+        assert_eq!(format_uptime(3_700), "1 小时 1 分");
+        assert_eq!(format_uptime(90_000), "1 天 1 小时");
+        assert_eq!(format_bytes(512 * 1024), "512 KB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
     }
 
     #[test]

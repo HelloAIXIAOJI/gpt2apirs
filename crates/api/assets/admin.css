@@ -152,13 +152,72 @@ button:disabled {
 }
 
 #overview {
-  max-width: 720px;
-  margin: 32px auto;
-  padding: 24px;
+  max-width: 960px;
+  margin: 32px auto 48px;
+  padding: 0 24px;
+}
+
+.section-title {
+  margin: 28px 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.stat-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.stat {
+  display: grid;
+  gap: 8px;
+  padding: 20px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
+}
+
+.stat-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-sub {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.stat-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.badge {
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.stat-error {
+  font-size: 13px;
+  color: var(--danger);
 }
 
 .metric {
