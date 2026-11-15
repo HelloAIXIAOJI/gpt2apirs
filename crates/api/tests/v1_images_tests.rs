@@ -261,7 +261,7 @@ async fn models_lists_image_model_and_keeps_text_model_out_of_image_validation()
     assert_eq!(body["object"], "list");
     let data = body["data"].as_array().expect("data 应为数组");
     let ids: Vec<&str> = data.iter().filter_map(|m| m["id"].as_str()).collect();
-    assert!(ids.contains(&"gpt-image-2"), "图片模型必须出现在目录里：{ids:?}");
+    assert!(ids.contains(&"image"), "图片模型必须出现在目录里：{ids:?}");
     // 目录里的文本模型不能反过来变成合法的图片模型
     let text_ids: Vec<&str> = data
         .iter()
@@ -308,7 +308,7 @@ async fn rejects_unsupported_model() {
 async fn rejects_codex_model_with_specific_hint() {
     let (status, body) = post_image(
         state(None),
-        serde_json::json!({"prompt": "a cat", "model": "codex-gpt-image-2"}),
+        serde_json::json!({"prompt": "a cat", "model": "codex-image"}),
         Some(AUTH_KEY),
     )
     .await;

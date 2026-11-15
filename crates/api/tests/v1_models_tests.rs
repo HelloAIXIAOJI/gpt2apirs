@@ -93,9 +93,9 @@ async fn lists_both_text_and_image_models() {
     assert_eq!(body["object"], "list");
 
     let ids = ids(&body);
-    assert!(ids.contains(&"gpt-image-2".to_string()), "应列出图片模型：{ids:?}");
-    assert!(ids.contains(&"gpt-5-5".to_string()), "应列出文本模型：{ids:?}");
-    assert_eq!(ids.len(), 2, "目录里的每一条都必须列出来：{ids:?}");
+    assert!(ids.contains(&"image".to_string()), "应列出图片模型：{ids:?}");
+    assert!(ids.contains(&"text".to_string()), "应列出文本模型：{ids:?}");
+    assert_eq!(ids.len(), 2, "只暴露 text 与 image 两个模型：{ids:?}");
 }
 
 #[tokio::test]
@@ -112,11 +112,20 @@ async fn every_entry_has_model_shape_and_kind() {
 
 #[tokio::test]
 async fn text_model_is_declared_as_text() {
-    let (status, body) = get("/v1/models/gpt-5-5", Some(API_KEY), None).await;
+    let (status, body) = get("/v1/models/text", Some(API_KEY), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["id"], "gpt-5-5");
+    assert_eq!(body["id"], "text");
     assert_eq!(body["object"], "model");
     assert_eq!(body["kind"], "text");
+}
+
+#[tokio::test]
+async fn legacy_model_names_resolve_to_exposed_names() {
+    for (legacy, exposed) in [("gpt-5-5", "text"), ("gpt-image-2", "image")] {
+        let (status, body) = get(&format!("/v1/models/{legacy}"), Some(API_KEY), None).await;
+        assert_eq!(status, StatusCode::OK, "{legacy} 仍应可用：{body}");
+        assert_eq!(body["id"], exposed, "旧名字应归一成对外名：{body}");
+    }
 }
 
 #[tokio::test]
