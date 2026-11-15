@@ -1,3 +1,6 @@
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![deny(unsafe_code)]
 // Since we have many different flags that can come on and off, we expect some variables to

@@ -85,6 +85,9 @@
 //! [`digest`]: https://crates.io/crates/digest
 //! [`signature`]: https://crates.io/crates/signature
 
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![cfg_attr(not(feature = "std"), no_std)]
 
 #[cfg(test)]

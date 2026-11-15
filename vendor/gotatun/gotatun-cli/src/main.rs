@@ -14,6 +14,9 @@
 
 // Only use an alternative allocator if one is explicitly chosen (i.e. not when compiling with
 // 'all-features').
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #[cfg(all(
     any(feature = "mimalloc", feature = "jemalloc"),
     not(all(feature = "mimalloc", feature = "jemalloc"))

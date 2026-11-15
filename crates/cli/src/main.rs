@@ -168,6 +168,33 @@ async fn run() -> Result<()> {
     if let Err(error) = gpt2apirs_api::routes::proxy::start_from_settings(&state).await {
         tracing::warn!(%error, "订阅代理启动失败");
     }
+    // 自动刷新：间隔来自运行设置，最小 5 分钟（服务商对高频拉取会 403）。
+    let refresh_minutes = state.settings.get_i64("proxy_auto_refresh_minutes").max(0) as u64;
+    if refresh_minutes >= 5 {
+        let task_state = state.clone();
+        tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(refresh_minutes * 60));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                if task_state.settings.get_i64("proxy_enabled") != 1 {
+                    continue;
+                }
+                let url = task_state.settings.get_string("proxy_subscription_url");
+                let selected = task_state.settings.get_string("proxy_selected_node");
+                let selected = if selected.trim().is_empty() {
+                    None
+                } else {
+                    Some(selected.as_str())
+                };
+                match task_state.proxy_service.start(&url, selected).await {
+                    Ok(status) => tracing::info!(nodes = status.node_count, "订阅已自动刷新"),
+                    Err(error) => tracing::warn!(%error, "订阅自动刷新失败"),
+                }
+            }
+        });
+    }
 
     let app = build_router(state.clone());
 

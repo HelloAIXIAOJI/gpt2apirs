@@ -1,3 +1,6 @@
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #[cfg(any(feature = "__tls", feature = "__https", feature = "__quic"))]
 use std::sync::Arc;
 use std::time::Duration;

@@ -173,6 +173,9 @@
 //! complexities to figure out with IPv6. Once enabled, an mDNS `NameServer` will automatically be
 //! added to the `Resolver` and used for any lookups performed in the `.local.` zone.
 
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![warn(clippy::dbg_macro, clippy::print_stdout, missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 

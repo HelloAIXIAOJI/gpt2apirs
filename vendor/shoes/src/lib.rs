@@ -37,6 +37,9 @@
 
 // This module tree backs both the shoes binary, through `cli`, and FFI/mobile
 // integration.
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 mod address;
 mod anytls;
 mod async_stream;

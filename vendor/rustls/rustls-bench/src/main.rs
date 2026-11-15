@@ -2,6 +2,9 @@
 //
 // Note: we don't use any of the standard 'cargo bench', 'test::Bencher',
 // etc. because it's unstable at the time of writing.
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![warn(
     clippy::alloc_instead_of_core,
     clippy::manual_let_else,

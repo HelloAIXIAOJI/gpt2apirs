@@ -733,6 +733,7 @@ impl DecayingSrtt {
     /// If the `last_update` value has not been set, then uses the `default`
     /// value to update the SRTT. Otherwise, invokes the `update_fn` with the
     /// current SRTT value and the `last_update` timestamp.
+    #[allow(deprecated)]
     fn update(&self, default: u32, update_fn: impl Fn(u32, Instant) -> u32) {
         let last_update = self.last_update.lock().replace(Instant::now());
         let _ = self.srtt_microseconds.fetch_update(

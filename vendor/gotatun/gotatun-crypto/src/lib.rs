@@ -19,6 +19,9 @@
 //! Disable default features if you plan on using ring.
 
 // Warn on missing docs when running `cargo doc`
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![cfg_attr(doc, warn(missing_docs))]
 // Enables this nightly only feature for the documentation build on docs.rs.
 // To test this locally, build the docs with:
