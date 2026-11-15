@@ -10,6 +10,7 @@ pub mod images;
 pub mod proxy_groups;
 pub mod logs;
 pub mod rich_text;
+pub mod proxy;
 pub mod settings;
 pub mod text_cache;
 

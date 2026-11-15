@@ -80,6 +80,101 @@ $('#logout').addEventListener('click', async () => {
   showLogin();
 });
 
+
+// ---- 订阅出口 ----
+let proxyNodes = [];
+
+function proxyStatusText(status) {
+  if (!status) return '';
+  if (!status.running) return '未运行；当前直连';
+  const selected = status.selected ? ' · 出口 ' + status.selected : '';
+  return '运行中 · ' + status.node_count + ' 个节点' + selected;
+}
+
+function renderProxyNodes() {
+  const body = $('#proxy-nodes').querySelector('tbody');
+  body.innerHTML = '';
+  for (const node of proxyNodes) {
+    const row = document.createElement('tr');
+    const delay = node.delay_ms == null ? (node.error ? '失败' : '—') : node.delay_ms + ' ms';
+    row.innerHTML = '<td></td><td></td><td></td><td></td><td></td>';
+    row.children[0].textContent = node.name;
+    row.children[1].textContent = node.kind;
+    row.children[2].textContent = node.server + ':' + node.port;
+    row.children[3].textContent = delay;
+    const probe = document.createElement('button');
+    probe.className = 'ghost';
+    probe.textContent = '测速';
+    probe.onclick = () => probeNodes([node.name]);
+    const use = document.createElement('button');
+    use.textContent = '设为出口';
+    use.onclick = () => selectProxyNode(node.name);
+    row.children[4].append(probe, use);
+    body.appendChild(row);
+  }
+}
+
+async function loadProxy() {
+  const payload = await api('/api/proxy/nodes');
+  proxyNodes = payload.nodes || [];
+  $('#proxy-status').textContent = proxyStatusText(payload.status);
+  $('#proxy-skipped').textContent = (payload.status && payload.status.skipped && payload.status.skipped.length)
+    ? '跳过 ' + payload.status.skipped.length + ' 个节点：' + payload.status.skipped.slice(0, 3).join('；')
+    : '';
+  renderProxyNodes();
+}
+
+async function probeNodes(names) {
+  toast('测速中…');
+  const payload = await api('/api/proxy/probe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ names: names || [] })
+  });
+  const byName = new Map(proxyNodes.map(node => [node.name, node]));
+  for (const result of payload.results || []) {
+    const node = byName.get(result.name);
+    if (node) { node.delay_ms = result.delay_ms; node.error = result.error; }
+  }
+  renderProxyNodes();
+  toast('测速完成', true);
+}
+
+async function selectProxyNode(name) {
+  await api('/api/proxy/select', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  toast('出口已切到 ' + name, true);
+  await loadProxy();
+}
+
+$('#proxy-start').addEventListener('click', async () => {
+  const url = $('#proxy-url').value.trim();
+  if (!url) { toast('先填订阅地址'); return; }
+  $('#proxy-status').textContent = '启动中…';
+  try {
+    await api('/api/proxy/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    toast('出口已启动', true);
+  } catch (failure) {
+    toast('启动失败：' + failure.message);
+  }
+  await loadProxy();
+});
+
+$('#proxy-stop').addEventListener('click', async () => {
+  await api('/api/proxy/stop', { method: 'POST' });
+  toast('出口已停止', true);
+  await loadProxy();
+});
+
+$('#proxy-probe-all').addEventListener('click', () => probeNodes([]));
+
 const renderers = {};
 
 // 分组列表在账号页与分组页都要用，放这里避免两次请求

@@ -10,6 +10,29 @@ use gpt2apirs_http::Client;
 use gpt2apirs_storage::repo::ApiKeyStore;
 use sqlx::PgPool;
 
+/// 全局出口：订阅节点代理串。`None` 表示直连。
+///
+/// 账号自己配了 `proxy` 时以账号为准；没配就走这里。
+#[derive(Debug, Default)]
+pub struct Egress {
+    current: RwLock<Option<String>>,
+}
+
+impl Egress {
+    /// 设置出口代理串；`None` 或空串表示直连。
+    pub fn set(&self, url: Option<&str>) {
+        let value = url.map(str::trim).filter(|text| !text.is_empty()).map(str::to_string);
+        if let Ok(mut guard) = self.current.write() {
+            *guard = value;
+        }
+    }
+
+    /// 当前出口代理串。
+    pub fn get(&self) -> Option<String> {
+        self.current.read().ok().and_then(|guard| guard.clone())
+    }
+}
+
 /// 所有 handler 共享的依赖。
 #[derive(Clone)]
 pub struct AppState {
@@ -39,6 +62,10 @@ pub struct AppState {
     pub image_tasks: Arc<crate::image_tasks::ImageTaskStore>,
     /// 管理面登录失败节流。
     pub login_throttle: Arc<crate::login_throttle::LoginThrottle>,
+    /// 全局出口（订阅节点）。
+    pub egress: Arc<Egress>,
+    /// 订阅代理服务。
+    pub proxy_service: Arc<crate::proxy_service::ProxyService>,
 }
 
 impl AppState {
@@ -69,15 +96,22 @@ impl AppState {
             started_at: Utc::now(),
             image_tasks: Arc::new(crate::image_tasks::ImageTaskStore::new(task_concurrency)),
             login_throttle: Arc::new(crate::login_throttle::LoginThrottle::new()),
+            egress: Arc::new(Egress::default()),
+            proxy_service: Arc::new(crate::proxy_service::ProxyService::new(
+                gpt2apirs_core::paths::data_dir().unwrap_or_else(|_| std::path::PathBuf::from("data")),
+            )),
         }
     }
 
     /// 取该账号要用的客户端。
     ///
-    /// 账号配了 `proxy` 就按代理串缓存一个客户端，没配就用共享的那个。
+    /// 优先级：账号自己的 `proxy` → 全局出口（订阅节点）→ 直连。
     /// 缓存是必要的：每次新建客户端都要重建 TLS 配置。
     pub fn client_for(&self, proxy: &str) -> anyhow::Result<Arc<Client>> {
-        let key = proxy.trim().to_string();
+        let mut key = proxy.trim().to_string();
+        if key.is_empty() {
+            key = self.egress.get().unwrap_or_default();
+        }
         if key.is_empty() {
             return Ok(self.client.clone());
         }

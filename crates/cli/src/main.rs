@@ -164,7 +164,12 @@ async fn run() -> Result<()> {
         oauth,
         api_keys,
     ));
-    let app = build_router(state);
+    // 订阅代理：设置里启用过就按保存的地址起一次；失败只记日志，不影响主服务。
+    if let Err(error) = gpt2apirs_api::routes::proxy::start_from_settings(&state).await {
+        tracing::warn!(%error, "订阅代理启动失败");
+    }
+
+    let app = build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(config.bind_address())
         .await
