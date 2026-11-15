@@ -20,6 +20,9 @@ use crate::state::AppState;
 /// 提供给浏览器的 htmx 脚本。
 pub const HTMX_JS: &str = include_str!("../../assets/htmx.min.js");
 
+/// 后台样式表。
+pub const ADMIN_CSS: &str = include_str!("../../assets/admin.css");
+
 /// 登录页。
 #[derive(Template)]
 #[template(path = "login.html")]
@@ -138,6 +141,11 @@ pub async fn htmx_asset() -> Response {
     ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], HTMX_JS).into_response()
 }
 
+/// `GET /admin/assets/admin.css`
+pub async fn css_asset() -> Response {
+    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], ADMIN_CSS).into_response()
+}
+
 fn render_login(error: String) -> Response {
     render(LoginPage { error })
 }
@@ -158,10 +166,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layout_embeds_htmx_and_has_no_local_assets() {
+    fn login_page_links_assets_and_has_key_input() {
         let html = LoginPage { error: String::new() }.render().expect("渲染登录页");
         assert!(html.contains("/admin/assets/htmx.min.js"), "版式应引用 htmx：{html}");
-        assert!(!html.contains("<link rel=\"stylesheet\""), "当前不引入样式文件：{html}");
+        assert!(html.contains("/admin/assets/admin.css"), "版式应引用样式表：{html}");
         assert!(html.contains("name=\"key\""), "登录页要有口令输入框：{html}");
     }
 
@@ -172,7 +180,14 @@ mod tests {
         }
         .render()
         .expect("渲染概览页");
-        assert!(html.contains("账号数量：7"), "{html}");
+        assert!(html.contains("账号数量"), "应显示指标名：{html}");
+        assert!(html.contains(">7<"), "应显示数量 7：{html}");
+    }
+
+    #[test]
+    fn css_asset_is_embedded() {
+        assert!(ADMIN_CSS.contains("--accent"), "样式表应已打进二进制");
+        assert!(ADMIN_CSS.contains("#login-card"), "登录卡片样式缺失");
     }
 
     #[test]

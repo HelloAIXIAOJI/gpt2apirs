@@ -6,6 +6,9 @@
   <form hx-post="/logout" hx-target="#topbar" hx-swap="outerHTML"><button type="submit">退出</button></form>
 </header>
 <section id="overview">
-  <p>账号数量：{{ account_count }}</p>
+  <div class="metric">
+    <span class="metric-label">账号数量</span>
+    <span class="metric-value">{{ account_count }}</span>
+  </div>
 </section>
 {% endblock %}
