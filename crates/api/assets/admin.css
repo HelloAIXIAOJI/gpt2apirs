@@ -43,6 +43,80 @@ body:has(#login-card) {
   padding: 24px;
 }
 
+/* 后台外壳：左侧固定宽度的导航，右侧内容自适应 */
+.layout {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 100%;
+}
+
+#sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 14px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+.brand {
+  margin: 0 0 4px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+#sidebar nav {
+  display: grid;
+  gap: 2px;
+}
+
+.nav-item {
+  display: block;
+  padding: 8px 10px;
+  font-size: 14px;
+  color: var(--text);
+  text-decoration: none;
+  border-radius: 8px;
+}
+
+.nav-item:hover {
+  background: var(--bg);
+}
+
+.nav-item.is-active {
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+/* 还没做的页面：灰掉且不可点，避免死链 */
+.nav-item.is-disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.logout {
+  margin-top: auto;
+}
+
+.logout button {
+  width: 100%;
+  color: var(--muted);
+  background: transparent;
+  border-color: var(--border);
+}
+
+.logout button:hover {
+  color: var(--text);
+  background: var(--bg);
+}
+
+#content {
+  min-width: 0;
+}
+
 #login-card {
   width: min(100%, 384px);
   padding: 32px;
@@ -251,13 +325,36 @@ button:disabled {
   gap: 8px;
 }
 
-@media (max-width: 520px) {
-  #topbar {
-    flex-direction: column;
-    align-items: flex-start;
+@media (max-width: 760px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  #sidebar {
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+
+  .brand,
+  .nav-item.is-disabled {
+    display: none;
+  }
+
+  .logout {
+    margin-top: 0;
+    margin-left: auto;
+  }
+
+  .logout button {
+    width: auto;
   }
 
   #overview {
-    margin: 16px;
+    margin: 16px auto;
   }
 }

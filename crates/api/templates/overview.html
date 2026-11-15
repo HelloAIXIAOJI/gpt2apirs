@@ -1,9 +1,8 @@
-{% extends "base.html" %}
+{% extends "shell.html" %}
 {% block title %}概览 · 管理后台{% endblock %}
 {% block content %}
 <header id="topbar">
   <h1>概览</h1>
-  <form hx-post="/logout" hx-target="#topbar" hx-swap="outerHTML"><button type="submit">退出</button></form>
 </header>
 
 <section id="overview" class="stats">

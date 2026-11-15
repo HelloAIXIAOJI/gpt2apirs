@@ -19,8 +19,10 @@ use crate::session;
 use crate::state::AppState;
 
 mod card;
+mod nav;
 
 use card::StatCard;
+use nav::NavItem;
 
 /// 提供给浏览器的 htmx 脚本。
 pub const HTMX_JS: &str = include_str!("../../assets/htmx.min.js");
@@ -46,6 +48,7 @@ struct StatGroup {
 #[template(path = "overview.html")]
 struct OverviewPage {
     groups: Vec<StatGroup>,
+    nav: Vec<NavItem>,
 }
 /// 登录表单。
 #[derive(Debug, Deserialize)]
@@ -178,7 +181,10 @@ async fn build_overview(state: &AppState) -> OverviewPage {
         ],
     });
 
-    OverviewPage { groups }
+    OverviewPage {
+        groups,
+        nav: nav::items("/overview"),
+    }
 }
 
 /// 秒数转「N 天 N 小时 N 分」，只保留两级，避免一行太长。
@@ -273,16 +279,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn login_page_links_assets_and_has_key_input() {
+    fn login_page_links_assets_and_has_no_sidebar() {
         let html = LoginPage { error: String::new() }.render().expect("渲染登录页");
         assert!(html.contains("/admin/assets/htmx.min.js"), "版式应引用 htmx：{html}");
         assert!(html.contains("/admin/assets/admin.css"), "版式应引用样式表：{html}");
         assert!(html.contains("name=\"key\""), "登录页要有口令输入框：{html}");
+        assert!(!html.contains("id=\"sidebar\""), "登录页不该有侧边栏：{html}");
     }
 
     #[test]
     fn overview_renders_grouped_cards() {
         let page = OverviewPage {
+            nav: nav::items("/overview"),
             groups: vec![
                 StatGroup {
                     title: "账号",
@@ -297,9 +305,21 @@ mod tests {
             ],
         };
         let html = page.render().expect("渲染概览页");
-        for expected in ["账号", "账号总数", ">5<", "正常 3", "系统", "数据库", "stat--danger"] {
+        for expected in [
+            "id=\"sidebar\"",
+            "概览",
+            "账号",
+            "账号总数",
+            ">5<",
+            "正常 3",
+            "系统",
+            "数据库",
+            "stat--danger",
+            "is-active",
+        ] {
             assert!(html.contains(expected), "缺少 {expected}：{html}");
         }
+        assert!(html.contains("is-disabled"), "未建页面应显示为禁用项：{html}");
     }
 
     #[test]
