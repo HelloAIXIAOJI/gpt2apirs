@@ -172,8 +172,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )),
     );
 
-    // 页面外壳与静态资源公开：真正的数据都在需要会话的 /api/* 后面
-    let ui = Router::new();
+    // 页面：登录页与概览页自己判会话；数据接口仍然只有 /api/* 的中间件放行。
+    let ui = Router::new()
+        .route("/", get(admin::root))
+        .route("/overview", get(admin::overview))
+        .route("/login", post(admin::login))
+        .route("/logout", post(admin::logout))
+        .route("/admin/assets/htmx.min.js", get(admin::htmx_asset));
 
     let public = Router::new()
         .route("/health", get(system::health))
