@@ -125,6 +125,13 @@ async fn overview_requires_session() {
 }
 
 #[tokio::test]
+async fn css_asset_is_served() {
+    let reply = send("GET", "/admin/assets/admin.css", None, None).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert!(reply.body.contains("#login-card"), "响应不像后台样式表");
+}
+
+#[tokio::test]
 async fn htmx_asset_is_served() {
     let reply = send("GET", "/admin/assets/htmx.min.js", None, None).await;
     assert_eq!(reply.status, StatusCode::OK);
