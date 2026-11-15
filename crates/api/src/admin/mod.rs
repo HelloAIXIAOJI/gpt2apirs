@@ -337,6 +337,7 @@ mod tests {
     fn css_asset_is_embedded() {
         assert!(ADMIN_CSS.contains("--accent"), "样式表应已打进二进制");
         assert!(ADMIN_CSS.contains("#login-card"), "登录卡片样式缺失");
+        assert!(ADMIN_CSS.contains(".htmx-request"), "按钮中间态样式缺失");
     }
 
     #[test]

@@ -149,24 +149,24 @@ impl fmt::Display for AccountRow {
         write!(f, "<td class=\"actions\">")?;
         write!(
             f,
-            "<button class=\"btn btn--ghost\" hx-post=\"/accounts/{}/status\" hx-vals='{{\"status\":\"{}\"}}' hx-target=\"closest tr\" hx-swap=\"outerHTML\">{}</button>",
+            "<button class=\"btn btn--ghost\" hx-post=\"/accounts/{}/status\" hx-vals='{{\"status\":\"{}\"}}' hx-target=\"closest tr\" hx-swap=\"outerHTML\" hx-disabled-elt=\"this\">{}</button>",
             self.id,
             escape(&self.toggle_status),
             escape(&self.toggle_label)
         )?;
         write!(
             f,
-            "<button class=\"btn btn--ghost\" hx-post=\"/accounts/{}/test\" hx-swap=\"none\">测试</button>",
+            "<button class=\"btn btn--ghost\" hx-post=\"/accounts/{}/test\" hx-swap=\"none\" hx-disabled-elt=\"this\">测试</button>",
             self.id
         )?;
         write!(
             f,
-            "<button class=\"btn btn--ghost\" hx-post=\"/accounts/{}/refresh\" hx-swap=\"none\">刷新令牌</button>",
+            "<button class=\"btn btn--ghost\" hx-post=\"/accounts/{}/refresh\" hx-swap=\"none\" hx-disabled-elt=\"this\">刷新令牌</button>",
             self.id
         )?;
         write!(
             f,
-            "<button class=\"btn btn--danger\" hx-post=\"/accounts/{}/delete\" hx-target=\"closest tr\" hx-swap=\"delete\" hx-confirm=\"确定删除这个账号？\">删除</button>",
+            "<button class=\"btn btn--danger\" hx-post=\"/accounts/{}/delete\" hx-target=\"closest tr\" hx-swap=\"delete\" hx-confirm=\"确定删除这个账号？\" hx-disabled-elt=\"this\">删除</button>",
             self.id
         )?;
         write!(f, "</td></tr>")

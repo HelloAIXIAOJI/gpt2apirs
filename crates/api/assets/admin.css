@@ -245,6 +245,34 @@ body:has(#login-card) {
   background: var(--bg);
 }
 
+/* 请求进行中：htmx 会给发起请求的元素加 htmx-request，这里禁用并转圈 */
+button.htmx-request,
+.btn.htmx-request {
+  cursor: progress;
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+button.htmx-request::after,
+.btn.htmx-request::after {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-left: 6px;
+  vertical-align: -1px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .btn--danger {
   color: var(--danger);
   background: var(--surface);
