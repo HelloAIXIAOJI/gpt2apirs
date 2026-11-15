@@ -155,3 +155,26 @@ async fn accounts_page_renders_for_logged_in_admin() {
     assert!(reply.body.contains("账号池"), "{}", reply.body);
     assert!(reply.body.contains("关键词"), "{}", reply.body);
 }
+
+#[tokio::test]
+async fn import_with_empty_body_redirects_with_flash() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("POST", "/accounts/import", Some("text="), Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    let location = reply.location.unwrap_or_default();
+    assert!(location.starts_with("/accounts?flash="), "{location}");
+}
+
+#[tokio::test]
+async fn edit_page_requires_session() {
+    let reply = send(
+        "GET",
+        "/accounts/11111111-1111-1111-1111-111111111111/edit",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location.as_deref(), Some("/"));
+}

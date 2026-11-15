@@ -9,7 +9,7 @@ use std::sync::Arc;
 use askama::Template;
 use axum::Form;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use gpt2apirs_account::{Account, AccountFilter, AccountRepo, AccountStatus, Plan};
 use serde::Deserialize;
@@ -38,6 +38,9 @@ pub struct Filters {
     /// 偏移。
     #[serde(default)]
     pub offset: i64,
+    /// 一次性提示（从重定向带回来）。
+    #[serde(default)]
+    pub flash: String,
 }
 
 impl Filters {
@@ -78,6 +81,196 @@ fn encode(text: &str) -> String {
         }
     }
     out
+}
+
+/// 只带一个 flash 的查询串。
+#[derive(Debug, Default, Deserialize)]
+pub struct FlashQuery {
+    /// 一次性提示。
+    #[serde(default)]
+    pub flash: String,
+}
+
+/// 导入表单。
+#[derive(Debug, Deserialize)]
+pub struct ImportForm {
+    /// 粘贴的 token / JSON 文本。
+    #[serde(default)]
+    pub text: String,
+}
+
+/// `POST /accounts/import`
+pub async fn import_accounts(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<ImportForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let text = form.text.trim();
+    if text.is_empty() {
+        return redirect_with_flash("/accounts", "没有内容可导入");
+    }
+    let accounts = match gpt2apirs_account::parse_any(text) {
+        Ok(accounts) if !accounts.is_empty() => accounts,
+        Ok(_) => return redirect_with_flash("/accounts", "没有解析出账号，请检查 access_token"),
+        Err(error) => return redirect_with_flash("/accounts", &format!("解析失败：{error}")),
+    };
+    match state.pool.repo().upsert_many(&accounts).await {
+        Ok(report) => {
+            let _ = state.pool.reload().await;
+            let message = format!(
+                "导入完成：新增 {} 个，合并 {} 个，空行跳过 {} 个",
+                report.inserted.len(),
+                report.merged.len(),
+                report.skipped_blank
+            );
+            redirect_with_flash("/accounts", &message)
+        }
+        Err(error) => redirect_with_flash("/accounts", &format!("写入失败：{error}")),
+    }
+}
+
+/// 批量动作表单：ids 可重复，action 取 sync/refresh/enable/disable/delete/export。
+#[derive(Debug, Deserialize)]
+pub struct BatchForm {
+    /// 选中的账号。
+    #[serde(default)]
+    pub ids: Vec<Uuid>,
+    /// 动作名。
+    pub action: String,
+}
+
+/// `POST /accounts/batch`
+pub async fn batch(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<BatchForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let ids = form.ids.clone();
+    match form.action.as_str() {
+        "sync" => match crate::routes::accounts::sync_accounts(
+            State(state.clone()),
+            axum::Json(BatchRequest { ids }),
+        )
+        .await
+        {
+            Ok(batch) => redirect_with_flash(
+                "/accounts",
+                &format!("已开始同步 {} 个账号，稍后刷新列表查看", batch.total),
+            ),
+            Err(error) => redirect_with_flash(
+                "/accounts",
+                &format!("同步失败：{}", error_message(&error)),
+            ),
+        },
+        "refresh" => match crate::routes::accounts::refresh_tokens(
+            State(state.clone()),
+            axum::Json(BatchRequest { ids }),
+        )
+        .await
+        {
+            Ok(batch) => redirect_with_flash(
+                "/accounts",
+                &format!("已开始刷新 {} 个账号的令牌，稍后刷新列表查看", batch.total),
+            ),
+            Err(error) => redirect_with_flash(
+                "/accounts",
+                &format!("刷新失败：{}", error_message(&error)),
+            ),
+        },
+        "enable" | "disable" => {
+            let target = if form.action == "enable" { "normal" } else { "disabled" };
+            let label = if target == "normal" { "启用" } else { "禁用" };
+            let mut done = 0;
+            let mut failed = 0;
+            for id in ids {
+                let request = UpdateAccountRequest {
+                    id,
+                    status: Some(target.to_string()),
+                    plan: None,
+                    email: None,
+                    proxy: None,
+                    quota: None,
+                    quota_confirmed: None,
+                };
+                match crate::routes::accounts::update_account(
+                    State(state.clone()),
+                    axum::Json(request),
+                )
+                .await
+                {
+                    Ok(_) => done += 1,
+                    Err(_) => failed += 1,
+                }
+            }
+            redirect_with_flash(
+                "/accounts",
+                &format!("批量{label}完成：成功 {done} 个，失败 {failed} 个"),
+            )
+        }
+        "delete" => match crate::routes::accounts::delete_accounts(
+            State(state.clone()),
+            axum::Json(crate::routes::accounts::DeleteAccountsRequest { ids }),
+        )
+        .await
+        {
+            Ok(value) => {
+                let removed = value.0.get("removed").and_then(|v| v.as_u64()).unwrap_or(0);
+                redirect_with_flash("/accounts", &format!("已删除 {removed} 个账号"))
+            }
+            Err(error) => redirect_with_flash(
+                "/accounts",
+                &format!("删除失败：{}", error_message(&error)),
+            ),
+        },
+        "export" => export_attachment(&state, ids).await,
+        other => redirect_with_flash("/accounts", &format!("未知动作 {other}")),
+    }
+}
+
+/// 导出为附件下载。
+async fn export_attachment(state: &Arc<AppState>, ids: Vec<Uuid>) -> Response {
+    let request = crate::routes::accounts::ExportRequest {
+        ids,
+        format: Some("txt".to_string()),
+    };
+    match crate::routes::accounts::export_accounts(State(state.clone()), axum::Json(request)).await {
+        Ok(value) => {
+            let content = value
+                .0
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            (
+                [
+                    (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        "attachment; filename=\"accounts.txt\"",
+                    ),
+                ],
+                content,
+            )
+                .into_response()
+        }
+        Err(error) => redirect_with_flash(
+            "/accounts",
+            &format!("导出失败：{}", error_message(&error)),
+        ),
+    }
+}
+
+/// 跳回列表并带一条提示。
+fn redirect_with_flash(base: &str, message: &str) -> Response {
+    let encoded = encode(message);
+    let separator = if base.contains('?') { '&' } else { '?' };
+    Redirect::to(&format!("{base}{separator}flash={encoded}")).into_response()
 }
 
 /// 表格里的一行。
@@ -126,10 +319,11 @@ impl fmt::Display for AccountRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "<tr id=\"account-{}\"><td>{}</td>",
+            "<tr id=\"account-{}\"><td class=\"pick\"><input type=\"checkbox\" name=\"ids\" value=\"{}\"></td>",
             self.id,
-            escape(&self.email)
+            self.id
         )?;
+        write!(f, "<td>{}</td>", escape(&self.email))?;
         write!(
             f,
             "<td><span class=\"badge badge--{}\">{}</span></td>",
@@ -169,6 +363,11 @@ impl fmt::Display for AccountRow {
             "<button class=\"btn btn--danger\" hx-post=\"/accounts/{}/delete\" hx-target=\"closest tr\" hx-swap=\"delete\" hx-confirm=\"确定删除这个账号？\" hx-disabled-elt=\"this\">删除</button>",
             self.id
         )?;
+        write!(
+            f,
+            "<a class=\"btn btn--ghost\" href=\"/accounts/{}/edit\">编辑</a>",
+            self.id
+        )?;
         write!(f, "</td></tr>")
     }
 }
@@ -180,6 +379,7 @@ struct AccountsPage {
     nav: Vec<nav::NavItem>,
     rows: Vec<AccountRow>,
     summary: String,
+    flash: String,
     error: String,
     status: String,
     plan: String,
@@ -231,6 +431,7 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
         nav: nav::items("/accounts"),
         rows,
         summary,
+        flash: filters.flash.clone(),
         error,
         status: filters.status.clone(),
         plan: filters.plan.clone(),
@@ -419,6 +620,102 @@ fn render<T: Template>(template: T) -> Response {
     }
 }
 
+/// 编辑页。
+#[derive(Template)]
+#[template(path = "accounts/edit.html")]
+struct EditPage {
+    nav: Vec<nav::NavItem>,
+    id: String,
+    email: String,
+    proxy: String,
+    quota: String,
+    plan: String,
+    status: String,
+    flash: String,
+}
+
+/// 编辑表单。
+#[derive(Debug, Deserialize)]
+pub struct EditForm {
+    /// 邮箱。
+    #[serde(default)]
+    pub email: String,
+    /// 代理串；留空表示走全局出口。
+    #[serde(default)]
+    pub proxy: String,
+    /// 剩余配额。
+    #[serde(default)]
+    pub quota: String,
+    /// 套餐。
+    #[serde(default)]
+    pub plan: String,
+    /// 状态。
+    #[serde(default)]
+    pub status: String,
+}
+
+/// `GET /accounts/{id}/edit`
+pub async fn edit_form(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(query): Query<FlashQuery>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let repo = AccountRepo::new(state.db.clone());
+    match repo.get_by_id(id).await {
+        Ok(Some(account)) => render(EditPage {
+            nav: nav::items("/accounts"),
+            id: account.id.to_string(),
+            email: account.email.clone().unwrap_or_default(),
+            proxy: account.proxy.clone(),
+            quota: account.quota.to_string(),
+            plan: account.plan.as_str().to_string(),
+            status: account.status.as_str().to_string(),
+            flash: query.flash.clone(),
+        }),
+        Ok(None) => redirect_with_flash("/accounts", "账号不存在"),
+        Err(error) => redirect_with_flash("/accounts", &format!("读取失败：{error}")),
+    }
+}
+
+/// `POST /accounts/{id}/edit`
+pub async fn edit_submit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<EditForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let trimmed = |value: &str| -> Option<String> {
+        Some(value.trim().to_string()).filter(|value| !value.is_empty())
+    };
+    let quota = match form.quota.trim() {
+        "" => None,
+        raw => match raw.parse::<i32>() {
+            Ok(value) => Some(value),
+            Err(_) => return redirect_with_flash("/accounts", "配额必须是整数"),
+        },
+    };
+    let request = UpdateAccountRequest {
+        id,
+        status: trimmed(&form.status),
+        plan: trimmed(&form.plan),
+        email: Some(form.email.trim().to_string()),
+        proxy: Some(form.proxy.trim().to_string()),
+        quota,
+        quota_confirmed: quota.map(|_| true),
+    };
+    match crate::routes::accounts::update_account(State(state.clone()), axum::Json(request)).await {
+        Ok(_) => redirect_with_flash("/accounts", "账号已更新"),
+        Err(error) => redirect_with_flash(&format!("/accounts/{id}/edit"), &format!("保存失败：{}", error_message(&error))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +739,7 @@ mod tests {
             plan: String::new(),
             keyword: "a b&c".to_string(),
             offset: 20,
+            flash: String::new(),
         };
         assert_eq!(
             filters.query(40),
@@ -459,11 +757,30 @@ mod tests {
     }
 
     #[test]
+    fn edit_page_renders_fields_and_flash() {
+        let page = EditPage {
+            nav: nav::items("/accounts"),
+            id: "11111111-1111-1111-1111-111111111111".to_string(),
+            email: "a@b.com".to_string(),
+            proxy: "http://127.0.0.1:17899".to_string(),
+            quota: "12".to_string(),
+            plan: "free".to_string(),
+            status: "normal".to_string(),
+            flash: "保存失败：配额必须是整数".to_string(),
+        };
+        let html = page.render().expect("渲染编辑页");
+        assert!(html.contains("value=\"a@b.com\""), "{html}");
+        assert!(html.contains("保存失败：配额必须是整数"), "{html}");
+        assert!(html.contains("action=\"/accounts/11111111-1111-1111-1111-111111111111/edit\""), "{html}");
+    }
+
+    #[test]
     fn page_renders_empty_state_and_active_nav() {
         let page = AccountsPage {
             nav: nav::items("/accounts"),
             rows: Vec::new(),
             summary: "共 0 个账号".to_string(),
+            flash: String::new(),
             error: String::new(),
             status: String::new(),
             plan: String::new(),
