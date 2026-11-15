@@ -167,13 +167,8 @@ fn join_compact(items: &[Value]) -> String {
 
 /// 按上游格式切分配置，构造三段静态前缀/后缀。
 ///
-/// 对应 Python:
-///
-/// ```python
-/// static_1 = (json.dumps(config[:3])[:-1] + ",").encode()
-/// static_2 = ("," + json.dumps(config[4:9])[1:-1] + ",").encode()
-/// static_3 = ("," + json.dumps(config[10:])[1:]).encode()
-/// ```
+/// 上游把 config 拆成 `[:3]`、`[4:9]`、`[10:]` 三段，段间以逗号相连；
+/// 拼出来的字符序列与紧凑 JSON 完全一致（不重新序列化）。
 pub fn build_static_parts(config: &[Value]) -> anyhow::Result<(String, String, String)> {
     if config.len() < 10 {
         anyhow::bail!("config 至少需要 10 个元素，实际 {}", config.len());
@@ -186,7 +181,7 @@ pub fn build_static_parts(config: &[Value]) -> anyhow::Result<(String, String, S
 
 /// 求解 PoW。
 ///
-/// 对应 Python `_pow_generate(seed, difficulty, config, limit)`。
+/// 枚举 `limit` 次哈希，直到结果满足 `difficulty`。
 pub fn pow_generate(
     seed: &str,
     difficulty: &str,
@@ -266,17 +261,17 @@ fn hex_val(byte: u8) -> anyhow::Result<u8> {
 }
 
 
-// 对外入口：与 Python 的 build_proof_token / build_legacy_requirements_token 对应
+// 对外入口：证明 token 与 legacy requirements token 的构造
 
-/// proof token 前缀。对应 Python `build_proof_token` 里的 "gAAAAAB"。
+/// proof token 前缀（上游实测值）。
 pub const PROOF_TOKEN_PREFIX: &str = "gAAAAAB";
 
-/// legacy requirements token 前缀。对应 Python 里的 "gAAAAAC"。
+/// legacy requirements token 前缀（上游实测值）。
 pub const LEGACY_REQUIREMENTS_PREFIX: &str = "gAAAAAC";
 
-/// 构造 proof token，对应 Python `build_proof_token`。
+/// 构造 proof token。
 ///
-/// 与 Python 一致：求解失败时抛错（Python 抛 RuntimeError）。
+/// 求解失败时返回错误（调用方决定降级还是失败）。
 pub fn build_proof_token(
     seed: &str,
     difficulty: &str,
@@ -290,7 +285,7 @@ pub fn build_proof_token(
 }
 
 /// 构造 legacy requirements token（不含 PoW 求解），
-/// 对应 Python `build_legacy_requirements_token`。
+/// 构造 legacy requirements token（`gAAAAAC` 前缀）。
 pub fn build_legacy_requirements_token(config: &[Value]) -> String {
     let json = python_json_compact(&Value::Array(config.to_vec()));
     let encoded = base64::engine::general_purpose::STANDARD.encode(json.as_bytes());
