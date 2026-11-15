@@ -38,7 +38,7 @@ async fn usage_matches_across_count_stream_and_non_stream() {
     let Some((state, pool)) = setup().await else { return };
 
     let body = json!({
-        "model": "gpt-5-5",
+        "model": "text",
         "max_tokens": 64,
         "system": "回答要简洁。",
         "messages": [

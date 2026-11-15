@@ -430,7 +430,7 @@ mod live_stream_tests {
     #[tokio::test]
     async fn delta_arrives_before_source_closes() {
         let (sender, handle) = channel_handle();
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
         let mut body = response.into_body().into_data_stream();
 
         sender.send(Ok("第一段".to_string())).await.expect("发送");
@@ -464,7 +464,7 @@ mod live_stream_tests {
                 finished: true,
             };
         }
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
 
         sender.send(Ok("你好".to_string())).await.expect("发送");
         sender.send(Ok("世界".to_string())).await.expect("发送");
@@ -483,7 +483,7 @@ mod live_stream_tests {
     #[tokio::test]
     async fn upstream_error_is_reported_at_tail() {
         let (sender, handle) = channel_handle();
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
 
         sender.send(Ok("部分".to_string())).await.expect("发送");
         sender

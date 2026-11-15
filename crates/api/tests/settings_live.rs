@@ -20,7 +20,7 @@ const KEYWORD: &str = "gpt2apirs-粗筛测试词";
 
 /// 从真实 env 读出的登录口令（后台接口用它；与调用 /v1 的 API key 不同）。
 static ADMIN_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-/// 预置给 /v1 用的 API key（与 AUTH_KEY 同值，模拟旧部署迁移后的 legacy key）。
+/// 预置给 /v1 用的 API key（与 TEST_KEY 同值，模拟旧部署迁移后的 legacy key）。
 static API_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 fn admin_key() -> &'static str {
@@ -52,8 +52,8 @@ async fn state() -> Option<Arc<AppState>> {
     let _ = ADMIN_KEY.set(config.admin_key.clone());
     let pool = gpt2apirs_storage::pool::build_pool(&config).await.ok()?;
     let repo = PgSettingsRepo::new(pool.clone());
-    // 预置一把与配置里 AUTH_KEY 同值的 API key，供 /v1/* 调用
-    let test_key = config.auth_key.clone();
+    // 预置一把 API key，供 /v1/* 调用
+    let test_key = gpt2apirs_core::api_key::generate().plaintext;
     let _ = API_KEY.set(test_key.clone());
     let snapshot = repo.load().await.ok()?;
     let settings = Arc::new(RuntimeSettings::new(snapshot.data));
@@ -70,7 +70,7 @@ async fn state() -> Option<Arc<AppState>> {
         )),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
-        // 调用 /v1/* 用 API key：测试里预置一把与 AUTH_KEY 相同的 key
+        // 调用 /v1/* 用 API key：测试里预置一把
         Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
             gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(&test_key, "test"),
         )),
@@ -111,7 +111,7 @@ async fn call(
 
 fn chat_body(text: &str) -> Value {
     json!({
-        "model": "gpt-5-5",
+        "model": "text",
         "messages": [{ "role": "user", "content": text }],
     })
 }

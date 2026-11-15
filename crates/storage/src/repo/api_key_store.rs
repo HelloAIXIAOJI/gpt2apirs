@@ -61,13 +61,6 @@ impl ApiKeyStore {
         }
     }
 
-    /// 老配置迁移：只在没有任何 key 时写入一条 `legacy`。
-    pub async fn import_legacy(&self, plaintext: &str) -> Result<bool, StorageError> {
-        match self {
-            Self::Postgres(repo) => repo.import_legacy(plaintext).await,
-            Self::Memory(memory) => Ok(memory.import_legacy(plaintext)),
-        }
-    }
 }
 
 /// 进程内实现。
@@ -85,11 +78,11 @@ impl MemoryApiKeys {
 
     /// 预置一把已知明文的 key（测试与临时部署用）。
     pub fn with_key(self, plaintext: &str, name: &str) -> Self {
-        self.import_legacy_named(plaintext, name);
+        self.insert_named(plaintext, name);
         self
     }
 
-    fn import_legacy_named(&self, plaintext: &str, name: &str) {
+    fn insert_named(&self, plaintext: &str, name: &str) {
         let digest = gpt2apirs_core::api_key::hash(plaintext.trim());
         let prefix: String = plaintext.trim().chars().take(16).collect();
         let mut guard = self.inner.write().expect("锁");
@@ -170,13 +163,7 @@ impl MemoryApiKeys {
             .count() as i64
     }
 
-    fn import_legacy(&self, plaintext: &str) -> bool {
-        if plaintext.trim().is_empty() || self.active_count() > 0 {
-            return false;
-        }
-        self.import_legacy_named(plaintext, "legacy");
-        true
-    }
+
 }
 
 #[cfg(test)]
@@ -205,15 +192,5 @@ mod tests {
         assert!(store.verify("nope").await.expect("校验").is_none());
     }
 
-    #[tokio::test]
-    async fn legacy_import_only_once() {
-        let store = ApiKeyStore::Memory(MemoryApiKeys::new().with_key("sk-g2a-aaaa", "预置"));
-        assert!(!store.import_legacy("legacy-key-123456").await.expect("导入"));
 
-        let empty = store.clone();
-        let _ = empty;
-        let fresh = ApiKeyStore::Memory(MemoryApiKeys::new());
-        assert!(fresh.import_legacy("legacy-key-123456").await.expect("导入"));
-        assert!(!fresh.import_legacy("other-key-123456").await.expect("重复导入"));
-    }
 }

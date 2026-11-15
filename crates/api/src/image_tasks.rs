@@ -290,7 +290,7 @@ mod tests {
             id: Uuid::new_v4(),
             status: TaskStatus::Queued,
             prompt: "画一只猫".to_string(),
-            model: "gpt-image-2".to_string(),
+            model: gpt2apirs_generate::models::DEFAULT_IMAGE_MODEL.to_string(),
             n: 1,
             response_format: "url".to_string(),
             base_url: "http://localhost:8080".to_string(),

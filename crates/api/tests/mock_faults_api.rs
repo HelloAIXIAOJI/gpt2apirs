@@ -24,7 +24,7 @@ fn conversation_hits(mock: &gpt2apirs_testkit::MockUpstream) -> usize {
 
 fn body() -> Value {
     json!({
-        "model": "gpt-5-5",
+        "model": "text",
         "max_tokens": 32,
         "messages": [{"role": "user", "content": "随便说点什么"}]
     })

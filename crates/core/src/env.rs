@@ -200,9 +200,9 @@ mod tests {
 
     #[test]
     fn required_from_returns_value() {
-        let map = HashMap::from([("AUTH_KEY", "abc12345")]);
+        let map = HashMap::from([("TEST_KEY", "abc12345")]);
         let lookup = lookup_from(map);
-        assert_eq!(required_from(&lookup, "AUTH_KEY", "").unwrap(), "abc12345");
+        assert_eq!(required_from(&lookup, "TEST_KEY", "").unwrap(), "abc12345");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! 连接池对**真实 PostgreSQL** 的集成测试。
 //!
-//! 需要 `.env`（与可执行文件同目录或仓库根）里有 `DATABASE_URL` 与 `AUTH_KEY`。
+//! 需要 `.env`（与可执行文件同目录或仓库根）里有 `DATABASE_URL` 与 `ADMIN_KEY`。
 //! 缺失时自动跳过，不会让 CI 挂掉。
 
 use gpt2apirs_core::BootstrapConfig;

@@ -16,11 +16,6 @@ pub const EXPOSED_TEXT_MODEL: &str = "text";
 /// 对外图片模型名。
 pub const EXPOSED_IMAGE_MODEL: &str = "image";
 
-/// 旧名字仍然接受，但不再对外宣告（兼容已有调用方）。
-const LEGACY_TEXT_ALIASES: &[&str] = &["gpt-5-5", "gpt-5-6"];
-
-/// 旧的图片模型名，同上。
-const LEGACY_IMAGE_ALIASES: &[&str] = &["gpt-image-2"];
 
 /// 图片模型对外名（默认即 `image`）。
 pub const DEFAULT_IMAGE_MODEL: &str = EXPOSED_IMAGE_MODEL;
@@ -93,12 +88,10 @@ pub fn default_image_model() -> &'static str {
 /// 该名字是否是受支持的**图片**模型。
 ///
 /// 空名字视为使用默认模型；文本模型名不算通过 —— 否则
-/// `/v1/images/generations` 会接受 `gpt-5-5`。
+/// `/v1/images/generations` 会接受 `text`。
 pub fn is_supported_image(model: &str) -> bool {
     let trimmed = model.trim();
-    trimmed.is_empty()
-        || SUPPORTED_MODELS.iter().any(|item| *item == trimmed)
-        || LEGACY_IMAGE_ALIASES.contains(&trimmed)
+    trimmed.is_empty() || SUPPORTED_MODELS.iter().any(|item| *item == trimmed)
 }
 
 /// 按对外名查目录项。
@@ -107,17 +100,7 @@ pub fn find(model: &str) -> Option<&'static ModelInfo> {
     if trimmed.is_empty() {
         return None;
     }
-    if let Some(info) = MODEL_CATALOG.iter().find(|info| info.id == trimmed) {
-        return Some(info);
-    }
-    // 旧名字归一到对外名，响应里回的就是对外名
-    if LEGACY_TEXT_ALIASES.contains(&trimmed) {
-        return MODEL_CATALOG.iter().find(|info| info.id == EXPOSED_TEXT_MODEL);
-    }
-    if LEGACY_IMAGE_ALIASES.contains(&trimmed) {
-        return MODEL_CATALOG.iter().find(|info| info.id == EXPOSED_IMAGE_MODEL);
-    }
-    None
+    MODEL_CATALOG.iter().find(|info| info.id == trimmed)
 }
 
 /// 把对外模型名映射成上游 slug。
@@ -159,7 +142,6 @@ mod tests {
     #[test]
     fn text_model_is_not_an_image_model() {
         assert!(!is_supported_image(DEFAULT_TEXT_MODEL));
-        assert!(!is_supported_image("gpt-5-5"));
     }
 
     #[test]
@@ -179,15 +161,15 @@ mod tests {
 
     #[test]
     fn lookup_is_trimmed_and_typed() {
-        let text = find(" gpt-5-5 ").expect("应找到文本模型");
+        let text = find(" text ").expect("应找到文本模型");
         assert_eq!(text.kind, ModelKind::Text);
-        assert_eq!(find("gpt-image-2").map(|i| i.kind), Some(ModelKind::Image));
+        assert_eq!(find("image").map(|i| i.kind), Some(ModelKind::Image));
         assert!(find("").is_none(), "空名字不该命中目录");
     }
 
     #[test]
     fn upstream_mapping_is_stable() {
-        assert_eq!(upstream_model_for("gpt-image-2"), DEFAULT_MODEL);
+        assert_eq!(upstream_model_for("image"), DEFAULT_MODEL);
         assert_eq!(upstream_model_for(""), DEFAULT_MODEL);
     }
 }

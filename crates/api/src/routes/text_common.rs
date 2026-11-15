@@ -343,7 +343,7 @@ pub fn resolve_model(requested: Option<&str>) -> String {
     requested
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("gpt-5-5")
+        .unwrap_or(gpt2apirs_generate::models::DEFAULT_TEXT_MODEL)
         .to_string()
 }
 
@@ -541,9 +541,9 @@ mod dispatch_tests {
     fn billing_tokens_do_not_include_guard() {
         let raw = vec![("user".to_string(), "hello".to_string())];
         let (dispatch, billing) = dispatch_messages(RichTextPolicy::GuardStrip, raw.clone());
-        let billing_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&billing, "gpt-5-5");
+        let billing_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&billing, gpt2apirs_generate::models::DEFAULT_MODEL);
         let dispatch_tokens =
-            gpt2apirs_core::tokens::count_message_text_tokens(&dispatch, "gpt-5-5");
+            gpt2apirs_core::tokens::count_message_text_tokens(&dispatch, gpt2apirs_generate::models::DEFAULT_MODEL);
 
         assert_eq!(billing_tokens, 8, "hello 的计费口径固定为 8");
         assert!(

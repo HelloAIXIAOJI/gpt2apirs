@@ -22,7 +22,6 @@ fn state() -> (Arc<AppState>, String) {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", "legacy-auth-key-123"),
         ("ADMIN_KEY", ADMIN_KEY),
     ]);
     let lookup = move |key: &str| map.get(key).map(|v| v.to_string()).filter(|v| !v.is_empty());
@@ -167,12 +166,6 @@ async fn admin_key_cannot_call_v1() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "登录口令不该能调 /v1");
 }
 
-#[tokio::test]
-async fn legacy_auth_key_is_not_a_login_key() {
-    let (state, _) = state();
-    let (status, _, _) = send(state, "GET", "/api/keys", None, Some("legacy-auth-key-123"), None).await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "旧 AUTH_KEY 不是登录口令");
-}
 
 #[tokio::test]
 async fn api_key_can_call_v1() {

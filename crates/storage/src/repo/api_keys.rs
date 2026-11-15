@@ -111,24 +111,4 @@ impl ApiKeyRepo {
                 .await?;
         Ok(count)
     }
-
-    /// 把旧配置里的 `AUTH_KEY` 迁成一把名为 `legacy` 的 key。
-    ///
-    /// 只在库里一把 key 都没有时执行，避免反复写入。返回是否真的写了。
-    pub async fn import_legacy(&self, plaintext: &str) -> Result<bool, StorageError> {
-        if plaintext.trim().is_empty() || self.active_count().await? > 0 {
-            return Ok(false);
-        }
-        let digest = gpt2apirs_core::api_key::hash(plaintext.trim());
-        let prefix: String = plaintext.trim().chars().take(16).collect();
-        sqlx::query(
-            "insert into api_keys (id, name, key_sha256, prefix) values ($1, 'legacy', $2, $3)",
-        )
-        .bind(Uuid::new_v4())
-        .bind(&digest)
-        .bind(&prefix)
-        .execute(&self.pool)
-        .await?;
-        Ok(true)
-    }
 }
