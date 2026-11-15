@@ -6,6 +6,17 @@
   <title>{% block title %}管理后台{% endblock %}</title>
   <link rel="stylesheet" href="/admin/assets/admin.css">
   <script src="/admin/assets/htmx.min.js" defer></script>
+  <script>
+    // htmx 的 HX-Trigger 事件名就是 toast；这里只负责把文字放进右下角。
+    document.addEventListener('toast', (event) => {
+      const detail = event.detail || {};
+      const node = document.createElement('div');
+      node.className = 'toast' + (detail.level === 'error' ? ' toast--error' : '');
+      node.textContent = detail.text || '';
+      document.getElementById('toasts').appendChild(node);
+      setTimeout(() => node.remove(), 4000);
+    });
+  </script>
 </head>
 <body>
 {% block body %}{% endblock %}

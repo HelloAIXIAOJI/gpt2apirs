@@ -19,7 +19,7 @@ pub struct NavItem {
 /// 全部导航项。
 const ITEMS: &[(&str, &str, bool)] = &[
     ("概览", "/overview", true),
-    ("账号", "/accounts", false),
+    ("账号", "/accounts", true),
     ("代理", "/proxy", false),
     ("图片", "/images", false),
     ("任务", "/tasks", false),
@@ -61,9 +61,9 @@ mod tests {
     }
 
     #[test]
-    fn only_overview_is_ready() {
+    fn ready_pages_are_marked() {
         let items = items("/overview");
         let ready: Vec<&str> = items.iter().filter(|i| i.ready).map(|i| i.label).collect();
-        assert_eq!(ready, vec!["概览"]);
+        assert_eq!(ready, vec!["概览", "账号"]);
     }
 }

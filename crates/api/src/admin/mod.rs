@@ -18,6 +18,7 @@ use crate::auth::is_admin_token;
 use crate::session;
 use crate::state::AppState;
 
+pub mod accounts;
 mod card;
 mod nav;
 
@@ -57,7 +58,7 @@ pub struct LoginForm {
     pub key: String,
 }
 
-fn has_session(state: &AppState, headers: &HeaderMap) -> bool {
+pub(super) fn has_session(state: &AppState, headers: &HeaderMap) -> bool {
     let Some(cookie) = headers.get(header::COOKIE).and_then(|value| value.to_str().ok()) else {
         return false;
     };

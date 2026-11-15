@@ -138,3 +138,20 @@ async fn htmx_asset_is_served() {
     assert_eq!(reply.status, StatusCode::OK);
     assert!(reply.body.contains("htmx"), "响应不像 htmx 脚本");
 }
+
+#[tokio::test]
+async fn accounts_page_requires_session() {
+    let reply = send("GET", "/accounts", None, None).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location.as_deref(), Some("/"));
+}
+
+#[tokio::test]
+async fn accounts_page_renders_for_logged_in_admin() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("登录应发 cookie");
+    let reply = send("GET", "/accounts", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("账号池"), "{}", reply.body);
+    assert!(reply.body.contains("关键词"), "{}", reply.body);
+}
