@@ -6,6 +6,9 @@
 // https://opensource.org/licenses/MIT>, at your option. This file may not be
 // copied, modified, or distributed except according to those terms.
 
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![no_std]
 #![warn(
     clippy::alloc_instead_of_core,

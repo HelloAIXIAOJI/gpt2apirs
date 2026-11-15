@@ -52,6 +52,9 @@
 //! assert_eq!(&example_ipv4_icmp[20..][..12], b"Hello there!");
 //! ```
 
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 use core::{
     fmt::{self, Debug},
     marker::PhantomData,

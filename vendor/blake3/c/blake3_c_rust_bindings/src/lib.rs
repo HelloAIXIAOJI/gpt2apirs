@@ -3,6 +3,9 @@
 //! repo, these bindings are not expected to be used in production. They're
 //! intended for testing and benchmarking.
 
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 use std::ffi::{CString, c_void};
 use std::mem::MaybeUninit;
 

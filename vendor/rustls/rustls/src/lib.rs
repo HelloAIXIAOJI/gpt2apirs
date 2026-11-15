@@ -329,6 +329,9 @@
 //! [x25519mlkem768-manual]: manual::_05_defaults#about-the-post-quantum-secure-key-exchange-x25519mlkem768
 
 // Require docs for public APIs, deny unsafe code, etc.
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![forbid(unsafe_code, unused_must_use)]
 #![cfg_attr(not(any(read_buf, bench, coverage_nightly)), forbid(unstable_features))]
 #![warn(

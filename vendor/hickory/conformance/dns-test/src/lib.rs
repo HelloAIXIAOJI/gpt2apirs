@@ -1,5 +1,8 @@
 //! A test framework for all things DNS
 
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 use std::io::{Read as _, Write as _};
 use std::sync::LazyLock;
 use std::{env, io};

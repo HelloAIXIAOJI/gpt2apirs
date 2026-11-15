@@ -1,4 +1,7 @@
 //! HTTP/3 client and server
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![deny(missing_docs, clippy::self_named_module_files)]
 #![allow(clippy::derive_partial_eq_without_eq)]
 

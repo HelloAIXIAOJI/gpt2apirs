@@ -1,3 +1,6 @@
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 use anyhow::{bail, ensure};
 use clap::Parser;
 use std::cmp;

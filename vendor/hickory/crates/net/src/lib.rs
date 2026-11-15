@@ -1,5 +1,8 @@
 //! Networking library for Hickory DNS
 
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![warn(clippy::dbg_macro, clippy::print_stdout, missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 

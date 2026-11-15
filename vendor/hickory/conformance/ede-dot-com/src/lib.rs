@@ -2,6 +2,9 @@
 //!
 //! Eventually all these tests should be rewritten to not rely on public infrastructure
 
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![cfg(test)]
 
 use dns_test::{

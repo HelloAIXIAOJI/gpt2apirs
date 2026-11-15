@@ -1,6 +1,9 @@
 //! QUIC Transport implementation with Quinn
 //!
 //! This module implements QUIC traits with Quinn.
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![deny(missing_docs)]
 
 use std::{

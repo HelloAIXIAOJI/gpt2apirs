@@ -27,6 +27,8 @@
 - `shoes/src/process.rs`：新增 `request_shutdown()` / `reset_shutdown()`，并让
   `ShutdownSignals::recv` 在收到该请求时返回，从而支持进程内停机（Windows 没有 SIGTERM）。
 - `shoes/src/lib.rs`：`mod process` 改为 `pub mod process`。
+- 所有第三方 crate 的 `src/lib.rs` 顶部加 `#![allow(warnings)]`：这些代码不参与本仓库的
+  零告警门禁，否则 `RUSTFLAGS=-D warnings` 会把它们的死代码告警变成构建失败。
 
 ## 构建注意
 

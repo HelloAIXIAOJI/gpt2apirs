@@ -41,6 +41,9 @@
 //! * `uio` - Vectored I/O
 //! * `user` - Stuff relating to users and groups
 //! * `zerocopy` - APIs like `sendfile` and `copy_file_range`
+// 第三方代码：不参与本仓库的零告警要求。
+#![allow(warnings)]
+
 #![crate_name = "nix"]
 #![cfg(unix)]
 #![allow(non_camel_case_types)]
