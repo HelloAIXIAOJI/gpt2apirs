@@ -138,14 +138,6 @@ impl BootstrapConfig {
             })
             .unwrap_or_default();
 
-        // M3 起 token 只存在账号池里。残留的 env 变量不再生效，但要明确告知，
-        // 否则升级后「改了 .env 不生效」会非常难排查。
-        if lookup("GPT2APIRS_ACCESS_TOKEN").is_some() {
-            warnings.push(
-                "GPT2APIRS_ACCESS_TOKEN 已停用，请删除该变量并通过 POST /api/accounts 导入账号"
-                    .to_string(),
-            );
-        }
         let public_base_url = lookup("PUBLIC_BASE_URL").map(|value| value.trim_end_matches('/').to_string());
 
         Ok(Self {

@@ -41,10 +41,10 @@ impl AccountStatus {
     /// 从数据库值解析。未知值返回 `None`——**不允许**默默当成正常号。
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "normal" | "正常" => Some(AccountStatus::Normal),
-            "limited" | "限流" => Some(AccountStatus::Limited),
-            "abnormal" | "异常" => Some(AccountStatus::Abnormal),
-            "disabled" | "禁用" => Some(AccountStatus::Disabled),
+            "normal" => Some(AccountStatus::Normal),
+            "limited" => Some(AccountStatus::Limited),
+            "abnormal" => Some(AccountStatus::Abnormal),
+            "disabled" => Some(AccountStatus::Disabled),
             _ => None,
         }
     }
@@ -268,17 +268,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn status_accepts_chinese_aliases() {
-        assert_eq!(AccountStatus::parse("正常"), Some(AccountStatus::Normal));
-        assert_eq!(AccountStatus::parse("限流"), Some(AccountStatus::Limited));
-        assert_eq!(AccountStatus::parse("异常"), Some(AccountStatus::Abnormal));
-        assert_eq!(AccountStatus::parse("禁用"), Some(AccountStatus::Disabled));
-    }
 
     #[test]
     fn status_unknown_is_rejected() {
         assert_eq!(AccountStatus::parse("nonsense"), None);
+        assert_eq!(AccountStatus::parse("正常"), None, "中文写法是旧数据，不再接受");
         assert_eq!(AccountStatus::parse(""), None);
     }
 
