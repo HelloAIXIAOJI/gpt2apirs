@@ -244,14 +244,22 @@ pub async fn list_accounts(
 ) -> ApiResult<AccountListResponse> {
     let page = query.page.unwrap_or(1).max(1);
     let page_size = query.page_size.unwrap_or(50).clamp(1, 500);
+    let status = match query.status.as_deref() {
+        None => None,
+        Some(raw) => Some(AccountStatus::parse(raw).ok_or_else(|| {
+            ApiError::admin(AppError::invalid(format!("status 取值非法：{raw}")))
+        })?),
+    };
+    let source = match query.source.as_deref() {
+        None => None,
+        Some(raw) => Some(Source::parse(raw).ok_or_else(|| {
+            ApiError::admin(AppError::invalid(format!("source 取值非法：{raw}")))
+        })?),
+    };
     let filter = AccountFilter {
-        status: query
-            .status
-            .as_deref()
-            .map(AccountStatus::parse)
-            .filter(|value| *value != AccountStatus::Normal || query.status.is_some()),
+        status,
         plan: query.plan.as_deref().map(Plan::parse),
-        source: query.source.as_deref().map(Source::parse),
+        source,
         keyword: query.keyword.clone(),
         proxy_group_id: query.group,
         offset: (page - 1) * page_size,

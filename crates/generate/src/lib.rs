@@ -833,10 +833,6 @@ pub fn sniff_mime(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     None
 }
 
-/// 兼容旧接口：只判断是不是图片。
-pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
-    sniff_mime(bytes).map(|(_, ext)| ext)
-}
 
 /// 图片元信息：MIME、扩展名、宽高。
 ///

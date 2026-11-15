@@ -38,14 +38,14 @@ impl AccountStatus {
         }
     }
 
-    /// 从数据库值解析。未知值回退 `Normal`（宽容）。
-    pub fn parse(value: &str) -> Self {
+    /// 从数据库值解析。未知值返回 `None`——**不允许**默默当成正常号。
+    pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "normal" | "正常" => AccountStatus::Normal,
-            "limited" | "限流" => AccountStatus::Limited,
-            "abnormal" | "异常" => AccountStatus::Abnormal,
-            "disabled" | "禁用" => AccountStatus::Disabled,
-            _ => AccountStatus::Normal,
+            "normal" | "正常" => Some(AccountStatus::Normal),
+            "limited" | "限流" => Some(AccountStatus::Limited),
+            "abnormal" | "异常" => Some(AccountStatus::Abnormal),
+            "disabled" | "禁用" => Some(AccountStatus::Disabled),
+            _ => None,
         }
     }
 
@@ -147,11 +147,12 @@ impl Source {
         }
     }
 
-    /// 解析。未知回退 `Web`。
-    pub fn parse(value: &str) -> Self {
+    /// 解析。未知值返回 `None`。
+    pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "codex" => Source::Codex,
-            _ => Source::Web,
+            "codex" => Some(Source::Codex),
+            "web" => Some(Source::Web),
+            _ => None,
         }
     }
 }
@@ -263,22 +264,22 @@ mod tests {
             AccountStatus::Abnormal,
             AccountStatus::Disabled,
         ] {
-            assert_eq!(AccountStatus::parse(status.as_str()), status);
+            assert_eq!(AccountStatus::parse(status.as_str()), Some(status));
         }
     }
 
     #[test]
     fn status_accepts_chinese_aliases() {
-        assert_eq!(AccountStatus::parse("正常"), AccountStatus::Normal);
-        assert_eq!(AccountStatus::parse("限流"), AccountStatus::Limited);
-        assert_eq!(AccountStatus::parse("异常"), AccountStatus::Abnormal);
-        assert_eq!(AccountStatus::parse("禁用"), AccountStatus::Disabled);
+        assert_eq!(AccountStatus::parse("正常"), Some(AccountStatus::Normal));
+        assert_eq!(AccountStatus::parse("限流"), Some(AccountStatus::Limited));
+        assert_eq!(AccountStatus::parse("异常"), Some(AccountStatus::Abnormal));
+        assert_eq!(AccountStatus::parse("禁用"), Some(AccountStatus::Disabled));
     }
 
     #[test]
-    fn status_unknown_falls_back_to_normal() {
-        assert_eq!(AccountStatus::parse("nonsense"), AccountStatus::Normal);
-        assert_eq!(AccountStatus::parse(""), AccountStatus::Normal);
+    fn status_unknown_is_rejected() {
+        assert_eq!(AccountStatus::parse("nonsense"), None);
+        assert_eq!(AccountStatus::parse(""), None);
     }
 
     #[test]
@@ -325,9 +326,9 @@ mod tests {
 
     #[test]
     fn source_parse() {
-        assert_eq!(Source::parse("codex"), Source::Codex);
-        assert_eq!(Source::parse("web"), Source::Web);
-        assert_eq!(Source::parse(""), Source::Web);
+        assert_eq!(Source::parse("codex"), Some(Source::Codex));
+        assert_eq!(Source::parse("web"), Some(Source::Web));
+        assert_eq!(Source::parse(""), None);
     }
 
     #[test]
