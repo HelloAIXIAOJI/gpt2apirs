@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="layout">
+  <aside id="sidebar">
+    <p class="brand">管理后台</p>
+    <nav>
+      {% for item in nav %}
+      {% if item.ready %}
+      <a class="nav-item{% if item.active %} is-active{% endif %}" href="{{ item.href }}"{% if item.active %} aria-current="page"{% endif %}>{{ item.label }}</a>
+      {% else %}
+      <span class="nav-item is-disabled" title="还没做">{{ item.label }}</span>
+      {% endif %}
+      {% endfor %}
+    </nav>
+    <form class="logout" method="post" action="/logout"><button type="submit">退出</button></form>
+  </aside>
+  <main id="content">{% block content %}{% endblock %}</main>
+</div>
+{% endblock %}
