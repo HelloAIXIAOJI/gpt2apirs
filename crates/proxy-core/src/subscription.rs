@@ -78,12 +78,26 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
         if name.is_empty() {
             continue;
         }
+        if is_info_node(&name) {
+            parsed.skipped.push(Skipped {
+                name,
+                kind,
+                reason: "订阅的流量信息条目，不是代理节点".to_string(),
+            });
+            continue;
+        }
         match build(item) {
             Ok(node) => parsed.nodes.push(node),
             Err(reason) => parsed.skipped.push(Skipped { name, kind, reason }),
         }
     }
     Ok(parsed)
+}
+
+/// 订阅里常混入「剩余流量 / 到期时间」这类伪节点，它们不是真代理。
+fn is_info_node(name: &str) -> bool {
+    const MARKERS: &[&str] = &["剩余流量", "距离下次重置", "套餐到期", "官网", "客服", "重置剩余"];
+    MARKERS.iter().any(|marker| name.contains(marker))
 }
 
 fn build(item: &Yaml) -> Result<Node, String> {

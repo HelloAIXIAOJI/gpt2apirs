@@ -52,9 +52,10 @@ async fn state() -> Option<Arc<AppState>> {
     let _ = ADMIN_KEY.set(config.admin_key.clone());
     let pool = gpt2apirs_storage::pool::build_pool(&config).await.ok()?;
     let repo = PgSettingsRepo::new(pool.clone());
-    // 预置一把 API key，供 /v1/* 调用
-    let test_key = gpt2apirs_core::api_key::generate().plaintext;
-    let _ = API_KEY.set(test_key.clone());
+    // 预置一把 API key，供 /v1/* 调用；多次调用 state() 必须用同一把
+    let test_key = API_KEY
+        .get_or_init(|| gpt2apirs_core::api_key::generate().plaintext)
+        .clone();
     let snapshot = repo.load().await.ok()?;
     let settings = Arc::new(RuntimeSettings::new(snapshot.data));
     Some(Arc::new(AppState::new(

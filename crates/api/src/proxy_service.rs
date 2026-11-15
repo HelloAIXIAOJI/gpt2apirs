@@ -61,10 +61,11 @@ pub struct StatusView {
 struct Inner {
     core: Option<Core>,
     control: Option<Arc<control::Control>>,
-    nodes: Vec<subscription::Node>,
+    nodes: Vec<(String, subscription::Node)>,
     skipped: Vec<subscription::Skipped>,
     selected: Option<String>,
     last_error: Option<String>,
+    last_fetch: Option<std::time::Instant>,
 }
 
 /// 订阅代理服务。
@@ -106,7 +107,7 @@ impl ProxyService {
         guard
             .nodes
             .iter()
-            .map(|node| NodeView {
+            .map(|(_, node)| NodeView {
                 name: node.name.clone(),
                 kind: node.kind.as_str().to_string(),
                 server: node.server.clone(),
@@ -121,12 +122,28 @@ impl ProxyService {
         subscription_url: &str,
         selected: Option<&str>,
     ) -> anyhow::Result<StatusView> {
-        self.stop();
+        // 先拉订阅并解析，成功之后再停旧实例：拉取失败时不能把正在用的出口拆掉。
+        // 服务商对订阅拉取有频率限制，60 秒内重复拉会被 403，先自己挡住。
+        {
+            let guard = self.lock();
+            if let Some(last) = guard.last_fetch {
+                let elapsed = last.elapsed();
+                if elapsed < std::time::Duration::from_secs(60) {
+                    anyhow::bail!(
+                        "距上次拉取订阅只有 {} 秒，服务商可能限流；请 {} 秒后再试",
+                        elapsed.as_secs(),
+                        60 - elapsed.as_secs()
+                    );
+                }
+            }
+        }
         let text = fetch_subscription(subscription_url).await?;
+        self.lock().last_fetch = Some(std::time::Instant::now());
         let parsed = subscription::parse(&text).map_err(|error| anyhow::anyhow!(error))?;
         if parsed.nodes.is_empty() {
             anyhow::bail!("订阅里没有可用节点");
         }
+        self.stop();
 
         let dir = self.data_dir.lock().map(|guard| guard.clone()).unwrap_or_default();
         std::fs::create_dir_all(&dir)?;
@@ -150,7 +167,12 @@ impl ProxyService {
             let mut guard = self.lock();
             guard.core = Some(core);
             guard.control = Some(control);
-            guard.nodes = parsed.nodes;
+            guard.nodes = parsed
+                .nodes
+                .into_iter()
+                .enumerate()
+                .map(|(index, node)| (format!("n{index}"), node))
+                .collect();
             guard.skipped = parsed.skipped;
             guard.selected = selected
                 .filter(|name| !name.trim().is_empty())
@@ -171,12 +193,21 @@ impl ProxyService {
 
     /// 切换出口节点。
     pub async fn select(&self, name: &str) -> anyhow::Result<()> {
-        let control = self
-            .lock()
-            .control
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("代理核未运行"))?;
-        control.select("outbound", name).await?;
+        let (control, chain) = {
+            let guard = self.lock();
+            let control = guard
+                .control
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("代理核未运行"))?;
+            let chain = guard
+                .nodes
+                .iter()
+                .find(|(_, node)| node.name == name)
+                .map(|(chain, _)| chain.clone())
+                .ok_or_else(|| anyhow::anyhow!("没有名为 {name} 的节点"))?;
+            (control, chain)
+        };
+        control.select("outbound", &chain).await?;
         self.lock().selected = Some(name.to_string());
         Ok(())
     }
@@ -189,17 +220,30 @@ impl ProxyService {
         timeout_ms: u64,
         concurrency: usize,
     ) -> Vec<ProbeView> {
-        let targets: Vec<String> = match names {
-            Some(list) if !list.is_empty() => list,
-            _ => self.lock().nodes.iter().map(|node| node.name.clone()).collect(),
+        let (targets, display): (Vec<(String, String)>, ()) = {
+            let guard = self.lock();
+            let wanted: Vec<String> = match names {
+                Some(list) if !list.is_empty() => list,
+                _ => guard.nodes.iter().map(|(_, node)| node.name.clone()).collect(),
+            };
+            let mut targets = Vec::new();
+            for name in wanted {
+                if let Some((chain, _)) = guard.nodes.iter().find(|(_, node)| node.name == name) {
+                    targets.push((chain.clone(), name));
+                } else {
+                    targets.push((name.clone(), name));
+                }
+            }
+            (targets, ())
         };
+        let _ = display;
         let control = match self.lock().control.clone() {
             Some(control) => control,
             None => {
                 return targets
-                    .into_iter()
-                    .map(|name| ProbeView {
-                        name,
+                    .iter()
+                    .map(|(_, name)| ProbeView {
+                        name: name.clone(),
                         delay_ms: None,
                         error: Some("代理核未运行".to_string()),
                     })
@@ -211,15 +255,15 @@ impl ProxyService {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(limit));
         let probe_url = probe_url.to_string();
         let mut tasks = Vec::new();
-        for name in targets {
+        for (chain, shown) in targets {
             let control = control.clone();
             let semaphore = semaphore.clone();
             let probe_url = probe_url.clone();
             tasks.push(tokio::spawn(async move {
                 let _permit = semaphore.acquire_owned().await.expect("信号量");
-                let (delay_ms, error) = control.delay(&name, &probe_url, timeout_ms).await;
+                let (delay_ms, error) = control.delay(&chain, &probe_url, timeout_ms).await;
                 ProbeView {
-                    name,
+                    name: shown,
                     delay_ms,
                     error,
                 }

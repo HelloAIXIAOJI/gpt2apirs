@@ -28,17 +28,20 @@ pub fn render(nodes: &[Node], layout: &Layout) -> String {
 
     out.push_str(&format!("- client_group: {}\n", layout.group));
     out.push_str("  type: selector\n");
+    // 链路名必须是 ASCII 可安全放进 URL 的：鞋子的控制接口按路径定位成员，
+    // 中文/emoji 的显示名留在我们自己的表里，这里统一用 n<下标>。
+    let chain_name = |index: usize| format!("n{index}");
     let default = layout
         .selected
         .as_deref()
-        .filter(|name| nodes.iter().any(|node| node.name == *name))
-        .or_else(|| nodes.first().map(|node| node.name.as_str()))
-        .unwrap_or("DIRECT");
+        .and_then(|name| nodes.iter().position(|node| node.name == name))
+        .map(chain_name)
+        .unwrap_or_else(|| chain_name(0));
     out.push_str(&format!("  default: \"{default}\"\n"));
     out.push_str("  client_chains:\n");
-    for node in nodes {
+    for (index, node) in nodes.iter().enumerate() {
         out.push_str("    - chain:\n");
-        out.push_str(&format!("        - name: \"{}\"\n", node.name));
+        out.push_str(&format!("        - name: \"{}\"\n", chain_name(index)));
         out.push_str(&format!("          address: \"{}:{}\"\n", node.server, node.port));
         for line in node.client_yaml.lines() {
             out.push_str("          ");
@@ -84,8 +87,9 @@ mod tests {
         };
         let yaml = render(&nodes, &layout);
         assert!(yaml.contains("client_group: outbound"));
-        assert!(yaml.contains("default: \"b\""));
+        assert!(yaml.contains("default: \"n1\""), "选中 b（第二个节点）应生成 n1：{yaml}");
         assert_eq!(yaml.matches("    - chain:").count(), 2);
+        assert!(yaml.contains("name: \"n0\""), "链路名必须是 ASCII：{yaml}");
         assert!(yaml.contains("address: \"127.0.0.1:17899\""));
         assert!(yaml.contains("client_chain: outbound"));
     }
@@ -100,6 +104,6 @@ mod tests {
             group: "g".to_string(),
             selected: Some("does-not-exist".to_string()),
         };
-        assert!(render(&nodes, &layout).contains("default: \"only\""));
+        assert!(render(&nodes, &layout).contains("default: \"n0\""));
     }
 }
