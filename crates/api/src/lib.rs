@@ -9,6 +9,7 @@ pub mod auth;
 pub mod call_log;
 pub mod error;
 pub mod image_tasks;
+pub mod admin;
 pub mod login_throttle;
 pub mod proxy_service;
 pub mod routes;
