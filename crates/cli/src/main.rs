@@ -125,7 +125,7 @@ async fn run() -> Result<()> {
     if loaded == 0 {
         tracing::warn!(
             "账号池为空：/v1/images/generations 会返回 503。\
-             请用 POST /api/accounts 导入账号（GPT2APIRS_ACCESS_TOKEN 已停用）"
+             请用 POST /api/accounts 导入账号"
         );
     }
 
