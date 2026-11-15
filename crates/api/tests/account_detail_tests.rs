@@ -24,7 +24,6 @@ fn state() -> Arc<AppState> {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", "legacy-auth-key-123"),
         ("ADMIN_KEY", ADMIN_KEY),
     ]);
     let lookup = move |key: &str| map.get(key).map(|v| v.to_string()).filter(|v| !v.is_empty());

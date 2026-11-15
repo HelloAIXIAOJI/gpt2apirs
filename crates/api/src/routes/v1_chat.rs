@@ -272,7 +272,7 @@ pub async fn chat_completions(
         .model
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "gpt-5-5".to_string());
+        .unwrap_or_else(|| gpt2apirs_generate::models::DEFAULT_TEXT_MODEL.to_string());
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
 
     if request.stream.unwrap_or(false) {

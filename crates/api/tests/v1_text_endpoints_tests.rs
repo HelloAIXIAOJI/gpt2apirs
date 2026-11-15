@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
-const AUTH_KEY: &str = "test-admin-key-123456";
+const TEST_KEY: &str = "test-admin-key-123456";
 
 fn state() -> Arc<AppState> {
     let map: HashMap<&'static str, &'static str> = HashMap::from([
@@ -23,7 +23,7 @@ fn state() -> Arc<AppState> {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", AUTH_KEY),
+        ("ADMIN_KEY", TEST_KEY),
     ]);
     let lookup = move |key: &str| map.get(key).map(|v| v.to_string()).filter(|v| !v.is_empty());
     let config = Arc::new(BootstrapConfig::from_lookup(&lookup).expect("配置"));
@@ -44,9 +44,9 @@ fn state() -> Arc<AppState> {
         )),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
-        // 调用 /v1/* 用 API key：测试里预置一把与 AUTH_KEY 相同的 key
+        // 调用 /v1/* 用 API key：测试里预置一把与 TEST_KEY 相同的 key
         Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
-            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(AUTH_KEY, "test"),
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(TEST_KEY, "test"),
         )),
     ))
 }
@@ -84,7 +84,7 @@ async fn responses_requires_auth() {
 
 #[tokio::test]
 async fn responses_accepts_plain_string_input() {
-    let (status, body) = post("/v1/responses", json!({"input": "你好"}), Some(AUTH_KEY)).await;
+    let (status, body) = post("/v1/responses", json!({"input": "你好"}), Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body["error"]["code"], "no_available_account");
 }
@@ -101,7 +101,7 @@ async fn responses_accepts_messages_array_with_instructions() {
                 {"role": "user", "content": "第二问"},
             ],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -113,7 +113,7 @@ async fn responses_accepts_bare_content_parts() {
     let (status, body) = post(
         "/v1/responses",
         json!({"input": [{"type": "input_text", "text": "只有片段"}]}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -121,7 +121,7 @@ async fn responses_accepts_bare_content_parts() {
 
 #[tokio::test]
 async fn responses_rejects_empty_input() {
-    let (status, body) = post("/v1/responses", json!({"input": "   "}), Some(AUTH_KEY)).await;
+    let (status, body) = post("/v1/responses", json!({"input": "   "}), Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"]["param"], "input");
 }
@@ -134,7 +134,7 @@ async fn responses_rejects_tools() {
             "input": "hi",
             "tools": [{"type": "function", "name": "f"}],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -148,7 +148,7 @@ async fn responses_rejects_image_input() {
         json!({"input": [{"role": "user", "content": [
             {"type": "input_image", "image_url": "https://x/y.png"}
         ]}]}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -178,7 +178,7 @@ async fn messages_accepts_base64_image_block() {
                 ],
             }],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -196,7 +196,7 @@ async fn messages_accepts_url_image_block() {
                 {"type": "image", "source": {"type": "url", "url": "https://x/y.png"}},
             ]}],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -213,7 +213,7 @@ async fn messages_rejects_broken_base64_image() {
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "!!!"}},
             ]}],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -239,7 +239,7 @@ async fn messages_accepts_simple_request() {
     let (status, body) = post(
         "/v1/messages",
         json!({"max_tokens": 256, "messages": [{"role": "user", "content": "你好"}]}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -259,7 +259,7 @@ async fn messages_accepts_system_and_block_content() {
                 {"role": "user", "content": "第二问"},
             ],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -274,7 +274,7 @@ async fn messages_rejects_reasoning_role() {
             "max_tokens": 100,
             "messages": [{"role": "system", "content": "x"}],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -286,7 +286,7 @@ async fn messages_rejects_reasoning_role() {
 
 #[tokio::test]
 async fn messages_uses_anthropic_error_shape() {
-    let (status, body) = post("/v1/messages", json!({"max_tokens": 0, "messages": []}), Some(AUTH_KEY)).await;
+    let (status, body) = post("/v1/messages", json!({"max_tokens": 0, "messages": []}), Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     // Anthropic 错误格式：{"type":"error","error":{...}}
     assert_eq!(body["type"], "error", "应为 Anthropic 错误格式：{body}");
@@ -302,7 +302,7 @@ async fn messages_rejects_tools() {
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"name": "f", "input_schema": {}}],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -321,7 +321,7 @@ async fn messages_rejects_empty_messages() {
     let (status, body) = post(
         "/v1/messages",
         json!({"max_tokens": 100, "messages": []}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -345,7 +345,7 @@ async fn empty_tools_array_is_not_rejected() {
             _ => json!({"messages": [{"role": "user", "content": "hi"}]}),
         };
         body["tools"] = json!([]);
-        let (status, response) = post(path, body, Some(AUTH_KEY)).await;
+        let (status, response) = post(path, body, Some(TEST_KEY)).await;
         assert_eq!(
             status,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -363,7 +363,7 @@ async fn messages_tools_error_uses_anthropic_shape() {
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"name": "f", "input_schema": {}}],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -389,7 +389,7 @@ async fn chat_rejects_tools() {
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"type": "function", "function": {"name": "f"}}],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -401,7 +401,7 @@ async fn tools_error_is_openai_shape_on_openai_paths() {
     let (status, body) = post(
         "/v1/responses",
         json!({"input": "hi", "tools": [{"type": "function", "name": "f"}]}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -450,8 +450,8 @@ async fn count_tokens_requires_auth() {
 async fn count_tokens_matches_the_messages_usage_count() {
     let (status, body) = post(
         "/v1/messages/count_tokens",
-        json!({"model": "gpt-5-5", "messages": [{"role": "user", "content": "hello"}]}),
-        Some(AUTH_KEY),
+        json!({"model": "text", "messages": [{"role": "user", "content": "hello"}]}),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -465,7 +465,7 @@ async fn count_tokens_counts_system_and_block_content() {
     let plain = post(
         "/v1/messages/count_tokens",
         json!({"messages": [{"role": "user", "content": "第一问"}]}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     let rich = post(
@@ -478,7 +478,7 @@ async fn count_tokens_counts_system_and_block_content() {
                 {"role": "user", "content": "第二问"}
             ],
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(plain.0, StatusCode::OK, "{}", plain.1);
@@ -493,7 +493,7 @@ async fn count_tokens_rejects_empty_messages() {
     let (status, body) = post(
         "/v1/messages/count_tokens",
         json!({"messages": []}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -512,7 +512,7 @@ async fn count_tokens_rejects_tools() {
             "messages": [{"role": "user", "content": "hi"}],
             "tools": [{"name": "get_weather"}]
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -528,7 +528,7 @@ async fn count_tokens_accepts_x_api_key() {
     let (status, body) = post_with_x_api_key(
         "/v1/messages/count_tokens",
         json!({"messages": [{"role": "user", "content": "hello"}]}),
-        AUTH_KEY,
+        TEST_KEY,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");

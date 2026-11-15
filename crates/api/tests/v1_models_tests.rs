@@ -23,7 +23,7 @@ fn state() -> Arc<AppState> {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", "legacy-auth-key"),
+        ("ADMIN_KEY", "test-admin-key-123456"),
     ]);
     let lookup = move |key: &str| map.get(key).map(|v| v.to_string()).filter(|v| !v.is_empty());
     let config = Arc::new(BootstrapConfig::from_lookup(&lookup).expect("配置"));
@@ -119,14 +119,6 @@ async fn text_model_is_declared_as_text() {
     assert_eq!(body["kind"], "text");
 }
 
-#[tokio::test]
-async fn legacy_model_names_resolve_to_exposed_names() {
-    for (legacy, exposed) in [("gpt-5-5", "text"), ("gpt-image-2", "image")] {
-        let (status, body) = get(&format!("/v1/models/{legacy}"), Some(API_KEY), None).await;
-        assert_eq!(status, StatusCode::OK, "{legacy} 仍应可用：{body}");
-        assert_eq!(body["id"], exposed, "旧名字应归一成对外名：{body}");
-    }
-}
 
 #[tokio::test]
 async fn unknown_model_is_404_with_model_not_found() {

@@ -63,20 +63,6 @@ async fn create_verify_revoke_round_trip() {
     pool.close().await;
 }
 
-#[tokio::test]
-async fn legacy_import_only_when_no_active_keys() {
-    let Some((repo, pool)) = repo().await else { return };
-
-    // 先保证至少有一把：直接建
-    let created = repo.create("占位").await.expect("创建");
-    assert!(
-        !repo.import_legacy("legacy-key-123456").await.expect("导入"),
-        "已有 key 时不该再导入 legacy"
-    );
-
-    repo.revoke(created.row.id).await.ok();
-    pool.close().await;
-}
 
 #[tokio::test]
 async fn wrong_shape_is_rejected_without_touching_db() {

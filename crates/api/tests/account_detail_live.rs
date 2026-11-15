@@ -29,7 +29,6 @@ fn admin_key() -> String {
     std::env::var("ADMIN_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| std::env::var("AUTH_KEY").ok())
         .unwrap_or_default()
 }
 

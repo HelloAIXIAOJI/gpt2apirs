@@ -64,13 +64,12 @@ powershell -File tools\build.ps1 -CargoArgs build,--release,--features,tls
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `DATABASE_URL` | 是 | `postgres://user:pass@host:5432/db?sslmode=disable` |
-| `AUTH_KEY` | 是 | 调用 `/v1/*` 的口令，至少 8 字符 |
-| `ADMIN_KEY` | 否 | 管理后台登录口令；不填时沿用 `AUTH_KEY` |
+| `ADMIN_KEY` | 是 | 管理后台登录口令，至少 8 字符；调用 `/v1/*` 不用它 |
 | `HOST` / `PORT` | 否 | 默认 `0.0.0.0:8000` |
 | `DATA_DIR` | 否 | 图片落盘目录 |
 | `PUBLIC_BASE_URL` | 否 | 对外基础地址，用于拼图片 URL |
 
-`AUTH_KEY` 和 `ADMIN_KEY` 是两套凭据：前者进 `/v1/*`，后者进 `/admin`，互相不能代替。
+调用 `/v1/*` 用的是 API key：登录后台后在「密钥」页创建，与 `ADMIN_KEY` 完全分离。
 
 ### 4. 起服务
 
@@ -81,10 +80,10 @@ powershell -File tools\build.ps1 -CargoArgs build,--release,--features,tls
 ### 5. 第一条请求
 
 ```bash
-curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $AUTH_KEY"
+curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $API_KEY"
 
 curl http://127.0.0.1:8000/v1/chat/completions \
-  -H "Authorization: Bearer $AUTH_KEY" \
+  -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"text","messages":[{"role":"user","content":"你好"}]}'
 ```
@@ -146,7 +145,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 
 **启动就报 `DATABASE_URL` 缺失**：`.env` 不在可执行文件同目录，或变量为空。程序不会从当前工作目录找。
 
-**`/v1/*` 返回 401 但口令没错**：`AUTH_KEY` 与 `ADMIN_KEY` 是两套凭据；后台会话 cookie 不能用于 `/v1/*`。
+**`/v1/*` 返回 401**：调用要用后台「密钥」页创建的 API key；`ADMIN_KEY` 只能登后台，后台会话 cookie 也不能用于 `/v1/*`。
 
 **请求返回 503 `account_not_available`**：没有可用账号（全部失效或在冷却）。看后台「账号」页的状态。
 

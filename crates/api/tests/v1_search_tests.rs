@@ -12,7 +12,7 @@ use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
-const AUTH_KEY: &str = "test-admin-key-123456";
+const TEST_KEY: &str = "test-admin-key-123456";
 
 fn account_pool(db: &sqlx::PgPool) -> Arc<gpt2apirs_account::AccountPool> {
     Arc::new(gpt2apirs_account::AccountPool::new(
@@ -27,7 +27,7 @@ fn state() -> Arc<AppState> {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", AUTH_KEY),
+        ("ADMIN_KEY", TEST_KEY),
     ]);
     let lookup = move |key: &str| map.get(key).map(|v| v.to_string()).filter(|v| !v.is_empty());
     let config = Arc::new(BootstrapConfig::from_lookup(&lookup).expect("配置"));
@@ -45,9 +45,9 @@ fn state() -> Arc<AppState> {
         account_pool(&pool),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
-        // 调用 /v1/* 用 API key：测试里预置一把与 AUTH_KEY 相同的 key
+        // 调用 /v1/* 用 API key：测试里预置一把与 TEST_KEY 相同的 key
         Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
-            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(AUTH_KEY, "test"),
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(TEST_KEY, "test"),
         )),
     ))
 }
@@ -80,14 +80,14 @@ async fn requires_auth() {
 
 #[tokio::test]
 async fn rejects_empty_prompt() {
-    let (status, body) = post_search(serde_json::json!({ "prompt": "   " }), Some(AUTH_KEY)).await;
+    let (status, body) = post_search(serde_json::json!({ "prompt": "   " }), Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["param"], "prompt");
 }
 
 #[tokio::test]
 async fn empty_pool_reports_unavailable() {
-    let (status, body) = post_search(serde_json::json!({ "prompt": "今天北京天气" }), Some(AUTH_KEY)).await;
+    let (status, body) = post_search(serde_json::json!({ "prompt": "今天北京天气" }), Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"]["code"], "no_available_account");
 }

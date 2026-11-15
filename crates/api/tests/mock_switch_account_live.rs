@@ -69,7 +69,7 @@ async fn fail_counts(pool: &PgPool) -> Vec<(Uuid, i64)> {
 
 fn body() -> Value {
     json!({
-        "model": "gpt-5-5",
+        "model": "text",
         "max_tokens": 32,
         "messages": [{"role": "user", "content": "说点什么"}]
     })

@@ -24,7 +24,7 @@ async fn chat_uploads_the_image_and_sends_multimodal_payload() {
     let Some((state, pool)) = setup_with(PREFIX).await else { return };
 
     let body = json!({
-        "model": "gpt-5-5",
+        "model": "text",
         "messages": [{
             "role": "user",
             "content": [
