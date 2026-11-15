@@ -163,7 +163,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/login", post(admin::login))
         .route("/logout", post(admin::logout))
         .route("/admin/assets/htmx.min.js", get(admin::htmx_asset))
-        .route("/admin/assets/admin.css", get(admin::css_asset));
+        .route("/admin/assets/admin.css", get(admin::css_asset))
+        .route("/accounts", get(admin::accounts::index))
+        .route("/accounts/{id}/status", post(admin::accounts::toggle_status))
+        .route("/accounts/{id}/delete", post(admin::accounts::delete_account))
+        .route("/accounts/{id}/test", post(admin::accounts::test_account))
+        .route("/accounts/{id}/refresh", post(admin::accounts::refresh_token));
 
     let public = Router::new()
         .route("/health", get(system::health))
