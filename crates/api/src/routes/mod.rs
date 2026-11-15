@@ -7,7 +7,6 @@ pub mod image_common;
 pub mod image_flow;
 pub mod image_tasks;
 pub mod images;
-pub mod proxy_groups;
 pub mod logs;
 pub mod rich_text;
 pub mod proxy;
