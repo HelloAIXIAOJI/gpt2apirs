@@ -11,6 +11,7 @@ pub mod call_log;
 pub mod error;
 pub mod image_tasks;
 pub mod login_throttle;
+pub mod proxy_service;
 pub mod routes;
 pub mod session;
 pub mod state;
@@ -97,6 +98,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/accounts/{id}/proxy-group",
             post(routes::proxy_groups::assign_group),
         )
+        .route("/api/proxy/status", get(routes::proxy::status))
+        .route("/api/proxy/start", post(routes::proxy::start))
+        .route("/api/proxy/stop", post(routes::proxy::stop))
+        .route("/api/proxy/nodes", get(routes::proxy::nodes))
+        .route("/api/proxy/select", post(routes::proxy::select))
+        .route("/api/proxy/probe", post(routes::proxy::probe))
         .route("/api/logs", get(routes::logs::list_logs))
         .route("/api/metrics", get(routes::logs::metrics))
         .route("/api/settings", get(routes::settings::get_settings))

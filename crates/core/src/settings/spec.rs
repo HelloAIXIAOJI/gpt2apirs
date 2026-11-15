@@ -44,6 +44,36 @@ pub struct NumericSpec {
 /// 数值与上游实测边界逐项对齐。
 pub static NUMERIC_SPECS: &[NumericSpec] = &[
     NumericSpec {
+        key: "proxy_enabled",
+        default: 0.0,
+        min: 0.0,
+        max: Some(1.0),
+        kind: NumericKind::Integer,
+        unit: None,
+        restart_required: false,
+        description: "是否启用订阅节点作为全局出口：1 启用，0 直连。",
+    },
+    NumericSpec {
+        key: "proxy_auto_refresh_minutes",
+        default: 60.0,
+        min: 5.0,
+        max: None,
+        kind: NumericKind::Integer,
+        unit: Some("minutes"),
+        restart_required: false,
+        description: "订阅自动刷新间隔；0 表示不自动刷新。",
+    },
+    NumericSpec {
+        key: "proxy_probe_timeout_ms",
+        default: 5000.0,
+        min: 1000.0,
+        max: Some(30000.0),
+        kind: NumericKind::Integer,
+        unit: Some("ms"),
+        restart_required: false,
+        description: "节点测速的单项超时。",
+    },
+    NumericSpec {
         key: "image_poll_timeout_secs",
         default: 60.0,
         min: 1.0,
@@ -255,6 +285,27 @@ pub struct StringSpec {
 /// 这正是 `chat_blocked_keywords` 曾经踩过的坑：代码读了它，但契约里没有，
 /// 于是没有任何途径能把它设进去，功能形同虚设。
 pub static STRING_SPECS: &[StringSpec] = &[
+    StringSpec {
+        key: "proxy_subscription_url",
+        default: "",
+        max_len: 1024,
+        restart_required: false,
+        description: "订阅地址（Clash 格式）。保存后由管理面「开始」按钮拉取并启动代理核。",
+    },
+    StringSpec {
+        key: "proxy_selected_node",
+        default: "",
+        max_len: 128,
+        restart_required: false,
+        description: "当前选中的出口节点名，重启后恢复。",
+    },
+    StringSpec {
+        key: "proxy_probe_url",
+        default: "https://www.gstatic.com/generate_204",
+        max_len: 256,
+        restart_required: false,
+        description: "测速探测目标地址。",
+    },
     StringSpec {
         key: "rich_text_policy",
         default: "guard+strip",

@@ -219,6 +219,23 @@
     </section>
 
     <section data-view="images" class="panel" hidden>
+      <h2>图片与出口节点</h2>
+
+      <h3>订阅出口</h3>
+      <p style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="proxy-url" placeholder="订阅地址（Clash 格式）" style="min-width:420px">
+        <button id="proxy-start">保存并启动</button>
+        <button id="proxy-stop" class="ghost">停止</button>
+        <button id="proxy-probe-all" class="ghost">全部测速</button>
+        <span id="proxy-status" class="muted"></span>
+      </p>
+      <p id="proxy-skipped" class="muted"></p>
+      <table id="proxy-nodes">
+        <thead><tr><th>节点</th><th>协议</th><th>服务器</th><th>延迟</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="muted">出口作用于全部上游请求（文本、搜索、生图）；账号自己配了代理时以账号为准。</p>
+
       <h2>图片</h2>
       <p id="images-summary" class="muted"></p>
       <p style="display:flex;gap:8px;align-items:center;margin:10px 0">

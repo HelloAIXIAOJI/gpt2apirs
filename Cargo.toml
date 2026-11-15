@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# 第三方源码目录：只作为 path 依赖，不进 workspace、不参与统一 lint
+exclude = ["vendor"]
 members = [
     "crates/core",
     "crates/http",
@@ -10,12 +12,13 @@ members = [
     "crates/api",
     "crates/cli",
     "crates/testkit",
+    "crates/proxy-core",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/yourname/gpt2apirs"
 authors = ["gpt2apirs contributors"]
@@ -31,6 +34,7 @@ gpt2apirs-storage = { path = "crates/storage" }
 gpt2apirs-api = { path = "crates/api" }
 # 仅测试用：本地 mock 上游（不发布）
 gpt2apirs-testkit = { path = "crates/testkit" }
+gpt2apirs-proxy-core = { path = "crates/proxy-core" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
@@ -102,3 +106,16 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# 代理核（vendor/shoes）需要的补丁依赖：全部指向 vendor 下的自包含快照
+[patch.crates-io]
+rustls = { path = "vendor/rustls/rustls" }
+blake3 = { path = "vendor/blake3" }
+h3 = { path = "vendor/h3/h3" }
+h3-quinn = { path = "vendor/h3/h3-quinn" }
+hickory-net = { path = "vendor/hickory/crates/net" }
+hickory-proto = { path = "vendor/hickory/crates/proto" }
+hickory-resolver = { path = "vendor/hickory/crates/resolver" }
+nix = { path = "vendor/nix" }
+smoltcp = { path = "vendor/smoltcp" }
+gotatun = { path = "vendor/gotatun/gotatun" }
