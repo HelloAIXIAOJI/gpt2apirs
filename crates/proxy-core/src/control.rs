@@ -2,9 +2,9 @@
 //!
 //! 只连本地回环上的控制端口，口令由启动配置里的 secret 决定。
 
-use gpt2apirs_http::{Client, ClientOptions, Emulation};
 use serde::Deserialize;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// 控制接口的一条记录（可能是节点，也可能是策略组）。
 #[derive(Debug, Clone, Deserialize)]
@@ -38,59 +38,80 @@ struct ProxiesBody {
 }
 
 /// 控制接口客户端。
+///
+/// 只连本地回环的明文 HTTP，因此不借助带 TLS 指纹的客户端：
+/// 那会把 `tls` 特性传染给所有引用本 crate 的构建。
 pub struct Control {
     base: String,
     secret: String,
-    client: Client,
 }
 
 impl Control {
     /// 指向本地控制端口。
     pub fn new(api_port: u16, secret: &str) -> anyhow::Result<Self> {
-        let client = Client::new(ClientOptions {
-            emulation: Some(Emulation::Chrome110),
-            proxy: None,
-            timeout_secs: Some(10),
-        })?;
         Ok(Self {
-            base: format!("http://127.0.0.1:{api_port}"),
+            base: format!("127.0.0.1:{api_port}"),
             secret: secret.to_string(),
-            client,
         })
     }
 
-    fn auth(&self) -> Vec<(&'static str, String)> {
-        vec![("authorization", format!("Bearer {}", self.secret))]
+    /// 发一个最小 HTTP/1.1 请求，返回 (状态码, 响应体)。
+    async fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<String>,
+    ) -> anyhow::Result<(u16, String)> {
+        let mut stream = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::net::TcpStream::connect(&self.base),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("连接控制接口超时"))??;
+        let body = body.unwrap_or_default();
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\n",
+            self.base, self.secret
+        ) + &if body.is_empty() {
+            "Content-Length: 0\r\n\r\n".to_string()
+        } else {
+            format!(
+                "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        tokio::time::timeout(Duration::from_secs(20), stream.read_to_end(&mut raw))
+            .await
+            .map_err(|_| anyhow::anyhow!("读取控制接口超时"))??;
+        let text = String::from_utf8_lossy(&raw).to_string();
+        let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_str(), ""));
+        let status = head
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|code| code.parse::<u16>().ok())
+            .ok_or_else(|| anyhow::anyhow!("控制接口响应行非法"))?;
+        Ok((status, body.to_string()))
     }
 
     /// 列出全部记录。
     pub async fn proxies(&self) -> anyhow::Result<Vec<ProxyEntry>> {
-        let response = self
-            .client
-            .get_text(&format!("{}/proxies", self.base), &self.auth(), Some(Duration::from_secs(10)))
-            .await
-            .map_err(|error| anyhow::anyhow!("读取控制接口失败：{error}"))?;
-        if response.status != 200 {
-            anyhow::bail!("控制接口返回 {}：{}", response.status, response.body);
+        let response = self.call("GET", "/proxies", None).await?;
+        if response.0 != 200 {
+            anyhow::bail!("控制接口返回 {}：{}", response.0, response.1);
         }
-        parse_proxies(&response.body)
+        parse_proxies(&response.1)
     }
 
     /// 把组切到指定成员。
     pub async fn select(&self, group: &str, name: &str) -> anyhow::Result<()> {
-        let body = serde_json::json!({ "name": name });
-        let response = self
-            .client
-            .put_bytes(
-                &format!("{}/proxies/{}", self.base, encode_component(group)),
-                &self.auth(),
-                serde_json::to_vec(&body)?,
-                Some(Duration::from_secs(10)),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!("切换出口失败：{error}"))?;
-        if !(200..300).contains(&response.status) {
-            anyhow::bail!("切换出口返回 {}：{}", response.status, response.body);
+        let body = serde_json::json!({ "name": name }).to_string();
+        let path = format!("/proxies/{}", encode_component(group));
+        let (status, text) = self.call("PUT", &path, Some(body)).await?;
+        if !(200..300).contains(&status) {
+            anyhow::bail!("切换出口返回 {status}：{text}");
         }
         Ok(())
     }
@@ -102,23 +123,20 @@ impl Control {
         probe_url: &str,
         timeout_ms: u64,
     ) -> (Option<u64>, Option<String>) {
-        let url = format!(
-            "{}/proxies/{}/delay?url={}&timeout={}",
-            self.base,
+        // 探测目标不要百分号编码：控制接口自己会做 form 解码，再编码一次会被解成
+        // `https%3A%2F%2F...`，对方按 URL 解析就失败（实测返回 invalid delay test query）。
+        let path = format!(
+            "/proxies/{}/delay?url={}&timeout={}",
             encode_component(name),
-            encode_component(probe_url),
+            probe_url,
             timeout_ms
         );
-        let response = self
-            .client
-            .get_text(&url, &self.auth(), Some(Duration::from_millis(timeout_ms + 5_000)))
-            .await;
-        match response {
-            Ok(response) if response.status == 200 => {
-                let value: serde_json::Value = serde_json::from_str(&response.body).unwrap_or_default();
+        match self.call("GET", &path, None).await {
+            Ok((200, body)) => {
+                let value: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                 (value["delay"].as_u64(), None)
             }
-            Ok(response) => (None, Some(format!("{} {}", response.status, response.body))),
+            Ok((status, body)) => (None, Some(format!("{status} {body}"))),
             Err(error) => (None, Some(format!("{error}"))),
         }
     }

@@ -9,5 +9,8 @@ shoes = { path = "../../vendor/shoes" }
 yaml-rust2 = "0.13"
 serde_json = { workspace = true }
 anyhow = { workspace = true }
-gpt2apirs-http = { workspace = true }
 serde = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

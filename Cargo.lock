@@ -1890,10 +1890,10 @@ name = "gpt2apirs-proxy-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "gpt2apirs-http",
  "serde",
  "serde_json",
  "shoes",
+ "tokio",
  "yaml-rust2",
 ]
 
