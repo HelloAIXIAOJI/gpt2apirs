@@ -224,3 +224,20 @@ async fn settings_page_lists_known_keys() {
     assert!(reply.body.contains("image_poll_timeout_secs"), "{}", reply.body);
     assert!(reply.body.contains("proxy_subscription_url"), "{}", reply.body);
 }
+
+#[tokio::test]
+async fn logs_page_requires_session() {
+    let reply = send("GET", "/logs", None, None).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location.as_deref(), Some("/"));
+}
+
+#[tokio::test]
+async fn logs_page_renders_filters() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/logs", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("路径前缀"), "{}", reply.body);
+    assert!(reply.body.contains("错误码"), "{}", reply.body);
+}

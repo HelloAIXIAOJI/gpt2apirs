@@ -1,0 +1,57 @@
+{% extends "shell.html" %}
+{% block title %}日志 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>日志</h1></header>
+
+<section class="panel">
+  <div class="stat-grid">
+    {% for card in cards %}{{ card|safe }}{% endfor %}
+  </div>
+
+  {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+
+  <form class="filters" method="get" action="/logs">
+    <label>时间
+      <select name="hours">
+        <option value="1"{% if hours == 1 %} selected{% endif %}>1 小时</option>
+        <option value="6"{% if hours == 6 %} selected{% endif %}>6 小时</option>
+        <option value="24"{% if hours == 24 %} selected{% endif %}>24 小时</option>
+        <option value="168"{% if hours == 168 %} selected{% endif %}>7 天</option>
+      </select>
+    </label>
+    <label>状态
+      <select name="status">
+        <option value=""{% if status.is_empty() %} selected{% endif %}>全部</option>
+        <option value="ok"{% if status == "ok" %} selected{% endif %}>成功</option>
+        <option value="fail"{% if status == "fail" %} selected{% endif %}>失败</option>
+      </select>
+    </label>
+    <label>路径前缀<input name="path" value="{{ path }}" placeholder="/v1/images"></label>
+    <label>错误码<input name="code" value="{{ code }}" placeholder="upstream_error"></label>
+    <button type="submit">筛选</button>
+    <a class="btn btn--ghost" href="/logs">重置</a>
+  </form>
+
+  <table class="table">
+    <thead>
+      <tr>
+        <th>时间</th><th>方法</th><th>路径</th><th>状态</th>
+        <th>耗时</th><th>账号</th><th>错误码</th><th>请求</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}{{ row|safe }}{% endfor %}
+    </tbody>
+  </table>
+
+  {% if rows.is_empty() && error.is_empty() %}
+  <p class="empty">这段时间没有符合条件的调用记录。</p>
+  {% endif %}
+
+  <nav class="pager">
+    {% if has_prev %}<a class="btn btn--ghost" href="{{ prev_href }}">上一页</a>{% endif %}
+    <span class="muted">{{ window_label }}</span>
+    {% if has_next %}<a class="btn btn--ghost" href="{{ next_href }}">下一页</a>{% endif %}
+  </nav>
+</section>
+{% endblock %}
