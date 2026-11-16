@@ -19,7 +19,7 @@
     <button type="submit">新建密钥</button>
   </form>
 
-  <form id="batch-form" method="post" action="/keys/batch">
+  <form id="batch-form" method="post" action="/keys/batch" hx-post="/keys/batch" hx-swap="none">
     <div class="batch-bar">
       <button class="btn btn--ghost" type="submit" name="action" value="revoke">批量吊销</button>
       <button class="btn btn--danger" type="submit" name="action" value="delete" onclick="return confirm('删除不可恢复，确定删除选中的密钥？')">批量删除</button>

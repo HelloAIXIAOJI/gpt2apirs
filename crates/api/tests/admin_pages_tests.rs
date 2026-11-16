@@ -300,7 +300,8 @@ async fn keys_page_full_cycle_against_memory_store() {
         Some(&cookie),
     )
     .await;
-    assert_eq!(revoked.status, StatusCode::NO_CONTENT, "动作成功后让页面刷新");
+    assert_eq!(revoked.status, StatusCode::SEE_OTHER, "普通表单提交应跳回列表");
+    assert_eq!(revoked.location.as_deref(), Some("/keys"));
     let after_revoke = send_state(shared.clone(), "GET", "/keys", None, Some(&cookie)).await;
     assert!(after_revoke.body.contains("已吊销"), "{}", after_revoke.body);
 
@@ -312,7 +313,7 @@ async fn keys_page_full_cycle_against_memory_store() {
         Some(&cookie),
     )
     .await;
-    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    assert_eq!(deleted.status, StatusCode::SEE_OTHER);
 
     let after = send_state(shared, "GET", "/keys", None, Some(&cookie)).await;
     assert!(after.body.contains("还没有密钥"), "{}", after.body);
@@ -380,7 +381,7 @@ async fn keys_batch_and_rename() {
         Some(&cookie),
     )
     .await;
-    assert_eq!(batch.status, StatusCode::NO_CONTENT);
+    assert_eq!(batch.status, StatusCode::SEE_OTHER, "普通表单提交应跳回列表");
     let after = send_state(shared.clone(), "GET", "/keys", None, Some(&cookie)).await;
     assert_eq!(after.body.matches("已吊销").count(), 2, "{}", after.body);
 
@@ -393,7 +394,7 @@ async fn keys_batch_and_rename() {
         Some(&cookie),
     )
     .await;
-    assert_eq!(batch.status, StatusCode::NO_CONTENT);
+    assert_eq!(batch.status, StatusCode::SEE_OTHER, "普通表单提交应跳回列表");
     let empty = send_state(shared, "GET", "/keys", None, Some(&cookie)).await;
     assert!(empty.body.contains("还没有密钥"), "{}", empty.body);
 }
