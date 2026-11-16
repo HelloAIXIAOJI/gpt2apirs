@@ -89,6 +89,17 @@ impl ApiKeyRepo {
         Ok(result.rows_affected() > 0)
     }
 
+    /// 物理删除。返回是否删掉了记录。
+    ///
+    /// 与 `revoke` 分开：吊销只是标记失效、记录还在；删除是不可逆的清理动作。
+    pub async fn delete(&self, id: Uuid) -> Result<bool, StorageError> {
+        let result = sqlx::query("delete from api_keys where id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// 校验一把明文 key。命中则刷新 `last_used_at`。
     pub async fn verify(&self, plaintext: &str) -> Result<Option<ApiKeyRow>, StorageError> {
         let digest = gpt2apirs_core::api_key::hash(plaintext.trim());

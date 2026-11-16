@@ -53,6 +53,14 @@ impl ApiKeyStore {
         }
     }
 
+    /// 物理删除。
+    pub async fn delete(&self, id: Uuid) -> Result<bool, StorageError> {
+        match self {
+            Self::Postgres(repo) => repo.delete(id).await,
+            Self::Memory(memory) => Ok(memory.delete(id)),
+        }
+    }
+
     /// 未吊销数量。
     pub async fn active_count(&self) -> Result<i64, StorageError> {
         match self {
@@ -80,6 +88,14 @@ impl MemoryApiKeys {
     pub fn with_key(self, plaintext: &str, name: &str) -> Self {
         self.insert_named(plaintext, name);
         self
+    }
+
+    /// 物理删除一条。
+    pub fn delete(&self, id: Uuid) -> bool {
+        let mut guard = self.inner.write().expect("锁");
+        let before = guard.len();
+        guard.retain(|(row, _)| row.id != id);
+        guard.len() != before
     }
 
     fn insert_named(&self, plaintext: &str, name: &str) {
