@@ -236,6 +236,7 @@ pub async fn record_assets(
     slots: &[SlotOutcome],
     prompt: &str,
     references: &[crate::references::PersistedReference],
+    key: Option<&crate::auth::ApiKeyIdentity>,
 ) {
     let repo = gpt2apirs_storage::repo::ImageAssetRepo::new(state.db.clone());
     let reference_repo = gpt2apirs_storage::repo::ImageReferenceRepo::new(state.db.clone());
@@ -252,6 +253,8 @@ pub async fn record_assets(
                 height: image.height as i32,
                 account_id: if slot.account_id.is_nil() { None } else { Some(slot.account_id) },
                 prompt: Some(prompt.to_string()),
+                api_key_id: key.map(|item| item.id),
+                api_key_prefix: key.map(|item| item.prefix.clone()),
             };
             match repo.insert(&asset).await {
                 Ok(image_id) => {

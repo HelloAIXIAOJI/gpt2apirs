@@ -22,6 +22,7 @@ fn entry(rel_path: &str, bytes: i64) -> ArchiveEntry {
         account_id: None,
         prompt: Some("小红点".to_string()),
         created_at: Utc::now(),
+        api_key_prefix: Some("sk-g2a-test".to_string()),
         references: Vec::new(),
     }
 }

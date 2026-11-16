@@ -44,6 +44,9 @@ pub struct ArchiveEntry {
     pub prompt: Option<String>,
     /// 生成时间。
     pub created_at: DateTime<Utc>,
+    /// 生成这张图用的 API key 前缀（key 可能已被删，只留前缀）。
+    #[serde(default)]
+    pub api_key_prefix: Option<String>,
     /// 用到的参考图清单。
     #[serde(default)]
     pub references: Vec<ArchiveReference>,

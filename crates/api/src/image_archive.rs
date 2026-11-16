@@ -83,6 +83,7 @@ pub async fn run(state: &Arc<AppState>, dry_run: bool) -> anyhow::Result<Outcome
             account_id: row.account_id,
             prompt: row.prompt.clone(),
             created_at: row.created_at,
+            api_key_prefix: row.api_key_prefix.clone(),
             references: refs_by_image
                 .get(&row.id)
                 .map(|items| {

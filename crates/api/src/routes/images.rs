@@ -64,6 +64,7 @@ pub async fn list_images(
                 "height": row.height,
                 "account_id": row.account_id,
                 "prompt": row.prompt,
+                "api_key_prefix": row.api_key_prefix,
                 "created_at": row.created_at,
             })
         })

@@ -240,14 +240,20 @@ pub fn submit(
     state: Arc<AppState>,
     task: ImageTask,
     request: gpt2apirs_generate::ImageRequest,
+    key: Option<crate::auth::ApiKeyIdentity>,
 ) -> Uuid {
     let id = task.id;
     state.image_tasks.insert(task);
-    tokio::spawn(run(state, id, request));
+    tokio::spawn(run(state, id, request, key));
     id
 }
 
-async fn run(state: Arc<AppState>, id: Uuid, request: gpt2apirs_generate::ImageRequest) {
+async fn run(
+    state: Arc<AppState>,
+    id: Uuid,
+    request: gpt2apirs_generate::ImageRequest,
+    key: Option<crate::auth::ApiKeyIdentity>,
+) {
     let store = state.image_tasks.clone();
     let Ok(permit) = store.limiter().acquire_owned().await else {
         return;
@@ -260,7 +266,7 @@ async fn run(state: Arc<AppState>, id: Uuid, request: gpt2apirs_generate::ImageR
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
     let outcome = match crate::routes::image_flow::run_generation(&state, request, deadline).await {
         Ok(slots) => {
-            crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[]).await;
+            crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[], key.as_ref()).await;
             let mut images = Vec::new();
             for slot in &slots {
                 for image in &slot.images {

@@ -28,6 +28,8 @@ fn asset(rel_path: String) -> NewImageAsset {
         height: 48,
         account_id: None,
         prompt: Some("单测".to_string()),
+        api_key_id: None,
+        api_key_prefix: Some("sk-g2a-test".to_string()),
     }
 }
 

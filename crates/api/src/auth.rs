@@ -144,6 +144,15 @@ pub fn extract_call_token(headers: &axum::http::HeaderMap) -> Option<String> {
     extract_x_api_key(x_api_key)
 }
 
+/// 通过认证的 API key 身份；处理函数需要「这张图是哪把 key 生成的」时取它。
+#[derive(Debug, Clone)]
+pub struct ApiKeyIdentity {
+    /// key 主键。
+    pub id: uuid::Uuid,
+    /// 展示前缀。
+    pub prefix: String,
+}
+
 /// axum 中间件：要求 API key。
 ///
 /// 只认数据库里的 API key；后台登录口令在这里一定失败。
@@ -164,7 +173,14 @@ pub async fn require_api_key(
         });
     };
     match state.api_keys.verify(&token).await {
-        Ok(Some(_)) => Ok(next.run(request).await),
+        Ok(Some(row)) => {
+            let mut request = request;
+            request.extensions_mut().insert(ApiKeyIdentity {
+                id: row.id,
+                prefix: row.prefix,
+            });
+            Ok(next.run(request).await)
+        }
         Ok(None) => Err(ApiError {
             error: AppError::Unauthorized {
                 message: "API key 无效或已吊销".to_string(),
