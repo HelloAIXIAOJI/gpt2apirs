@@ -367,6 +367,46 @@ button.htmx-request::after,
   gap: 10px;
 }
 
+.operation {
+  margin: 12px 0 16px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.operation-head {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+.progress {
+  height: 8px;
+  overflow: hidden;
+  background: var(--bg);
+  border-radius: 999px;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 240ms ease;
+}
+
+.steps {
+  margin: 12px 0 16px;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.oauth-url {
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
 .empty {
   padding: 32px;
   text-align: center;

@@ -178,3 +178,31 @@ async fn edit_page_requires_session() {
     assert_eq!(reply.status, StatusCode::SEE_OTHER);
     assert_eq!(reply.location.as_deref(), Some("/"));
 }
+
+#[tokio::test]
+async fn operation_fragment_requires_session() {
+    let reply = send(
+        "GET",
+        "/accounts/operations/11111111-1111-1111-1111-111111111111",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn oauth_start_returns_authorize_page() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send(
+        "POST",
+        "/accounts/oauth/start",
+        Some("email_hint=test%40example.com"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("auth.openai.com"), "{}", reply.body);
+    assert!(reply.body.contains("name=\"callback\""), "{}", reply.body);
+}
