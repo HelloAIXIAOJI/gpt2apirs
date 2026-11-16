@@ -108,6 +108,18 @@ pub async fn delete_image(
         }
     }
     repo.delete(id).await.map_err(internal)?;
+    // 清单行随外键级联删除；文件按引用计数决定要不要删。
+    crate::references::cleanup_after_image_delete(&state, id).await;
     tracing::info!(path = %row.rel_path, "删除图片");
     Ok(Json(json!({ "ok": true })))
+}
+
+/// `POST /api/images/references/gc` —— 清理没有任何记录引用的参考图文件。
+pub async fn gc_references(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Value>, ApiError> {
+    let removed = crate::references::collect_garbage(&state)
+        .await
+        .map_err(internal)?;
+    Ok(Json(serde_json::json!({ "removed": removed })))
 }

@@ -91,6 +91,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             delete(routes::image_tasks::delete),
         )
         .route("/api/images/archive", post(admin::gallery::archive_api))
+        .route(
+            "/api/images/references/gc",
+            post(routes::images::gc_references),
+        )
         .route("/api/proxy/status", get(routes::proxy::status))
         .route("/api/proxy/start", post(routes::proxy::start))
         .route("/api/proxy/stop", post(routes::proxy::stop))
@@ -178,6 +182,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/logs", get(admin::logs::index))
         .route("/gallery", get(admin::gallery::index))
         .route("/gallery/archive", post(admin::gallery::archive))
+        .route("/gallery/gc", post(admin::gallery::gc))
         .route("/keys", get(admin::keys::index))
         .route("/keys/create", post(admin::keys::create))
         .route("/keys/{id}/revoke", post(admin::keys::revoke))
