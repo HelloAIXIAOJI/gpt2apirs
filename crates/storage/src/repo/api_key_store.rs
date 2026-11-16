@@ -53,6 +53,14 @@ impl ApiKeyStore {
         }
     }
 
+    /// 改名。
+    pub async fn rename(&self, id: Uuid, name: &str) -> Result<bool, StorageError> {
+        match self {
+            Self::Postgres(repo) => repo.rename(id, name).await,
+            Self::Memory(memory) => Ok(memory.rename(id, name)),
+        }
+    }
+
     /// 物理删除。
     pub async fn delete(&self, id: Uuid) -> Result<bool, StorageError> {
         match self {
@@ -88,6 +96,18 @@ impl MemoryApiKeys {
     pub fn with_key(self, plaintext: &str, name: &str) -> Self {
         self.insert_named(plaintext, name);
         self
+    }
+
+    /// 改名；命中返回 true。
+    pub fn rename(&self, id: Uuid, name: &str) -> bool {
+        let mut guard = self.inner.write().expect("锁");
+        for (row, _) in guard.iter_mut() {
+            if row.id == id {
+                row.name = name.trim().to_string();
+                return true;
+            }
+        }
+        false
     }
 
     /// 物理删除一条。

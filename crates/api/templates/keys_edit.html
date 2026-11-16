@@ -1,0 +1,18 @@
+{% extends "shell.html" %}
+{% block title %}改名 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>更改密钥名称</h1></header>
+
+<section class="panel">
+  <p class="muted"><a href="/keys">← 返回密钥</a></p>
+  {% if !flash.is_empty() %}<p class="stat-error">{{ flash }}</p>{% endif %}
+  <form class="edit-form" method="post" action="/keys/{{ id }}/edit">
+    <label>名称<input name="name" value="{{ name }}" required autofocus></label>
+    <div class="edit-actions">
+      <button type="submit">保存</button>
+      <a class="btn btn--ghost" href="/keys">取消</a>
+    </div>
+  </form>
+  <p class="muted">前缀 {{ prefix }}；改名不影响已有调用方。</p>
+</section>
+{% endblock %}

@@ -171,6 +171,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/keys/create", post(admin::keys::create))
         .route("/keys/{id}/revoke", post(admin::keys::revoke))
         .route("/keys/{id}/delete", post(admin::keys::delete))
+        .route("/keys/batch", post(admin::keys::batch))
+        .route("/keys/{id}/edit", get(admin::keys::edit_form).post(admin::keys::edit_submit))
         .route("/accounts/import", post(admin::accounts::import_accounts))
         .route("/accounts/batch", post(admin::accounts::batch))
         .route("/accounts/oauth/start", post(admin::accounts::oauth_start_form))

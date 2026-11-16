@@ -150,11 +150,12 @@ pub struct BatchForm {
 pub async fn batch(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Form(form): Form<BatchForm>,
+    body: String,
 ) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
+    let form = batch_form(&body);
     let ids = form.ids.clone();
     match form.action.as_str() {
         "sync" => match crate::routes::accounts::sync_accounts(
@@ -262,6 +263,28 @@ async fn export_attachment(state: &Arc<AppState>, ids: Vec<Uuid>) -> Response {
             &format!("导出失败：{}", error_message(&error)),
         ),
     }
+}
+
+/// 从原始表单里取出动作与 id 列表。
+///
+/// `serde_urlencoded` 不支持重复键，所以批量表单自己解析。
+fn batch_form(body: &str) -> BatchForm {
+    let mut form = BatchForm {
+        ids: Vec::new(),
+        action: String::new(),
+    };
+    for (key, value) in super::parse_form_pairs(body) {
+        match key.as_str() {
+            "ids" => {
+                if let Ok(id) = value.parse::<Uuid>() {
+                    form.ids.push(id);
+                }
+            }
+            "action" => form.action = value,
+            _ => {}
+        }
+    }
+    form
 }
 
 /// 跳回列表并带一条提示。

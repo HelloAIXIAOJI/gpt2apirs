@@ -89,6 +89,16 @@ impl ApiKeyRepo {
         Ok(result.rows_affected() > 0)
     }
 
+    /// 改名。返回是否命中。
+    pub async fn rename(&self, id: Uuid, name: &str) -> Result<bool, StorageError> {
+        let result = sqlx::query("update api_keys set name = $2 where id = $1")
+            .bind(id)
+            .bind(name.trim())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// 物理删除。返回是否删掉了记录。
     ///
     /// 与 `revoke` 分开：吊销只是标记失效、记录还在；删除是不可逆的清理动作。
