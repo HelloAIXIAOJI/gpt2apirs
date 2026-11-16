@@ -9,12 +9,26 @@
   {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
 
   <details class="import">
-    <summary>导入账号</summary>
+    <summary>粘贴导入</summary>
     <form method="post" action="/accounts/import">
       <textarea name="text" rows="6" placeholder="粘贴 access_token，或账号 JSON；每行一个也可以"></textarea>
       <button type="submit">导入</button>
     </form>
   </details>
+
+  <details class="import">
+    <summary>OAuth 导入</summary>
+    <form method="post" action="/accounts/oauth/start">
+      <input name="email_hint" placeholder="邮箱（可选，用于预填登录）">
+      <button type="submit">开始授权</button>
+    </form>
+  </details>
+
+  {% if !op.is_empty() %}
+  <div id="operation" hx-get="/accounts/operations/{{ op }}" hx-trigger="load, every 2s" hx-swap="outerHTML" class="operation">
+    <p class="muted">正在读取后台任务进度…</p>
+  </div>
+  {% endif %}
 
   <form class="filters" method="get" action="/accounts">
     <label>关键词<input name="keyword" value="{{ keyword }}" placeholder="邮箱 / 上游 ID / token 前缀"></label>

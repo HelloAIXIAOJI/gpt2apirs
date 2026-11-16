@@ -1,0 +1,32 @@
+{% extends "shell.html" %}
+{% block title %}OAuth 导入 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>OAuth 导入</h1></header>
+
+<section class="panel">
+  <p class="muted"><a href="/accounts">← 返回账号池</a></p>
+  {% if !email_hint.is_empty() %}<p class="muted">邮箱提示：{{ email_hint }}</p>{% endif %}
+
+  <ol class="steps">
+    <li>打开下面的授权地址，用要导入的账号登录并授权。</li>
+    <li>授权后浏览器会跳到一个打不开的地址，复制那个完整地址。</li>
+    <li>把地址粘到下面，点「完成导入」。</li>
+  </ol>
+
+  <p><a class="btn btn--ghost" href="{{ authorize_url }}" target="_blank" rel="noreferrer">打开授权页</a></p>
+  <p class="muted oauth-url">{{ authorize_url }}</p>
+
+  <form class="edit-form" method="post" action="/accounts/oauth/finish">
+    <input type="hidden" name="session_id" value="{{ session_id }}">
+    <label>回调地址或 code
+      <textarea name="callback" rows="3" placeholder="http://localhost:1455/auth/callback?code=...&state=..."></textarea>
+    </label>
+    <div class="edit-actions">
+      <button type="submit">完成导入</button>
+      <a class="btn btn--ghost" href="/accounts">取消</a>
+    </div>
+  </form>
+
+  <p class="muted">会话 ID：{{ session_id }}</p>
+</section>
+{% endblock %}

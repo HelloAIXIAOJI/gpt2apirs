@@ -41,6 +41,9 @@ pub struct Filters {
     /// 一次性提示（从重定向带回来）。
     #[serde(default)]
     pub flash: String,
+    /// 要跟踪的后台操作 ID。
+    #[serde(default)]
+    pub op: String,
 }
 
 impl Filters {
@@ -159,10 +162,7 @@ pub async fn batch(
         )
         .await
         {
-            Ok(batch) => redirect_with_flash(
-                "/accounts",
-                &format!("已开始同步 {} 个账号，稍后刷新列表查看", batch.total),
-            ),
+            Ok(batch) => Redirect::to(&format!("/accounts?op={}", batch.operation_id)).into_response(),
             Err(error) => redirect_with_flash(
                 "/accounts",
                 &format!("同步失败：{}", error_message(&error)),
@@ -174,10 +174,7 @@ pub async fn batch(
         )
         .await
         {
-            Ok(batch) => redirect_with_flash(
-                "/accounts",
-                &format!("已开始刷新 {} 个账号的令牌，稍后刷新列表查看", batch.total),
-            ),
+            Ok(batch) => Redirect::to(&format!("/accounts?op={}", batch.operation_id)).into_response(),
             Err(error) => redirect_with_flash(
                 "/accounts",
                 &format!("刷新失败：{}", error_message(&error)),
@@ -380,6 +377,7 @@ struct AccountsPage {
     rows: Vec<AccountRow>,
     summary: String,
     flash: String,
+    op: String,
     error: String,
     status: String,
     plan: String,
@@ -432,6 +430,7 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
         rows,
         summary,
         flash: filters.flash.clone(),
+        op: filters.op.clone(),
         error,
         status: filters.status.clone(),
         plan: filters.plan.clone(),
@@ -620,6 +619,152 @@ fn render<T: Template>(template: T) -> Response {
     }
 }
 
+/// 进度片段模板。
+#[derive(Template)]
+#[template(path = "accounts/operation.html")]
+struct OperationPage {
+    id: String,
+    label: String,
+    processed: String,
+    total: String,
+    percent: u32,
+    succeeded: String,
+    failed: String,
+    done: bool,
+    errors: Vec<String>,
+}
+
+/// `GET /accounts/operations/{id}`：返回进度片段，未完成时自己继续轮询。
+pub async fn operation_fragment(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let Some(progress) = state.progress.get(id) else {
+        return render(OperationPage {
+            id: id.to_string(),
+            label: "操作不存在或已过期".to_string(),
+            processed: String::new(),
+            total: String::new(),
+            percent: 0,
+            succeeded: String::new(),
+            failed: String::new(),
+            done: true,
+            errors: Vec::new(),
+        });
+    };
+    let total = progress.total.max(1);
+    let percent = ((progress.processed.min(total) as f64 / total as f64) * 100.0).round() as u32;
+    let errors = progress
+        .errors
+        .iter()
+        .take(5)
+        .map(|error| format!("{}：{}", error.label, error.message))
+        .collect();
+    render(OperationPage {
+        id: id.to_string(),
+        label: match progress.kind {
+            gpt2apirs_account::OperationKind::Sync => "同步".to_string(),
+            gpt2apirs_account::OperationKind::RefreshToken => "刷新令牌".to_string(),
+            gpt2apirs_account::OperationKind::Test => "账号测试".to_string(),
+            gpt2apirs_account::OperationKind::Import => "导入".to_string(),
+        },
+        processed: progress.processed.to_string(),
+        total: progress.total.to_string(),
+        percent,
+        succeeded: progress.succeeded.to_string(),
+        failed: progress.failed.to_string(),
+        done: progress.done,
+        errors,
+    })
+}
+
+/// 发起 OAuth 的表单。
+#[derive(Debug, Deserialize)]
+pub struct OAuthStartForm {
+    /// 邮箱提示。
+    #[serde(default)]
+    pub email_hint: String,
+}
+
+/// OAuth 授权页。
+#[derive(Template)]
+#[template(path = "accounts/oauth.html")]
+struct OAuthPage {
+    nav: Vec<nav::NavItem>,
+    session_id: String,
+    authorize_url: String,
+    email_hint: String,
+}
+
+/// `POST /accounts/oauth/start`
+pub async fn oauth_start_form(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<OAuthStartForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let hint = form.email_hint.trim();
+    let start = gpt2apirs_account::oauth::start(
+        &state.oauth,
+        Some(hint).filter(|value| !value.is_empty()),
+    );
+    render(OAuthPage {
+        nav: nav::items("/accounts"),
+        session_id: start.session_id.to_string(),
+        authorize_url: start.authorize_url,
+        email_hint: form.email_hint,
+    })
+}
+
+/// 完成 OAuth 的表单。
+#[derive(Debug, Deserialize)]
+pub struct OAuthFinishForm {
+    /// 会话 ID。
+    pub session_id: String,
+    /// 回调地址或裸 code。
+    #[serde(default)]
+    pub callback: String,
+}
+
+/// `POST /accounts/oauth/finish`
+pub async fn oauth_finish_form(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<OAuthFinishForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let callback = form.callback.trim().to_string();
+    if callback.is_empty() {
+        return redirect_with_flash("/accounts", "请粘贴回调地址或 code");
+    }
+    let session_id = match form.session_id.trim().parse::<Uuid>() {
+        Ok(value) => value,
+        Err(_) => return redirect_with_flash("/accounts", "会话 ID 不合法，请重新发起授权"),
+    };
+    let request = crate::routes::accounts::OAuthFinishRequest {
+        session_id,
+        callback,
+    };
+    match crate::routes::accounts::oauth_finish(State(state.clone()), axum::Json(request)).await {
+        Ok(response) => {
+            let _ = state.pool.reload().await;
+            redirect_with_flash("/accounts", &format!("OAuth 导入完成：新增 {} 个", response.added))
+        }
+        Err(error) => redirect_with_flash(
+            "/accounts",
+            &format!("OAuth 导入失败：{}", error_message(&error)),
+        ),
+    }
+}
+
 /// 编辑页。
 #[derive(Template)]
 #[template(path = "accounts/edit.html")]
@@ -740,6 +885,7 @@ mod tests {
             keyword: "a b&c".to_string(),
             offset: 20,
             flash: String::new(),
+            op: String::new(),
         };
         assert_eq!(
             filters.query(40),
@@ -754,6 +900,48 @@ mod tests {
         assert!(html.contains("toast--error"), "{html}");
         assert!(html.contains("刷新&lt;失败&gt;"), "{html}");
         assert!(!html.contains("<失败>"), "{html}");
+    }
+
+    #[test]
+    fn operation_fragment_polls_until_done() {
+        let running = OperationPage {
+            id: "11111111-1111-1111-1111-111111111111".to_string(),
+            label: "同步".to_string(),
+            processed: "3".to_string(),
+            total: "10".to_string(),
+            percent: 30,
+            succeeded: "3".to_string(),
+            failed: "0".to_string(),
+            done: false,
+            errors: Vec::new(),
+        };
+        let html = running.render().expect("渲染进度");
+        assert!(html.contains("hx-trigger=\"every 2s\""), "未完成时继续轮询：{html}");
+        assert!(html.contains("width: 30%"), "{html}");
+
+        let finished = OperationPage {
+            done: true,
+            errors: vec!["a@b：token 失效".to_string()],
+            ..running
+        };
+        let html = finished.render().expect("渲染完成");
+        assert!(!html.contains("hx-trigger=\"every 2s\""), "完成后停止轮询：{html}");
+        assert!(html.contains("a@b：token 失效"), "{html}");
+        assert!(html.contains("刷新列表"), "{html}");
+    }
+
+    #[test]
+    fn oauth_page_shows_authorize_url() {
+        let page = OAuthPage {
+            nav: nav::items("/accounts"),
+            session_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            authorize_url: "https://auth.openai.com/oauth/authorize?x=1".to_string(),
+            email_hint: "me@example.com".to_string(),
+        };
+        let html = page.render().expect("渲染授权页");
+        assert!(html.contains("auth.openai.com"), "{html}");
+        assert!(html.contains("name=\"callback\""), "{html}");
+        assert!(html.contains("me@example.com"), "{html}");
     }
 
     #[test]
@@ -781,6 +969,7 @@ mod tests {
             rows: Vec::new(),
             summary: "共 0 个账号".to_string(),
             flash: String::new(),
+            op: String::new(),
             error: String::new(),
             status: String::new(),
             plan: String::new(),
