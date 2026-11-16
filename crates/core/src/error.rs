@@ -57,6 +57,15 @@ pub enum AppError {
         retry_after: Option<u64>,
     },
 
+    /// 请求体过大（413）。
+    #[error("{message}")]
+    PayloadTooLarge {
+        /// 人类可读消息。
+        message: String,
+        /// 出错的参数名。
+        param: Option<String>,
+    },
+
     /// 上游返回错误。
     #[error("upstream error {status}: {message}")]
     Upstream {
@@ -101,6 +110,7 @@ impl AppError {
             AppError::NotFound { .. } => 404,
             AppError::Conflict { .. } => 409,
             AppError::RateLimited { .. } => 429,
+            AppError::PayloadTooLarge { .. } => 413,
             AppError::Upstream { status, .. } => *status,
             AppError::Timeout { .. } => 504,
             AppError::ServiceUnavailable { .. } => 503,
@@ -151,6 +161,7 @@ impl AppError {
     pub fn param(&self) -> Option<&str> {
         match self {
             AppError::InvalidRequest { param, .. } => param.as_deref(),
+            AppError::PayloadTooLarge { param, .. } => param.as_deref(),
             _ => None,
         }
     }
@@ -164,6 +175,7 @@ impl AppError {
             | AppError::NotFound { message, .. }
             | AppError::Conflict { message }
             | AppError::RateLimited { message, .. }
+            | AppError::PayloadTooLarge { message, .. }
             | AppError::Upstream { message, .. }
             | AppError::ServiceUnavailable { message, .. } => message.clone(),
             AppError::Timeout { stage } => format!("timeout at {stage}"),
@@ -239,6 +251,7 @@ pub fn default_error_type(status: u16) -> &'static str {
 /// 按状态码给默认错误码（具体错误可覆盖）。
 pub fn default_error_code(status: u16) -> &'static str {
     match status {
+        413 => "payload_too_large",
         401 => "invalid_api_key",
         403 => "permission_denied",
         429 => "rate_limit_exceeded",
@@ -371,4 +384,21 @@ pub fn anthropic_error_payload(error: &AppError) -> Value {
             "message": if message.is_empty() { "request failed".to_string() } else { message },
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_too_large_maps_to_413() {
+        let error = AppError::PayloadTooLarge {
+            message: "字段 image 超过上限 10 MB".to_string(),
+            param: Some("image".to_string()),
+        };
+        assert_eq!(error.status(), 413);
+        assert_eq!(error.error_code(), "payload_too_large");
+        assert_eq!(error.error_type(), "invalid_request_error");
+        assert_eq!(error.param(), Some("image"));
+    }
 }

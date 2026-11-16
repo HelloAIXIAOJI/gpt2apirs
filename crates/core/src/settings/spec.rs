@@ -44,6 +44,16 @@ pub struct NumericSpec {
 /// 数值与上游实测边界逐项对齐。
 pub static NUMERIC_SPECS: &[NumericSpec] = &[
     NumericSpec {
+        key: "image_input_max_mb",
+        default: 10.0,
+        min: 1.0,
+        max: Some(50.0),
+        kind: NumericKind::Integer,
+        unit: Some("MB"),
+        restart_required: false,
+        description: "单张参考图（含 mask）的大小上限；超过直接拒绝，不读进内存。",
+    },
+    NumericSpec {
         key: "proxy_enabled",
         default: 0.0,
         min: 0.0,
@@ -370,6 +380,7 @@ mod tests {
             "proxy_enabled",
             "proxy_auto_refresh_minutes",
             "proxy_probe_timeout_ms",
+            "image_input_max_mb",
         ];
         assert_eq!(NUMERIC_SPECS.len(), expected.len());
         for key in expected {

@@ -112,10 +112,40 @@ pub fn write_archive(
     images_root: &Path,
     image_paths: &[String],
 ) -> Result<u64, StorageError> {
+    if target.exists() {
+        return Err(StorageError::Query(sqlx::Error::Protocol(format!(
+            "目标已存在: {}",
+            target.display()
+        ))));
+    }
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(io_error)?;
     }
-    let file = std::fs::File::create(target).map_err(io_error)?;
+    // 先写 `.part` 再改名：盘满或中途失败时不会留下一个「看着像成功、实际截断」的备份。
+    let temp = target.with_extension("tar.gz.part");
+    let result = write_archive_inner(&temp, bundle, images_root, image_paths);
+    match result {
+        Ok(()) => {}
+        Err(error) => {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+    }
+    std::fs::rename(&temp, target).map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        io_error(error)
+    })?;
+    Ok(std::fs::metadata(target).map(|meta| meta.len()).unwrap_or(0))
+}
+
+/// 写归档本体；任何一步失败都返回错误，由调用方决定删除临时文件。
+fn write_archive_inner(
+    temp: &Path,
+    bundle: &BackupBundle,
+    images_root: &Path,
+    image_paths: &[String],
+) -> Result<(), StorageError> {
+    let file = std::fs::File::create(temp).map_err(io_error)?;
     let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
     let mut builder = tar::Builder::new(encoder);
 
@@ -133,9 +163,10 @@ pub fn write_archive(
     }
 
     let encoder = builder.into_inner().map_err(io_error)?;
+    // finish 会写出 gzip 的 CRC 与长度尾巴：它成功返回，说明整个包写完整了。
     let file = encoder.finish().map_err(io_error)?;
     file.sync_all().map_err(io_error)?;
-    Ok(std::fs::metadata(target).map(|meta| meta.len()).unwrap_or(0))
+    Ok(())
 }
 
 fn append_bytes<W: Write>(
