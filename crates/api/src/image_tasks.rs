@@ -248,6 +248,71 @@ pub fn submit(
     id
 }
 
+/// 提交图生图任务并起后台执行（参考图字节随任务一起带去）。
+pub fn submit_edit(
+    state: Arc<AppState>,
+    task: ImageTask,
+    request: gpt2apirs_generate::ImageRequest,
+    prepared: Vec<(Vec<u8>, String)>,
+    key: Option<crate::auth::ApiKeyIdentity>,
+) -> Uuid {
+    let id = task.id;
+    state.image_tasks.insert(task);
+    tokio::spawn(run_edit(state, id, request, prepared, key));
+    id
+}
+
+async fn run_edit(
+    state: Arc<AppState>,
+    id: Uuid,
+    request: gpt2apirs_generate::ImageRequest,
+    prepared: Vec<(Vec<u8>, String)>,
+    key: Option<crate::auth::ApiKeyIdentity>,
+) {
+    let store = state.image_tasks.clone();
+    let Ok(_permit) = store.limiter().acquire_owned().await else {
+        return;
+    };
+    if !store.mark_running(id) {
+        return;
+    }
+    let prompt = request.prompt.clone();
+    let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
+    if let Err(error) = crate::routes::image_flow::ensure_disk_space() {
+        store.finish(id, Err(error.error.message()));
+        return;
+    }
+    match crate::routes::image_flow::run_edit(&state, request, prepared.clone(), deadline).await {
+        Ok(slots) => {
+            // 与同步接口一致：生成成功才落盘参考图并写清单。
+            let references = crate::references::persist_all(&prepared);
+            crate::routes::image_flow::record_assets(
+                &state,
+                &slots,
+                &prompt,
+                &references,
+                key.as_ref(),
+            )
+            .await;
+            let images: Vec<TaskImage> = slots
+                .iter()
+                .flat_map(|slot| slot.images.iter())
+                .filter(|image| !image.rel_path.is_empty())
+                .map(|image| TaskImage {
+                    rel_path: image.rel_path.clone(),
+                    mime: image.mime,
+                    width: image.width,
+                    height: image.height,
+                })
+                .collect();
+            store.finish(id, Ok(images));
+        }
+        Err(error) => {
+            store.finish(id, Err(error.error.message()));
+        }
+    }
+}
+
 async fn run(
     state: Arc<AppState>,
     id: Uuid,

@@ -232,6 +232,42 @@ pub async fn submit(
     Ok(Json(view))
 }
 
+/// `POST /api/image-tasks/edits` —— 异步图生图：参考图与 mask 一起入队。
+pub async fn submit_edit(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+) -> Result<Json<TaskView>, ApiError> {
+    let key = request
+        .extensions()
+        .get::<crate::auth::ApiKeyIdentity>()
+        .cloned();
+    let prepared_edit = crate::routes::v1_image_edits::prepare_edit(&state, request).await?;
+    let now = chrono::Utc::now();
+    let task = ImageTask {
+        id: Uuid::new_v4(),
+        status: TaskStatus::Queued,
+        prompt: prepared_edit.prompt.clone(),
+        model: prepared_edit.request.model.clone(),
+        n: prepared_edit.request.n,
+        response_format: prepared_edit.response_format.clone(),
+        base_url: prepared_edit.base_url.clone(),
+        created_at: now,
+        updated_at: now,
+        finished_at: None,
+        images: Vec::new(),
+        error: None,
+    };
+    let view = task_view(&task);
+    crate::image_tasks::submit_edit(
+        state,
+        task,
+        prepared_edit.request,
+        prepared_edit.prepared,
+        key,
+    );
+    Ok(Json(view))
+}
+
 /// `GET /api/image-tasks`
 pub async fn list(
     State(state): State<Arc<AppState>>,

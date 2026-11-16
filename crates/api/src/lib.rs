@@ -152,6 +152,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/image-tasks", get(routes::image_tasks::list))
         .route("/api/image-tasks/generations", post(routes::image_tasks::submit))
         .route(
+            "/api/image-tasks/edits",
+            post(routes::image_tasks::submit_edit)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .route(
             "/api/image-tasks/{id}",
             get(routes::image_tasks::get_one).delete(routes::image_tasks::delete),
         )
