@@ -6,6 +6,7 @@
 pub mod api_key;
 pub mod config;
 pub mod deadline;
+pub mod disk;
 pub mod env;
 pub mod error;
 pub mod logging;

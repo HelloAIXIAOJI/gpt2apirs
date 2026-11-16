@@ -199,6 +199,35 @@ pub async fn run_generation(
     collect(set, total).await
 }
 
+/// 生成前的磁盘空间预检。
+///
+/// 空间不足时直接拒绝：否则上游已经出图、配额已经扣掉，本地却存不下。
+/// 读不到剩余空间不算错误（按放行处理），只记一条 WARN。
+pub fn ensure_disk_space() -> Result<(), ApiError> {
+    const MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
+    let root = match gpt2apirs_core::paths::data_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            tracing::warn!(%error, "定位数据目录失败，跳过磁盘预检");
+            return Ok(());
+        }
+    };
+    match gpt2apirs_core::disk::available_bytes(&root) {
+        Ok(free) if free >= MIN_FREE_BYTES => Ok(()),
+        Ok(free) => Err(ApiError::openai(AppError::ServiceUnavailable {
+            message: format!(
+                "磁盘剩余空间不足（{} MB），拒绝生成以免丢图",
+                free / (1024 * 1024)
+            ),
+            code: "disk_full".to_string(),
+        })),
+        Err(error) => {
+            tracing::warn!(%error, "读取磁盘剩余空间失败，按放行处理");
+            Ok(())
+        }
+    }
+}
+
 /// 把生成结果写进 `image_assets`，供后台按账号/时间查询。
 ///
 /// 失败只记日志：元数据写不进去不该让用户拿不到图。
@@ -206,6 +235,9 @@ pub async fn record_assets(state: &Arc<AppState>, slots: &[SlotOutcome], prompt:
     let repo = gpt2apirs_storage::repo::ImageAssetRepo::new(state.db.clone());
     for slot in slots {
         for image in &slot.images {
+            if image.rel_path.is_empty() {
+                continue;
+            }
             let asset = gpt2apirs_storage::repo::NewImageAsset {
                 rel_path: image.rel_path.clone(),
                 mime: image.mime.to_string(),
