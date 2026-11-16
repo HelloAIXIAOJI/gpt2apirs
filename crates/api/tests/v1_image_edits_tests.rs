@@ -101,10 +101,18 @@ fn multipart_body(parts: Vec<Part>) -> Vec<u8> {
 }
 
 async fn post_multipart(parts: Vec<Part>, auth: Option<&str>) -> (StatusCode, Value) {
+    post_multipart_to("/v1/images/edits", parts, auth).await
+}
+
+async fn post_multipart_to(
+    path: &str,
+    parts: Vec<Part>,
+    auth: Option<&str>,
+) -> (StatusCode, Value) {
     let body = multipart_body(parts);
     let mut builder = Request::builder()
         .method("POST")
-        .uri("/v1/images/edits")
+        .uri(path)
         .header(
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -375,4 +383,34 @@ async fn rejects_bad_output_format() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "不支持的输出格式必须拒绝");
     assert_eq!(body["error"]["param"], "output_format");
+}
+
+#[tokio::test]
+async fn task_edits_requires_auth() {
+    let parts = vec![
+        Part::Text("prompt", "改一下".to_string()),
+        Part::File("image", "a.png", tiny_png()),
+    ];
+    let (status, _) = post_multipart_to("/api/image-tasks/edits", parts, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn task_edits_queues_reference_image_task() {
+    let parts = vec![
+        Part::Text("prompt", "把背景换成白色".to_string()),
+        Part::File("image", "ref.png", tiny_png()),
+    ];
+    let (status, body) = post_multipart_to("/api/image-tasks/edits", parts, Some(TEST_KEY)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "queued", "{body}");
+    assert!(body["id"].is_string(), "{body}");
+    assert_eq!(body["prompt"], "把背景换成白色");
+}
+
+#[tokio::test]
+async fn task_edits_requires_reference_image() {
+    let parts = vec![Part::Text("prompt", "只有提示词".to_string())];
+    let (status, body) = post_multipart_to("/api/image-tasks/edits", parts, Some(TEST_KEY)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }

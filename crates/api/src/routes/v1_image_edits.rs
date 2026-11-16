@@ -58,12 +58,29 @@ struct EditRequest {
     masks: Vec<ImageSource>,
 }
 
-/// `POST /v1/images/edits`
-pub async fn edit_images(
-    identity: Option<axum::Extension<crate::auth::ApiKeyIdentity>>,
-    State(state): State<Arc<AppState>>,
+/// 解析并准备好一次图生图请求（同步接口与异步任务共用同一套规则）。
+pub struct PreparedEdit {
+    /// 提示词。
+    pub prompt: String,
+    /// 发给上游的请求。
+    pub request: ImageRequest,
+    /// 参考图字节（已合成 mask）。
+    pub prepared: Vec<(Vec<u8>, String)>,
+    /// 响应格式：`url` 或 `b64_json`。
+    pub response_format: String,
+    /// 对外基础地址。
+    pub base_url: String,
+    /// 参考图折算的输入 token。
+    pub input_image_tokens: i64,
+    /// 质量档位（算输出 token 用）。
+    pub quality: String,
+}
+
+/// 解析请求、解析参考图并构建上游请求。
+pub async fn prepare_edit(
+    state: &Arc<AppState>,
     request: Request<axum::body::Body>,
-) -> Result<Json<ImageGenerationResponse>, ApiError> {
+) -> Result<PreparedEdit, ApiError> {
     let host = request
         .headers()
         .get(axum::http::header::HOST)
@@ -193,8 +210,40 @@ pub async fn edit_images(
     image_request.size = size;
     image_request.quality = quality_option;
 
+    Ok(PreparedEdit {
+        prompt,
+        request: image_request,
+        prepared,
+        response_format,
+        base_url,
+        input_image_tokens,
+        quality,
+    })
+}
+
+/// `POST /v1/images/edits`
+pub async fn edit_images(
+    identity: Option<axum::Extension<crate::auth::ApiKeyIdentity>>,
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<Json<ImageGenerationResponse>, ApiError> {
+    let prepared_edit = prepare_edit(&state, request).await?;
+    let prompt = prepared_edit.prompt.clone();
+    let response_format = prepared_edit.response_format.clone();
+    let base_url = prepared_edit.base_url.clone();
+    let quality = prepared_edit.quality.clone();
+    let input_image_tokens = prepared_edit.input_image_tokens;
+
     crate::routes::image_flow::ensure_disk_space()?;
-    let slots = run_edit(&state, image_request, prepared.clone(), deadline).await?;
+    let deadline = default_request_deadline(&state.settings);
+    let requested_n = prepared_edit.request.n;
+    let slots = run_edit(
+        &state,
+        prepared_edit.request,
+        prepared_edit.prepared.clone(),
+        deadline,
+    )
+    .await?;
 
     let mut images: Vec<&gpt2apirs_generate::GeneratedImage> = Vec::new();
     for slot in &slots {
@@ -202,15 +251,22 @@ pub async fn edit_images(
             images.push(image);
         }
     }
+    if images.len() > requested_n as usize {
+        tracing::info!(
+            requested = requested_n,
+            got = images.len(),
+            "上游多返回了图片"
+        );
+    }
     // 生成成功才落盘参考图：失败时不在磁盘上留孤儿。
-    let references = crate::references::persist_all(&prepared);
+    let references = crate::references::persist_all(&prepared_edit.prepared);
     let key = identity.map(|axum::Extension(value)| value);
     crate::routes::image_flow::record_assets(&state, &slots, &prompt, &references, key.as_ref()).await;
 
     tracing::info!(
         slots = slots.len(),
         images = images.len(),
-        references = prepared.len(),
+        references = prepared_edit.prepared.len(),
         "图生图完成"
     );
 
@@ -274,8 +330,7 @@ fn validate(parsed: &EditRequest) -> Result<(), ApiError> {
     }
     if parsed.stream == Some(true) {
         return Err(ApiError::openai(AppError::invalid_param(
-            "上游不提供逐块图片流（SSE 只回 sediment:// 指针，字节要等生成完成后另行下载）；\
-        要边等边查进度请用 POST /api/image-tasks 提交，再用 GET /api/image-tasks/{id} 轮询",
+            "上游不提供逐块图片流（SSE 只回 sediment:// 指针，字节要等生成完成后另行下载）；要边等边查进度请用 POST /api/image-tasks 提交，再用 GET /api/image-tasks/{id} 轮询",
             "stream",
         )));
     }

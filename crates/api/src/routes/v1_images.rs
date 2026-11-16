@@ -204,6 +204,10 @@ pub async fn generate(
             images.push(image);
         }
     }
+    if images.len() > n as usize {
+        // 上游偶尔会多给一张：不裁剪，全部返回（数据留全）。
+        tracing::info!(requested = n, got = images.len(), "上游多返回了图片");
+    }
     let key = identity.map(|axum::Extension(value)| value);
     crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[], key.as_ref()).await;
 
