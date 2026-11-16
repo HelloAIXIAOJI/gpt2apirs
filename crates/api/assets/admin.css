@@ -649,7 +649,43 @@ button:disabled {
 .stat-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+/* 卡片数固定的一排：先按 5 列排，窄屏逐级降列，避免最后一个孤零零换行 */
+.stat-grid--five .stat {
+  padding: 14px 16px;
+  gap: 6px;
+}
+
+.stat-grid--five .stat-value {
+  font-size: 24px;
+}
+
+.stat-grid--five .stat-sub {
+  font-size: 12px;
+}
+
+.stat-grid--five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+@media (max-width: 1100px) {
+  .stat-grid--five {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .stat-grid--five {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .stat-grid--five {
+    grid-template-columns: 1fr;
+  }
 }
 
 .stat {
