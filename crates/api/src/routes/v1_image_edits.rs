@@ -60,6 +60,7 @@ struct EditRequest {
 
 /// `POST /v1/images/edits`
 pub async fn edit_images(
+    identity: Option<axum::Extension<crate::auth::ApiKeyIdentity>>,
     State(state): State<Arc<AppState>>,
     request: Request<axum::body::Body>,
 ) -> Result<Json<ImageGenerationResponse>, ApiError> {
@@ -203,7 +204,8 @@ pub async fn edit_images(
     }
     // 生成成功才落盘参考图：失败时不在磁盘上留孤儿。
     let references = crate::references::persist_all(&prepared);
-    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &references).await;
+    let key = identity.map(|axum::Extension(value)| value);
+    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &references, key.as_ref()).await;
 
     tracing::info!(
         slots = slots.len(),

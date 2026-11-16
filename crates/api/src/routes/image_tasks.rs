@@ -134,6 +134,10 @@ pub async fn submit(
     State(state): State<Arc<AppState>>,
     request: Request,
 ) -> Result<Json<TaskView>, ApiError> {
+    let key = request
+        .extensions()
+        .get::<crate::auth::ApiKeyIdentity>()
+        .cloned();
     let host = request
         .headers()
         .get(axum::http::header::HOST)
@@ -224,7 +228,7 @@ pub async fn submit(
         error: None,
     };
     let view = task_view(&task);
-    crate::image_tasks::submit(state, task, image_request);
+    crate::image_tasks::submit(state, task, image_request, key);
     Ok(Json(view))
 }
 

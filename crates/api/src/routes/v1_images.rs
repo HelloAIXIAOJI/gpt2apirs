@@ -79,6 +79,7 @@ pub struct ImageGenerationResponse {
 
 /// `POST /v1/images/generations`
 pub async fn generate(
+    identity: Option<axum::Extension<crate::auth::ApiKeyIdentity>>,
     State(state): State<Arc<AppState>>,
     request: Request,
 ) -> Result<Json<ImageGenerationResponse>, ApiError> {
@@ -203,7 +204,8 @@ pub async fn generate(
             images.push(image);
         }
     }
-    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[]).await;
+    let key = identity.map(|axum::Extension(value)| value);
+    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[], key.as_ref()).await;
 
     tracing::info!(
         slots = slots.len(),

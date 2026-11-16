@@ -26,6 +26,10 @@ pub struct NewImageAsset {
     pub account_id: Option<Uuid>,
     /// 提示词。
     pub prompt: Option<String>,
+    /// 生成这张图用的 API key（删除后置空）。
+    pub api_key_id: Option<Uuid>,
+    /// 生成这张图用的 API key 前缀（key 删除后仍可追溯）。
+    pub api_key_prefix: Option<String>,
 }
 
 /// 查询到的一条图片记录。
@@ -47,6 +51,10 @@ pub struct ImageAssetRow {
     pub account_id: Option<Uuid>,
     /// 提示词。
     pub prompt: Option<String>,
+    /// 生成这张图用的 API key（删除后为空）。
+    pub api_key_id: Option<Uuid>,
+    /// 生成这张图用的 API key 前缀。
+    pub api_key_prefix: Option<String>,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
 }
@@ -96,6 +104,8 @@ impl ImageAssetRepo {
             .bind(asset.height)
             .bind(asset.account_id)
             .bind(asset.prompt.as_deref())
+            .bind(asset.api_key_id)
+            .bind(asset.api_key_prefix.as_deref())
             .fetch_one(&self.pool)
             .await?;
         Ok(id)
@@ -155,14 +165,16 @@ impl ImageAssetRepo {
 }
 
 const SQL_INSERT: &str = r#"insert into image_assets
-    (id, rel_path, mime, bytes, width, height, account_id, prompt)
-  values ($1, $2, $3, $4, $5, $6, $7, $8)
+    (id, rel_path, mime, bytes, width, height, account_id, prompt, api_key_id, api_key_prefix)
+  values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
   on conflict (rel_path) do update set
     mime = excluded.mime, bytes = excluded.bytes, width = excluded.width,
-    height = excluded.height, account_id = excluded.account_id, prompt = excluded.prompt
+    height = excluded.height, account_id = excluded.account_id, prompt = excluded.prompt,
+    api_key_id = excluded.api_key_id, api_key_prefix = excluded.api_key_prefix
   returning id"#;
 
-const SQL_LIST: &str = r#"select id, rel_path, mime, bytes, width, height, account_id, prompt, created_at
+const SQL_LIST: &str = r#"select id, rel_path, mime, bytes, width, height, account_id, prompt,
+       api_key_id, api_key_prefix, created_at
   from image_assets
   where ($1::uuid is null or account_id = $1)
     and ($2::timestamptz is null or created_at >= $2)
@@ -173,7 +185,8 @@ const SQL_LIST: &str = r#"select id, rel_path, mime, bytes, width, height, accou
 const SQL_STATS: &str = r#"select count(*), coalesce(sum(bytes), 0)::bigint from image_assets
   where ($1::timestamptz is null or created_at >= $1)"#;
 
-const SQL_GET: &str = r#"select id, rel_path, mime, bytes, width, height, account_id, prompt, created_at
+const SQL_GET: &str = r#"select id, rel_path, mime, bytes, width, height, account_id, prompt,
+       api_key_id, api_key_prefix, created_at
   from image_assets where id = $1"#;
 
 const SQL_PURGE: &str = r#"delete from image_assets
