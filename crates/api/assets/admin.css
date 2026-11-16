@@ -901,3 +901,7 @@ button:disabled {
   align-items: center;
   margin-bottom: 0.75rem;
 }
+
+.inline-form { display: inline; }
+
+.row-actions { display: flex; gap: 0.4rem; align-items: center; }

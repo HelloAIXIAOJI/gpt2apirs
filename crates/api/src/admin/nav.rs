@@ -25,7 +25,7 @@ const ITEMS: &[(&str, &str, bool)] = &[
     ("任务", "/tasks", false),
     ("日志", "/logs", true),
     ("密钥", "/keys", true),
-    ("备份", "/backups", false),
+    ("备份", "/backups", true),
     ("设置", "/settings", true),
 ];
 
@@ -64,6 +64,9 @@ mod tests {
     fn ready_pages_are_marked() {
         let items = items("/overview");
         let ready: Vec<&str> = items.iter().filter(|i| i.ready).map(|i| i.label).collect();
-        assert_eq!(ready, vec!["概览", "账号", "图片", "日志", "密钥", "设置"]);
+        assert_eq!(
+            ready,
+            vec!["概览", "账号", "图片", "日志", "密钥", "备份", "设置"]
+        );
     }
 }
