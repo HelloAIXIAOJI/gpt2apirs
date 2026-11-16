@@ -201,7 +201,9 @@ pub async fn edit_images(
             images.push(image);
         }
     }
-    crate::routes::image_flow::record_assets(&state, &slots, &prompt).await;
+    // 生成成功才落盘参考图：失败时不在磁盘上留孤儿。
+    let references = crate::references::persist_all(&prepared);
+    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &references).await;
 
     tracing::info!(
         slots = slots.len(),

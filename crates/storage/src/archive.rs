@@ -12,6 +12,19 @@ use uuid::Uuid;
 
 use crate::pool::StorageError;
 
+/// 一张参考图。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchiveReference {
+    /// 顺序（从 1 开始）。
+    pub ordinal: i32,
+    /// 原始相对路径。
+    pub rel_path: String,
+    /// MIME。
+    pub mime: String,
+    /// 字节数。
+    pub bytes: i64,
+}
+
 /// manifest 里的一条图片元数据。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArchiveEntry {
@@ -31,6 +44,9 @@ pub struct ArchiveEntry {
     pub prompt: Option<String>,
     /// 生成时间。
     pub created_at: DateTime<Utc>,
+    /// 用到的参考图清单。
+    #[serde(default)]
+    pub references: Vec<ArchiveReference>,
 }
 
 /// 包里的 manifest。
@@ -68,7 +84,7 @@ pub fn write_archive(
     dir: &Path,
     file_name: &str,
     entries: &[ArchiveEntry],
-    images_root: &Path,
+    data_root: &Path,
 ) -> Result<ArchiveStats, StorageError> {
     std::fs::create_dir_all(dir).map_err(io_error)?;
     let target = dir.join(file_name);
@@ -79,7 +95,7 @@ pub fn write_archive(
         ))));
     }
     let temp = dir.join(format!("{file_name}.part"));
-    match write_inner(&temp, entries, images_root) {
+    match write_inner(&temp, entries, data_root) {
         Ok(()) => {}
         Err(error) => {
             let _ = std::fs::remove_file(&temp);
@@ -102,7 +118,7 @@ pub fn write_archive(
 fn write_inner(
     temp: &Path,
     entries: &[ArchiveEntry],
-    images_root: &Path,
+    data_root: &Path,
 ) -> Result<(), StorageError> {
     let file = std::fs::File::create(temp).map_err(io_error)?;
     let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
@@ -118,12 +134,20 @@ fn write_inner(
     })?;
     append_bytes(&mut builder, MANIFEST_NAME, &bytes)?;
 
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        for reference in &entry.references {
+            let absolute = data_root.join(&reference.rel_path);
+            let Ok(payload) = std::fs::read(&absolute) else {
+                continue;
+            };
+            let name = format!("references/{index}/{}.bin", reference.ordinal);
+            append_bytes(&mut builder, &name, &payload)?;
+        }
         let relative = entry
             .rel_path
             .strip_prefix("images/")
             .unwrap_or(&entry.rel_path);
-        let absolute = images_root.join(relative);
+        let absolute = data_root.join(&entry.rel_path);
         let Ok(payload) = std::fs::read(&absolute) else {
             return Err(StorageError::Query(sqlx::Error::Protocol(format!(
                 "读不到图片: {}",

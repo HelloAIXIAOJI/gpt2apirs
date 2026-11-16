@@ -231,8 +231,14 @@ pub fn ensure_disk_space() -> Result<(), ApiError> {
 /// 把生成结果写进 `image_assets`，供后台按账号/时间查询。
 ///
 /// 失败只记日志：元数据写不进去不该让用户拿不到图。
-pub async fn record_assets(state: &Arc<AppState>, slots: &[SlotOutcome], prompt: &str) {
+pub async fn record_assets(
+    state: &Arc<AppState>,
+    slots: &[SlotOutcome],
+    prompt: &str,
+    references: &[crate::references::PersistedReference],
+) {
     let repo = gpt2apirs_storage::repo::ImageAssetRepo::new(state.db.clone());
+    let reference_repo = gpt2apirs_storage::repo::ImageReferenceRepo::new(state.db.clone());
     for slot in slots {
         for image in &slot.images {
             if image.rel_path.is_empty() {
@@ -247,8 +253,19 @@ pub async fn record_assets(state: &Arc<AppState>, slots: &[SlotOutcome], prompt:
                 account_id: if slot.account_id.is_nil() { None } else { Some(slot.account_id) },
                 prompt: Some(prompt.to_string()),
             };
-            if let Err(error) = repo.insert(&asset).await {
-                tracing::warn!(%error, path = %image.rel_path, "写图片元数据失败");
+            match repo.insert(&asset).await {
+                Ok(image_id) => {
+                    if references.is_empty() {
+                        continue;
+                    }
+                    let items = crate::references::link(image_id, references);
+                    if let Err(error) = reference_repo.insert_many(&items).await {
+                        tracing::warn!(%error, image = %image_id, "写参考图清单失败");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, path = %image.rel_path, "写图片元数据失败");
+                }
             }
         }
     }

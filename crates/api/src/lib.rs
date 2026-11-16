@@ -13,6 +13,7 @@ pub mod image_tasks;
 pub mod admin;
 pub mod login_throttle;
 pub mod proxy_service;
+pub mod references;
 pub mod routes;
 pub mod session;
 pub mod state;

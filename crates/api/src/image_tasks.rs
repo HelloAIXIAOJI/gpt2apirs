@@ -260,7 +260,7 @@ async fn run(state: Arc<AppState>, id: Uuid, request: gpt2apirs_generate::ImageR
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
     let outcome = match crate::routes::image_flow::run_generation(&state, request, deadline).await {
         Ok(slots) => {
-            crate::routes::image_flow::record_assets(&state, &slots, &prompt).await;
+            crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[]).await;
             let mut images = Vec::new();
             for slot in &slots {
                 for image in &slot.images {
