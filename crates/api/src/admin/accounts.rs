@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use super::has_session;
 use super::nav;
+use super::toast::oob as toast_oob;
 use crate::routes::accounts::{BatchRequest, UpdateAccountRequest};
 use crate::state::AppState;
 
@@ -568,18 +569,6 @@ fn toast_only(status: StatusCode, message: &str, level: &str) -> Response {
     (status, Html(toast_oob(message, level))).into_response()
 }
 
-/// 生成 toast 的 OOB 片段。
-fn toast_oob(message: &str, level: &str) -> String {
-    let class = if level == "error" {
-        "toast toast--error"
-    } else {
-        "toast"
-    };
-    format!(
-        "<div id=\"toasts\" hx-swap-oob=\"beforeend\"><div class=\"{class}\">{}</div></div>",
-        escape(message)
-    )
-}
 
 fn error_message(error: &crate::error::ApiError) -> String {
     format!("{error:?}")

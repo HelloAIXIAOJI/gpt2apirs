@@ -19,6 +19,8 @@ use crate::session;
 use crate::state::AppState;
 
 pub mod accounts;
+pub mod keys;
+pub mod toast;
 pub mod logs;
 pub mod settings;
 mod card;

@@ -54,6 +54,16 @@ struct Reply {
 }
 
 async fn send(method: &str, path: &str, body: Option<&str>, cookie: Option<&str>) -> Reply {
+    send_state(state(), method, path, body, cookie).await
+}
+
+async fn send_state(
+    state: Arc<AppState>,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    cookie: Option<&str>,
+) -> Reply {
     let mut builder = Request::builder().method(method).uri(path);
     if let Some(value) = cookie {
         builder = builder.header("cookie", value);
@@ -65,7 +75,7 @@ async fn send(method: &str, path: &str, body: Option<&str>, cookie: Option<&str>
             .expect("请求"),
         None => builder.body(Body::empty()).expect("请求"),
     };
-    let response = build_router(state()).oneshot(request).await.expect("响应");
+    let response = build_router(state).oneshot(request).await.expect("响应");
     let status = response.status();
     let location = response
         .headers()
@@ -240,4 +250,76 @@ async fn logs_page_renders_filters() {
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert!(reply.body.contains("路径前缀"), "{}", reply.body);
     assert!(reply.body.contains("错误码"), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn keys_page_full_cycle_against_memory_store() {
+    let shared = state();
+    let login = send_state(
+        shared.clone(),
+        "POST",
+        "/login",
+        Some(&format!("key={ADMIN_KEY}")),
+        None,
+    )
+    .await;
+    let cookie = login.cookie.expect("cookie");
+
+    let empty = send_state(shared.clone(), "GET", "/keys", None, Some(&cookie)).await;
+    assert_eq!(empty.status, StatusCode::OK);
+    assert!(empty.body.contains("还没有密钥"), "{}", empty.body);
+
+    let created = send_state(
+        shared.clone(),
+        "POST",
+        "/keys/create",
+        Some("name=e2e"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK);
+    assert!(created.body.contains("只显示这一次"), "{}", created.body);
+    assert!(created.body.contains("sk-g2a-"), "新建后应显示明文：{}", created.body);
+    assert!(created.body.contains("e2e"), "{}", created.body);
+
+    let listed = send_state(shared.clone(), "GET", "/keys", None, Some(&cookie)).await;
+    assert!(listed.body.contains("生效中"), "{}", listed.body);
+    let id = listed
+        .body
+        .split("id=\"key-")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("能从页面里找到 key 的 id")
+        .to_string();
+
+    let revoked = send_state(
+        shared.clone(),
+        "POST",
+        &format!("/keys/{id}/revoke"),
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT, "动作成功后让页面刷新");
+    let after_revoke = send_state(shared.clone(), "GET", "/keys", None, Some(&cookie)).await;
+    assert!(after_revoke.body.contains("已吊销"), "{}", after_revoke.body);
+
+    let deleted = send_state(
+        shared.clone(),
+        "POST",
+        &format!("/keys/{id}/delete"),
+        None,
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+
+    let after = send_state(shared, "GET", "/keys", None, Some(&cookie)).await;
+    assert!(after.body.contains("还没有密钥"), "{}", after.body);
+}
+
+#[tokio::test]
+async fn keys_page_requires_session() {
+    let reply = send("GET", "/keys", None, None).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
 }
