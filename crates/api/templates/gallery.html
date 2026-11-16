@@ -22,6 +22,12 @@
     <button class="btn btn--danger" type="submit" name="mode" value="run" onclick="return confirm('归档会删除在线图片，确定？')">归档并清理</button>
   </form>
 
+  <h2 class="section-title">参考图清理</h2>
+  <p class="muted">参考图按内容寻址存放；删图时会按引用计数清理，这里再兜一遍无引用的残留文件。</p>
+  <form method="post" action="/gallery/gc">
+    <button class="btn btn--ghost" type="submit">清理无引用参考图</button>
+  </form>
+
   <h2 class="section-title">归档记录</h2>
   {% if archives.is_empty() %}
   <p class="empty">还没有归档记录。</p>

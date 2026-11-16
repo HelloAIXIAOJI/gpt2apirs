@@ -126,6 +126,25 @@ pub async fn archive(
     }
 }
 
+/// `POST /gallery/gc`：清理没有任何记录引用的参考图文件。
+pub async fn gc(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    match crate::references::collect_garbage(&state).await {
+        Ok(removed) => Redirect::to(&format!(
+            "/gallery?flash={}",
+            encode(&format!("已清理 {removed} 个无引用的参考图文件"))
+        ))
+        .into_response(),
+        Err(error) => Redirect::to(&format!(
+            "/gallery?flash={}",
+            encode(&format!("清理失败：{error}"))
+        ))
+        .into_response(),
+    }
+}
+
 /// `POST /api/images/archive`（管理面 JSON 版）
 pub async fn archive_api(
     State(state): State<Arc<AppState>>,
