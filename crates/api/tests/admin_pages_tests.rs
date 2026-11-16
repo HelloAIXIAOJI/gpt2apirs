@@ -422,3 +422,21 @@ async fn keys_batch_without_selection_keeps_rows() {
     assert_eq!(reply.status, StatusCode::OK);
     assert!(reply.body.contains("先勾选要操作的密钥"), "{}", reply.body);
 }
+
+#[tokio::test]
+async fn gallery_page_requires_session() {
+    let reply = send("GET", "/gallery", None, None).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location.as_deref(), Some("/"));
+}
+
+#[tokio::test]
+async fn gallery_page_renders_archive_actions() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/gallery", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("归档并清理"), "{}", reply.body);
+    assert!(reply.body.contains("预演"), "{}", reply.body);
+    assert!(reply.body.contains("归档记录"), "{}", reply.body);
+}
