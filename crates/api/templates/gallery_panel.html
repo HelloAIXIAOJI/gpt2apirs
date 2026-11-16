@@ -1,0 +1,66 @@
+{% if data.tab == "browse" %}
+<div class="panel-head">
+  <span class="muted">共 {{ data.count }} 张 · {{ data.bytes }} · 第 {{ data.page }} / {{ data.pages }} 页</span>
+</div>
+{% if !data.error.is_empty() %}<p class="stat-error">{{ data.error }}</p>{% endif %}
+
+{% if data.images.is_empty() %}
+<p class="empty">还没有图片。</p>
+{% else %}
+<div class="thumbs">
+  {% for image in data.images %}
+  <a class="thumb glightbox" href="{{ image.url }}" data-gallery="images" data-title="{{ image.title }}" data-description="{{ image.meta }}">
+    <img src="{{ image.url }}" alt="{{ image.title }}" loading="lazy">
+    <span class="thumb-meta">{{ image.meta }}</span>
+  </a>
+  {% endfor %}
+</div>
+<nav class="pager">
+  {% if data.has_prev %}
+  <a class="btn btn--ghost" href="{{ data.prev_href }}" hx-get="/gallery/panel?tab=browse&page={% if data.has_prev %}{{ data.page }}{% endif %}" hx-target="#gallery-panel" hx-swap="innerHTML" hx-push-url="{{ data.prev_href }}">上一页</a>
+  {% endif %}
+  {% if data.has_next %}
+  <a class="btn btn--ghost" href="{{ data.next_href }}"
+     hx-get="/gallery/panel?tab=browse&page={% if data.has_next %}{{ data.page + 2 }}{% endif %}"
+     hx-target="#gallery-panel" hx-swap="innerHTML" hx-push-url="{{ data.next_href }}">下一页</a>
+  {% endif %}
+</nav>
+{% endif %}
+
+{% else %}
+{% if !data.error.is_empty() %}<p class="stat-error">{{ data.error }}</p>{% endif %}
+<div class="stat-grid">
+  <article class="stat">
+    <span class="stat-label">在线图片</span>
+    <span class="stat-value">{{ data.count }} 张</span>
+    <span class="stat-sub">{{ data.bytes }}</span>
+  </article>
+</div>
+
+<h2 class="section-title">归档</h2>
+<p class="muted">把在线图片与元数据打成一个 tar.gz，校验通过后删除原图与记录，包放在 data/archives。</p>
+<form class="batch-bar" method="post" action="/gallery/archive">
+  <button class="btn btn--ghost" type="submit" name="mode" value="dry">预演（不删除）</button>
+  <button class="btn btn--danger" type="submit" name="mode" value="run" onclick="return confirm('归档会删除在线图片，确定？')">归档并清理</button>
+</form>
+
+<h2 class="section-title">参考图清理</h2>
+<p class="muted">参考图按内容寻址存放；删图时会按引用计数清理，这里再兜一遍无引用的残留文件。</p>
+<form method="post" action="/gallery/gc">
+  <button class="btn btn--ghost" type="submit">清理无引用参考图</button>
+</form>
+
+<h2 class="section-title">归档记录</h2>
+{% if data.archives.is_empty() %}
+<p class="empty">还没有归档记录。</p>
+{% else %}
+<table class="table">
+  <thead><tr><th>包文件</th><th>图片数</th><th>原图体积</th><th>包体积</th><th>时间</th></tr></thead>
+  <tbody>
+    {% for row in data.archives %}
+    <tr><td class="path">{{ row.file_name }}</td><td class="num">{{ row.images }}</td><td class="num">{{ row.image_bytes }}</td><td class="num">{{ row.archive_bytes }}</td><td class="num">{{ row.created_at }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endif %}

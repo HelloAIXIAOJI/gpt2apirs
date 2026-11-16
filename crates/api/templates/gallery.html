@@ -5,41 +5,37 @@
 
 <section class="panel">
   {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
-  {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
 
-  <div class="stat-grid">
-    <article class="stat">
-      <span class="stat-label">在线图片</span>
-      <span class="stat-value">{{ count }} 张</span>
-      <span class="stat-sub">{{ bytes }}</span>
-    </article>
+  <nav class="tabs">
+    <a class="tab{% if data.tab == "browse" %} tab--active{% endif %}"
+       href="{{ data.tab_browse_href }}"
+       hx-get="/gallery/panel?tab=browse"
+       hx-target="#gallery-panel" hx-swap="innerHTML"
+       hx-push-url="{{ data.tab_browse_href }}">图片浏览</a>
+    <a class="tab{% if data.tab == "archive" %} tab--active{% endif %}"
+       href="{{ data.tab_archive_href }}"
+       hx-get="/gallery/panel?tab=archive"
+       hx-target="#gallery-panel" hx-swap="innerHTML"
+       hx-push-url="{{ data.tab_archive_href }}">归档</a>
+  </nav>
+
+  <div id="gallery-panel">
+    {% include "gallery_panel.html" %}
   </div>
-
-  <h2 class="section-title">归档</h2>
-  <p class="muted">把在线图片与元数据打成一个 tar.gz，校验通过后删除原图与记录，包放在 data/archives。</p>
-  <form class="batch-bar" method="post" action="/gallery/archive">
-    <button class="btn btn--ghost" type="submit" name="mode" value="dry">预演（不删除）</button>
-    <button class="btn btn--danger" type="submit" name="mode" value="run" onclick="return confirm('归档会删除在线图片，确定？')">归档并清理</button>
-  </form>
-
-  <h2 class="section-title">参考图清理</h2>
-  <p class="muted">参考图按内容寻址存放；删图时会按引用计数清理，这里再兜一遍无引用的残留文件。</p>
-  <form method="post" action="/gallery/gc">
-    <button class="btn btn--ghost" type="submit">清理无引用参考图</button>
-  </form>
-
-  <h2 class="section-title">归档记录</h2>
-  {% if archives.is_empty() %}
-  <p class="empty">还没有归档记录。</p>
-  {% else %}
-  <table class="table">
-    <thead><tr><th>包文件</th><th>图片数</th><th>原图体积</th><th>包体积</th><th>时间</th></tr></thead>
-    <tbody>
-      {% for row in archives %}
-      <tr><td class="path">{{ row.file_name }}</td><td class="num">{{ row.images }}</td><td class="num">{{ row.image_bytes }}</td><td class="num">{{ row.archive_bytes }}</td><td class="num">{{ row.created_at }}</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
 </section>
+
+<link rel="stylesheet" href="/admin/assets/glightbox.css">
+<script src="/admin/assets/glightbox.js"></script>
+<script>
+  (function () {
+    var viewer = null;
+    function initViewer() {
+      if (!window.GLightbox) return;
+      if (viewer) { viewer.destroy(); viewer = null; }
+      viewer = GLightbox({ selector: ".glightbox", touchNavigation: true, loop: true });
+    }
+    document.addEventListener("DOMContentLoaded", initViewer);
+    document.body.addEventListener("htmx:afterSwap", initViewer);
+  })();
+</script>
 {% endblock %}

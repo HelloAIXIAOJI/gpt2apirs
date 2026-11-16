@@ -255,6 +255,24 @@ pub async fn logout(headers: HeaderMap) -> Response {
     response
 }
 
+/// 图片查看器（第三方，MIT；见 assets/vendor/GLIGHTBOX.LICENSE）。
+const GLIGHTBOX_JS: &str = include_str!("../../assets/vendor/glightbox.min.js");
+const GLIGHTBOX_CSS: &str = include_str!("../../assets/vendor/glightbox.min.css");
+
+/// `GET /admin/assets/glightbox.js`
+pub async fn glightbox_js_asset() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        GLIGHTBOX_JS,
+    )
+        .into_response()
+}
+
+/// `GET /admin/assets/glightbox.css`
+pub async fn glightbox_css_asset() -> Response {
+    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], GLIGHTBOX_CSS).into_response()
+}
+
 /// `GET /admin/assets/htmx.min.js`
 pub async fn htmx_asset() -> Response {
     ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")], HTMX_JS).into_response()
