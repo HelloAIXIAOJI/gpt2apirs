@@ -75,6 +75,7 @@ pub async fn edit_images(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("http")
         .to_string();
+    let input_limit = limit_from_mb(state.settings.get_i64("image_input_max_mb"));
     let content_type = request
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
@@ -97,7 +98,7 @@ pub async fn edit_images(
         .trim()
         .eq_ignore_ascii_case("multipart/form-data")
     {
-        parse_multipart(request).await?
+        parse_multipart(request, input_limit).await?
     } else {
         return Err(ApiError::openai(AppError::invalid_param(
             format!(
@@ -321,6 +322,7 @@ fn source_from_text_field(value: &str) -> Result<Vec<ImageSource>, ApiError> {
 
 async fn parse_multipart(
     request: Request<axum::body::Body>,
+    input_limit: usize,
 ) -> Result<EditRequest, ApiError> {
     let mut multipart = Multipart::from_request(request, &())
         .await
@@ -340,12 +342,9 @@ async fn parse_multipart(
         let name = field.name().unwrap_or_default().to_string();
         let filename = field.file_name().map(|value| value.to_string());
         if IMAGE_FIELDS.contains(&name.as_str()) || MASK_FIELDS.contains(&name.as_str()) {
-            let bytes = field.bytes().await.map_err(|error| {
-                ApiError::openai(AppError::invalid_param(
-                    format!("读取字段 {name} 失败：{error}"),
-                    "image",
-                ))
-            })?;
+            // 边读边计长度：超限立即断开，不把整张图读进内存再报错。
+            let mut stream = field;
+            let bytes = read_limited(&mut stream, &name, input_limit).await?;
             // 有 filename 视为上传文件；否则当作文本（可能是 base64 或 URL）
             let sources = match filename {
                 Some(name_on_disk) if !name_on_disk.trim().is_empty() => {
@@ -380,6 +379,40 @@ async fn parse_multipart(
         // 其余字段忽略：OpenAI 客户端会塞 user 等字段
     }
     Ok(parsed)
+}
+
+/// 运行设置里的 MB 值换成字节，并夹到 1..=50。
+fn limit_from_mb(mb: i64) -> usize {
+    mb.clamp(1, 50) as usize * 1024 * 1024
+}
+
+/// 读取一个图片字段，超过 `limit` 字节立即拒绝。
+async fn read_limited(
+    field: &mut axum::extract::multipart::Field<'_>,
+    name: &str,
+    limit: usize,
+) -> Result<axum::body::Bytes, ApiError> {
+    let mut data = Vec::new();
+    loop {
+        let chunk = field.chunk().await.map_err(|error| {
+            ApiError::openai(AppError::invalid_param(
+                format!("读取字段 {name} 失败：{error}"),
+                name,
+            ))
+        })?;
+        let Some(chunk) = chunk else { break };
+        if data.len() + chunk.len() > limit {
+            return Err(ApiError::openai(AppError::PayloadTooLarge {
+                message: format!(
+                    "字段 {name} 超过上限 {} MB，请压缩后再上传",
+                    limit / (1024 * 1024)
+                ),
+                param: Some(name.to_string()),
+            }));
+        }
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data.into())
 }
 
 async fn parse_json_body(
@@ -420,3 +453,15 @@ async fn parse_json_body(
 
 // 让 Multipart 的 FromRequest 在本模块可用
 use axum::extract::FromRequest;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limit_from_mb_clamps() {
+        assert_eq!(limit_from_mb(10), 10 * 1024 * 1024);
+        assert_eq!(limit_from_mb(0), 1024 * 1024, "0 夹到 1 MB");
+        assert_eq!(limit_from_mb(999), 50 * 1024 * 1024, "超过上限夹到 50 MB");
+    }
+}

@@ -36,7 +36,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/models", get(routes::v1_models::list_models))
         .route("/v1/models/{id}", get(routes::v1_models::get_model))
         .route("/v1/images/generations", post(routes::v1_images::generate))
-        .route("/v1/images/edits", post(routes::v1_image_edits::edit_images))
+        // 参考图上限由运行设置控制（默认 10 MB，可调），所以这里把 body 上限放宽到 64 MB，
+        // 真正的大小判断在 handler 里流式做；否则 axum 的默认上限会先报一句看不懂的解析错误。
+        .route(
+            "/v1/images/edits",
+            post(routes::v1_image_edits::edit_images)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .route("/v1/chat/completions", post(routes::v1_chat::chat_completions))
         .route("/v1/responses", post(routes::v1_responses::create_response))
         .route("/v1/messages", post(routes::v1_messages::create_message))
