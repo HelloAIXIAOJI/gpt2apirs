@@ -206,3 +206,21 @@ async fn oauth_start_returns_authorize_page() {
     assert!(reply.body.contains("auth.openai.com"), "{}", reply.body);
     assert!(reply.body.contains("name=\"callback\""), "{}", reply.body);
 }
+
+#[tokio::test]
+async fn settings_page_requires_session() {
+    let reply = send("GET", "/settings", None, None).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location.as_deref(), Some("/"));
+}
+
+#[tokio::test]
+async fn settings_page_lists_known_keys() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/settings", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("运行设置"), "{}", reply.body);
+    assert!(reply.body.contains("image_poll_timeout_secs"), "{}", reply.body);
+    assert!(reply.body.contains("proxy_subscription_url"), "{}", reply.body);
+}

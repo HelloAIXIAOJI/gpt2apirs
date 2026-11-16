@@ -165,6 +165,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/assets/htmx.min.js", get(admin::htmx_asset))
         .route("/admin/assets/admin.css", get(admin::css_asset))
         .route("/accounts", get(admin::accounts::index))
+        .route("/settings", get(admin::settings::index).post(admin::settings::save))
         .route("/accounts/import", post(admin::accounts::import_accounts))
         .route("/accounts/batch", post(admin::accounts::batch))
         .route("/accounts/oauth/start", post(admin::accounts::oauth_start_form))

@@ -26,7 +26,7 @@ const ITEMS: &[(&str, &str, bool)] = &[
     ("日志", "/logs", false),
     ("密钥", "/keys", false),
     ("备份", "/backups", false),
-    ("设置", "/settings", false),
+    ("设置", "/settings", true),
 ];
 
 /// 按当前路径生成导航。
@@ -64,6 +64,6 @@ mod tests {
     fn ready_pages_are_marked() {
         let items = items("/overview");
         let ready: Vec<&str> = items.iter().filter(|i| i.ready).map(|i| i.label).collect();
-        assert_eq!(ready, vec!["概览", "账号"]);
+        assert_eq!(ready, vec!["概览", "账号", "设置"]);
     }
 }

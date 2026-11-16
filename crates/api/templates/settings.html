@@ -1,0 +1,34 @@
+{% extends "shell.html" %}
+{% block title %}设置 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>运行设置</h1></header>
+
+<section class="panel">
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
+  {% if !updated_at.is_empty() %}<p class="muted">最近保存：{{ updated_at }}</p>{% endif %}
+
+  <form class="settings" method="post" action="/settings">
+    {% for group in groups %}
+    <fieldset class="settings-group">
+      <legend>{{ group.title }}</legend>
+      {% for field in group.fields %}
+      <label class="field">
+        <span class="field-key">{{ field.key }}{% if field.restart %} <span class="restart-badge">需重启</span>{% endif %}</span>
+        <span class="field-label">{{ field.label }}</span>
+        {% if field.long_text %}
+        <textarea name="{{ field.key }}" rows="4">{{ field.value }}</textarea>
+        {% else %}
+        <input name="{{ field.key }}" value="{{ field.value }}">
+        {% endif %}
+        <span class="field-hint">{{ field.hint }}</span>
+      </label>
+      {% endfor %}
+    </fieldset>
+    {% endfor %}
+    <div class="edit-actions">
+      <button type="submit">保存</button>
+      <a class="btn btn--ghost" href="/settings">重置</a>
+    </div>
+  </form>
+</section>
+{% endblock %}
