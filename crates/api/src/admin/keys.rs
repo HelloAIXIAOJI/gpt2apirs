@@ -205,7 +205,7 @@ pub async fn revoke(
         return Redirect::to("/").into_response();
     }
     match state.api_keys.revoke(id).await {
-        Ok(true) => refresh(),
+        Ok(true) => refresh(&headers),
         Ok(false) => super::toast::oob_response("该 key 已是吊销状态或不存在", "error"),
         Err(failure) => {
             super::toast::oob_response(&format!("吊销失败：{failure}"), "error")
@@ -223,7 +223,7 @@ pub async fn delete(
         return Redirect::to("/").into_response();
     }
     match state.api_keys.delete(id).await {
-        Ok(true) => refresh(),
+        Ok(true) => refresh(&headers),
         Ok(false) => super::toast::oob_response("记录不存在", "error"),
         Err(failure) => super::toast::oob_response(&format!("删除失败：{failure}"), "error"),
     }
@@ -341,7 +341,7 @@ pub async fn batch(
         }
     }
     if failed == 0 {
-        return refresh();
+        return refresh(&headers);
     }
     super::toast::oob_response(&format!("完成 {done} 条，失败 {failed} 条"), "error")
 }
@@ -366,8 +366,18 @@ fn batch_form(body: &str) -> BatchForm {
     form
 }
 
-/// 动作成功后让 htmx 重载当前页：分页与列表天然一致。
-fn refresh() -> Response {
+/// 动作成功后刷新列表。
+///
+/// htmx 请求回 204 + `HX-Refresh`，由前端整页重载（分页位置不丢）；
+/// 普通表单提交（没跑 JS）回 303，浏览器自己跳回列表，避免停在 204 上什么都不发生。
+fn refresh(headers: &HeaderMap) -> Response {
+    let htmx = headers
+        .get("hx-request")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    if !htmx {
+        return Redirect::to("/keys").into_response();
+    }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert("hx-refresh", "true".parse().expect("常量"));
     response
