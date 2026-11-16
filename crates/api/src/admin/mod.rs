@@ -19,6 +19,7 @@ use crate::session;
 use crate::state::AppState;
 
 pub mod accounts;
+pub mod settings;
 mod card;
 mod nav;
 

@@ -73,7 +73,7 @@ impl Filters {
     }
 }
 
-fn encode(text: &str) -> String {
+pub(super) fn encode(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for byte in text.as_bytes() {
         match byte {
