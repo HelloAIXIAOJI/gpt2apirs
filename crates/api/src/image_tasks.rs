@@ -264,6 +264,10 @@ async fn run(state: Arc<AppState>, id: Uuid, request: gpt2apirs_generate::ImageR
             let mut images = Vec::new();
             for slot in &slots {
                 for image in &slot.images {
+                    // 未落盘的图片没有文件可读，任务里也不记（否则会生成一个 404 的 URL）。
+                    if image.rel_path.is_empty() {
+                        continue;
+                    }
                     images.push(TaskImage {
                         rel_path: image.rel_path.clone(),
                         mime: image.mime,

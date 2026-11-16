@@ -663,8 +663,18 @@ async fn download_urls(
         if response.status != 200 {
             continue;
         }
-        if let Some(saved) = save_image_as(&response.body, target_format)? {
-            images.push(saved);
+        match save_image_as(&response.body, target_format) {
+            Ok(Some(saved)) => images.push(saved),
+            Ok(None) => {}
+            Err(error) => {
+                // 图已经生成、配额已经花了：落盘失败不能把它丢掉，
+                // 也不能让整个请求失败。记一条 WARN，返回一份「未落盘」的图片，
+                // 由调用方决定只回 b64、不给 URL。
+                tracing::warn!(%error, "图片落盘失败，本次只返回字节");
+                if let Some(unpersisted) = unpersisted_image(&response.body, target_format) {
+                    images.push(unpersisted);
+                }
+            }
         }
     }
     Ok(())
@@ -816,6 +826,24 @@ pub fn save_image_as(
     }))
 }
 
+/// 落盘失败时的兜底：拿到格式与尺寸，但 `rel_path` 留空表示没有落地文件。
+fn unpersisted_image(
+    bytes: &[u8],
+    format: crate::format::OutputFormat,
+) -> Option<GeneratedImage> {
+    let converted = crate::format::convert(bytes, format).ok()?;
+    let (mime, _) = sniff_mime(&converted)?;
+    let (width, height) =
+        gpt2apirs_core::tokens::image_size_from_bytes(&converted).unwrap_or((0, 0));
+    Some(GeneratedImage {
+        bytes: converted,
+        rel_path: String::new(),
+        mime,
+        width,
+        height,
+    })
+}
+
 /// 识别图片格式，返回 `(mime, 扩展名)`。
 pub fn sniff_mime(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
@@ -955,6 +983,25 @@ mod tests {
         assert_eq!(sniff_mime(&[0xFF, 0xD8, 0xFF, 0xE0]).map(|(m, _)| m), Some("image/jpeg"));
         assert_eq!(sniff_mime(b"GIF89a....").map(|(m, _)| m), Some("image/gif"));
         assert_eq!(sniff_mime(b"not an image"), None);
+    }
+
+    #[test]
+    fn unpersisted_image_keeps_bytes_without_path() {
+        // 落盘失败时仍要保留图片：rel_path 为空即「没落地」。
+        let mut buffer = Vec::new();
+        let pixel = image::RgbaImage::from_pixel(2, 3, image::Rgba([200, 40, 40, 255]));
+        image::DynamicImage::ImageRgba8(pixel)
+            .write_to(
+                &mut std::io::Cursor::new(&mut buffer),
+                image::ImageFormat::Png,
+            )
+            .expect("编码 PNG");
+        let image = unpersisted_image(&buffer, crate::format::OutputFormat::Png)
+            .expect("应能构造未落盘对象");
+        assert!(image.rel_path.is_empty(), "未落盘不应有路径");
+        assert_eq!(image.width, 2);
+        assert_eq!(image.height, 3);
+        assert!(!image.bytes.is_empty());
     }
 
     #[test]

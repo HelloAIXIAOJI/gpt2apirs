@@ -194,6 +194,7 @@ pub async fn generate(
 
     // 从账号池取一个账号；租约 Drop 时自动归还槽位。
     // ---- 并行 n 张 + 换号重试（见 image_flow）----
+        crate::routes::image_flow::ensure_disk_space()?;
     let slots = run_generation(&state, image_request, deadline).await?;
 
     let mut images: Vec<&gpt2apirs_generate::GeneratedImage> = Vec::new();
@@ -222,7 +223,11 @@ pub async fn generate(
         if response_format == "url" {
             data.push(ImageDatum {
                 b64_json: None,
-                url: Some(format!("{base_url}/{}", image.rel_path)),
+                url: if image.rel_path.is_empty() {
+                    None
+                } else {
+                    Some(format!("{base_url}/{}", image.rel_path))
+                },
                 revised_prompt: Some(prompt.clone()),
             });
         } else {

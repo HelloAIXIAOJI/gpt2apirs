@@ -192,6 +192,7 @@ pub async fn edit_images(
     image_request.size = size;
     image_request.quality = quality_option;
 
+    crate::routes::image_flow::ensure_disk_space()?;
     let slots = run_edit(&state, image_request, prepared.clone(), deadline).await?;
 
     let mut images: Vec<&gpt2apirs_generate::GeneratedImage> = Vec::new();
@@ -220,7 +221,11 @@ pub async fn edit_images(
         if response_format == "url" {
             data.push(ImageDatum {
                 b64_json: None,
-                url: Some(format!("{base_url}/{}", image.rel_path)),
+                url: if image.rel_path.is_empty() {
+                    None
+                } else {
+                    Some(format!("{base_url}/{}", image.rel_path))
+                },
                 revised_prompt: Some(prompt.clone()),
             });
         } else {
