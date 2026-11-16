@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod call_log;
 pub mod error;
+pub mod image_archive;
 pub mod image_tasks;
 pub mod admin;
 pub mod login_throttle;
@@ -88,6 +89,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/admin/image-tasks/{id}",
             delete(routes::image_tasks::delete),
         )
+        .route("/api/images/archive", post(admin::gallery::archive_api))
         .route("/api/proxy/status", get(routes::proxy::status))
         .route("/api/proxy/start", post(routes::proxy::start))
         .route("/api/proxy/stop", post(routes::proxy::stop))
@@ -173,6 +175,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/accounts", get(admin::accounts::index))
         .route("/settings", get(admin::settings::index).post(admin::settings::save))
         .route("/logs", get(admin::logs::index))
+        .route("/gallery", get(admin::gallery::index))
+        .route("/gallery/archive", post(admin::gallery::archive))
         .route("/keys", get(admin::keys::index))
         .route("/keys/create", post(admin::keys::create))
         .route("/keys/{id}/revoke", post(admin::keys::revoke))
