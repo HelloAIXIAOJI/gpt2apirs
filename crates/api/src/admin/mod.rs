@@ -350,3 +350,48 @@ mod tests {
         assert!(HTMX_JS.contains("htmx"), "内容不像 htmx");
     }
 }
+
+/// 解析 urlencoded 表单为键值对。
+///
+/// `serde_urlencoded` 不支持重复键（`ids=a&ids=b` 解成 `Vec`），批量表单只能自己解析。
+pub fn parse_form_pairs(body: &str) -> Vec<(String, String)> {
+    body.split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            (percent_decode(key), percent_decode(value))
+        })
+        .collect()
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        index += 1;
+                    }
+                }
+            }
+            other => {
+                out.push(other);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
+}

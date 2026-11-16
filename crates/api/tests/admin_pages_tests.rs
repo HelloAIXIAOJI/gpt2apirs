@@ -323,3 +323,101 @@ async fn keys_page_requires_session() {
     let reply = send("GET", "/keys", None, None).await;
     assert_eq!(reply.status, StatusCode::SEE_OTHER);
 }
+
+#[tokio::test]
+async fn keys_batch_and_rename() {
+    let shared = state();
+    let login = send_state(
+        shared.clone(),
+        "POST",
+        "/login",
+        Some(&format!("key={ADMIN_KEY}")),
+        None,
+    )
+    .await;
+    let cookie = login.cookie.expect("cookie");
+
+    // 建两把 key，抓出 id
+    let mut ids = Vec::new();
+    for name in ["a", "b"] {
+        let created = send_state(
+            shared.clone(),
+            "POST",
+            "/keys/create",
+            Some(&format!("name={name}")),
+            Some(&cookie),
+        )
+        .await;
+        let id = created
+            .body
+            .split("id=\"key-")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("新建后应有记录 id")
+            .to_string();
+        ids.push(id);
+    }
+
+    // 改名
+    let renamed = send_state(
+        shared.clone(),
+        "POST",
+        &format!("/keys/{}/edit", ids[0]),
+        Some("name=新名字"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(renamed.status, StatusCode::SEE_OTHER);
+    let listed = send_state(shared.clone(), "GET", "/keys", None, Some(&cookie)).await;
+    assert!(listed.body.contains("新名字"), "{}", listed.body);
+
+    // 批量吊销两把
+    let batch = send_state(
+        shared.clone(),
+        "POST",
+        "/keys/batch",
+        Some(&format!("action=revoke&ids={}&ids={}", ids[0], ids[1])),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(batch.status, StatusCode::NO_CONTENT);
+    let after = send_state(shared.clone(), "GET", "/keys", None, Some(&cookie)).await;
+    assert_eq!(after.body.matches("已吊销").count(), 2, "{}", after.body);
+
+    // 批量删除
+    let batch = send_state(
+        shared.clone(),
+        "POST",
+        "/keys/batch",
+        Some(&format!("action=delete&ids={}&ids={}", ids[0], ids[1])),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(batch.status, StatusCode::NO_CONTENT);
+    let empty = send_state(shared, "GET", "/keys", None, Some(&cookie)).await;
+    assert!(empty.body.contains("还没有密钥"), "{}", empty.body);
+}
+
+#[tokio::test]
+async fn keys_batch_without_selection_keeps_rows() {
+    let shared = state();
+    let login = send_state(
+        shared.clone(),
+        "POST",
+        "/login",
+        Some(&format!("key={ADMIN_KEY}")),
+        None,
+    )
+    .await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send_state(
+        shared,
+        "POST",
+        "/keys/batch",
+        Some("action=delete"),
+        Some(&cookie),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK);
+    assert!(reply.body.contains("先勾选要操作的密钥"), "{}", reply.body);
+}

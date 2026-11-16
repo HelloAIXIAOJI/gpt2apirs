@@ -47,7 +47,13 @@ impl KeyRow {
 
 impl fmt::Display for KeyRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<tr id=\"key-{}\"><td>{}</td>", self.id, escape(&self.name))?;
+        write!(
+            f,
+            "<tr id=\"key-{}\"><td class=\"pick\"><input type=\"checkbox\" name=\"ids\" value=\"{}\"></td>",
+            self.id,
+            self.id
+        )?;
+        write!(f, "<td>{}</td>", escape(&self.name))?;
         write!(
             f,
             "<td class=\"path\">{}</td>",
@@ -62,6 +68,11 @@ impl fmt::Display for KeyRow {
         };
         write!(f, "<td>{state}</td>")?;
         write!(f, "<td class=\"actions\">")?;
+        write!(
+            f,
+            "<a class=\"btn btn--ghost\" href=\"/keys/{}/edit\">改名</a>",
+            self.id
+        )?;
         if !self.revoked {
             write!(
                 f,
@@ -218,6 +229,143 @@ pub async fn delete(
     }
 }
 
+/// 改名页。
+#[derive(Template)]
+#[template(path = "keys_edit.html")]
+struct RenamePage {
+    nav: Vec<nav::NavItem>,
+    id: String,
+    name: String,
+    prefix: String,
+    flash: String,
+}
+
+/// 改名表单。
+#[derive(Debug, Deserialize)]
+pub struct RenameForm {
+    /// 新名称。
+    #[serde(default)]
+    pub name: String,
+}
+
+/// `GET /keys/{id}/edit`
+pub async fn edit_form(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    axum::extract::Query(query): axum::extract::Query<super::accounts::FlashQuery>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let rows = match state.api_keys.list().await {
+        Ok(rows) => rows,
+        Err(failure) => {
+            return super::toast::oob_response(&format!("读取失败：{failure}"), "error");
+        }
+    };
+    let Some(row) = rows.into_iter().find(|row| row.id == id) else {
+        return Redirect::to("/keys").into_response();
+    };
+    render(RenamePage {
+        nav: nav::items("/keys"),
+        id: row.id.to_string(),
+        name: row.name,
+        prefix: row.prefix,
+        flash: query.flash,
+    })
+}
+
+/// `POST /keys/{id}/edit`
+pub async fn edit_submit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RenameForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let name = form.name.trim();
+    if name.is_empty() {
+        return Redirect::to(&format!(
+            "/keys/{id}/edit?flash={}",
+            super::accounts::encode("名称不能为空")
+        ))
+        .into_response();
+    }
+    match state.api_keys.rename(id, name).await {
+        Ok(true) => Redirect::to("/keys").into_response(),
+        Ok(false) => super::toast::oob_response("记录不存在", "error"),
+        Err(failure) => super::toast::oob_response(&format!("改名失败：{failure}"), "error"),
+    }
+}
+
+/// 批量动作表单。
+#[derive(Debug, Deserialize)]
+pub struct BatchForm {
+    /// 选中的 key。
+    #[serde(default)]
+    pub ids: Vec<Uuid>,
+    /// revoke 或 delete。
+    #[serde(default)]
+    pub action: String,
+}
+
+/// `POST /keys/batch`
+pub async fn batch(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let form = batch_form(&body);
+    if form.ids.is_empty() {
+        return super::toast::oob_response("先勾选要操作的密钥", "error");
+    }
+    let mut done = 0;
+    let mut failed = 0;
+    for id in &form.ids {
+        let result = match form.action.as_str() {
+            "revoke" => state.api_keys.revoke(*id).await,
+            "delete" => state.api_keys.delete(*id).await,
+            other => {
+                return super::toast::oob_response(&format!("未知动作 {other}"), "error");
+            }
+        };
+        match result {
+            Ok(true) => done += 1,
+            Ok(false) | Err(_) => failed += 1,
+        }
+    }
+    if failed == 0 {
+        return refresh();
+    }
+    super::toast::oob_response(&format!("完成 {done} 条，失败 {failed} 条"), "error")
+}
+
+/// 从原始表单里取出动作与 id 列表。
+fn batch_form(body: &str) -> BatchForm {
+    let mut form = BatchForm {
+        ids: Vec::new(),
+        action: String::new(),
+    };
+    for (key, value) in super::parse_form_pairs(body) {
+        match key.as_str() {
+            "ids" => {
+                if let Ok(id) = value.parse::<Uuid>() {
+                    form.ids.push(id);
+                }
+            }
+            "action" => form.action = value,
+            _ => {}
+        }
+    }
+    form
+}
+
 /// 动作成功后让 htmx 重载当前页：分页与列表天然一致。
 fn refresh() -> Response {
     let mut response = StatusCode::NO_CONTENT.into_response();
@@ -273,6 +421,8 @@ mod tests {
         assert!(html.contains("吊销"), "{html}");
         assert!(html.contains("删除"), "{html}");
         assert!(html.contains("sk-g2a-"), "{html}");
+        assert!(html.contains("name=\"ids\""), "行内应有勾选框：{html}");
+        assert!(html.contains("/edit"), "行内应有改名入口：{html}");
     }
 
     #[test]
