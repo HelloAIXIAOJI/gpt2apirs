@@ -431,12 +431,33 @@ async fn gallery_page_requires_session() {
 }
 
 #[tokio::test]
-async fn gallery_page_renders_archive_actions() {
+async fn gallery_page_has_two_tabs() {
     let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
     let cookie = login.cookie.expect("cookie");
     let reply = send("GET", "/gallery", None, Some(&cookie)).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("图片浏览"), "{}", reply.body);
+    assert!(reply.body.contains("归档"), "{}", reply.body);
+    assert!(reply.body.contains("glightbox"), "查看器应被引入");
+}
+
+#[tokio::test]
+async fn gallery_archive_tab_renders_actions() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/gallery?tab=archive", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert!(reply.body.contains("归档并清理"), "{}", reply.body);
     assert!(reply.body.contains("预演"), "{}", reply.body);
     assert!(reply.body.contains("归档记录"), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn gallery_panel_returns_fragment_only() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/gallery/panel?tab=browse", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(!reply.body.contains("<html"), "局部不应带整页骨架");
+    assert!(reply.body.contains("在线图片") || reply.body.contains("共 "), "{}", reply.body);
 }

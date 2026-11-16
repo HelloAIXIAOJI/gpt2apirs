@@ -1,19 +1,46 @@
-//! 图片页：看在线占用，一键归档并清理。
+//! 图片页：浏览在线图片（第三方查看器）与归档清理两个标签页。
 
 use std::sync::Arc;
 
 use askama::Template;
 use axum::Form;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use gpt2apirs_storage::repo::{ImageArchiveRepo, ImageAssetRepo};
+use gpt2apirs_storage::repo::{
+    ImageArchiveRepo, ImageAssetQuery, ImageAssetRepo, ImageAssetRow, ImageArchiveRow,
+};
 use serde::Deserialize;
 
-use super::accounts::{encode, FlashQuery};
+use super::accounts::encode;
 use super::has_session;
 use super::nav;
 use crate::state::AppState;
+
+/// 每页图片数。
+const PAGE_SIZE: i64 = 24;
+
+/// 一页里的图片。
+pub struct ImageCard {
+    url: String,
+    title: String,
+    meta: String,
+}
+
+impl ImageCard {
+    fn from_row(row: &ImageAssetRow, base: &str) -> Self {
+        let title = row.prompt.clone().unwrap_or_else(|| "（无提示词）".to_string());
+        Self {
+            url: format!("{base}/{}", row.rel_path),
+            title: title.chars().take(80).collect(),
+            meta: format!(
+                "{} · {}",
+                row.created_at.format("%Y-%m-%d %H:%M"),
+                format_bytes(row.bytes.max(0) as u64)
+            ),
+        }
+    }
+}
 
 /// 归档记录的一行。
 pub struct ArchiveRow {
@@ -25,7 +52,7 @@ pub struct ArchiveRow {
 }
 
 impl ArchiveRow {
-    fn from_row(row: &gpt2apirs_storage::repo::ImageArchiveRow) -> Self {
+    fn from_row(row: &ImageArchiveRow) -> Self {
         Self {
             file_name: row.file_name.clone(),
             images: row.image_count.to_string(),
@@ -36,57 +63,166 @@ impl ArchiveRow {
     }
 }
 
-/// 页面上的一次归档动作。
-#[derive(Debug, Deserialize)]
-pub struct ArchiveForm {
-    /// `dry` 表示只预演。
+/// 标签页与分页参数。
+#[derive(Debug, Default, Deserialize)]
+pub struct PanelQuery {
+    /// `browse` 或 `archive`。
     #[serde(default)]
-    pub mode: String,
+    pub tab: Option<String>,
+    /// 页码，从 1 开始。
+    #[serde(default)]
+    pub page: Option<i64>,
+    /// 提示条。
+    #[serde(default)]
+    pub flash: Option<String>,
 }
 
-/// 图片页。
+/// 页面数据（整页与局部共用）。
+struct PanelData {
+    tab: String,
+    count: String,
+    bytes: String,
+    error: String,
+    images: Vec<ImageCard>,
+    page: i64,
+    pages: i64,
+    prev_href: String,
+    next_href: String,
+    has_prev: bool,
+    has_next: bool,
+    archives: Vec<ArchiveRow>,
+    tab_browse_href: String,
+    tab_archive_href: String,
+}
+
+/// 整页。
 #[derive(Template)]
 #[template(path = "gallery.html")]
 struct GalleryPage {
     nav: Vec<nav::NavItem>,
-    count: String,
-    bytes: String,
-    error: String,
     flash: String,
-    archives: Vec<ArchiveRow>,
+    data: PanelData,
+}
+
+/// 局部面板（htmx 换页用）。
+#[derive(Template)]
+#[template(path = "gallery_panel.html")]
+struct GalleryPanel {
+    data: PanelData,
 }
 
 /// `GET /gallery`
 pub async fn index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    axum::extract::Query(query): axum::extract::Query<FlashQuery>,
+    Query(query): Query<PanelQuery>,
 ) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    render(page(&state, query.flash).await)
+    let data = load(&state, &query).await;
+    let flash = query.flash.clone().unwrap_or_default();
+    render(GalleryPage {
+        nav: nav::items("/gallery"),
+        flash,
+        data,
+    })
 }
 
-async fn page(state: &AppState, flash: String) -> GalleryPage {
-    let asset_repo = ImageAssetRepo::new(state.db.clone());
-    let (count, bytes, error) = match asset_repo.stats(None).await {
-        Ok(stats) => (stats.count.to_string(), format_bytes(stats.bytes.max(0) as u64), String::new()),
-        Err(failure) => ("-".to_string(), "-".to_string(), format!("读取失败（{failure}）")),
+/// `GET /gallery/panel` —— 只回面板内容，供标签与翻页局部刷新。
+pub async fn panel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<PanelQuery>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let data = load(&state, &query).await;
+    render(GalleryPanel { data })
+}
+
+async fn load(state: &AppState, query: &PanelQuery) -> PanelData {
+    let tab = match query.tab.as_deref() {
+        Some("archive") => "archive".to_string(),
+        _ => "browse".to_string(),
     };
-    let archives = ImageArchiveRepo::new(state.db.clone())
-        .list(20)
-        .await
-        .map(|rows| rows.iter().map(ArchiveRow::from_row).collect())
-        .unwrap_or_default();
-    GalleryPage {
-        nav: nav::items("/gallery"),
+    let page = query.page.unwrap_or(1).max(1);
+    let repo = ImageAssetRepo::new(state.db.clone());
+    let mut error = String::new();
+    let (count, bytes, total) = match repo.stats(None).await {
+        Ok(stats) => (
+            stats.count.to_string(),
+            format_bytes(stats.bytes.max(0) as u64),
+            stats.count,
+        ),
+        Err(failure) => {
+            error = format!("读取失败（{failure}）");
+            ("-".to_string(), "-".to_string(), 0)
+        }
+    };
+    let pages = ((total + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
+    let page = page.min(pages);
+
+    let images = if tab == "browse" {
+        match repo
+            .list(&ImageAssetQuery {
+                account_id: None,
+                since: None,
+                limit: PAGE_SIZE,
+                offset: (page - 1) * PAGE_SIZE,
+            })
+            .await
+        {
+            Ok(rows) => rows
+                .iter()
+                .map(|row| ImageCard::from_row(row, ""))
+                .collect(),
+            Err(failure) => {
+                if error.is_empty() {
+                    error = format!("读取图片列表失败（{failure}）");
+                }
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    let archives = if tab == "archive" {
+        ImageArchiveRepo::new(state.db.clone())
+            .list(20)
+            .await
+            .map(|rows| rows.iter().map(ArchiveRow::from_row).collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    PanelData {
+        tab: tab.clone(),
         count,
         bytes,
         error,
-        flash,
+        images,
+        page,
+        pages,
+        prev_href: format!("/gallery?tab={tab}&page={}", (page - 1).max(1)),
+        next_href: format!("/gallery?tab={tab}&page={}", (page + 1).min(pages)),
+        has_prev: page > 1,
+        has_next: page < pages,
         archives,
+        tab_browse_href: "/gallery?tab=browse".to_string(),
+        tab_archive_href: "/gallery?tab=archive".to_string(),
     }
+}
+
+/// 页面上的一次归档动作。
+#[derive(Debug, Deserialize)]
+pub struct ArchiveForm {
+    /// `dry` 表示只预演。
+    #[serde(default)]
+    pub mode: String,
 }
 
 /// `POST /gallery/archive`
@@ -99,31 +235,27 @@ pub async fn archive(
         return Redirect::to("/").into_response();
     }
     let dry_run = form.mode == "dry";
-    match crate::image_archive::run(&state, dry_run).await {
-        Ok(outcome) if outcome.dry_run => {
-            let message = format!(
-                "预演：将归档 {} 张（{}），包名 {}；未做任何删除",
-                outcome.image_count,
-                format_bytes(outcome.image_bytes),
-                outcome.file_name
-            );
-            Redirect::to(&format!("/gallery?flash={}", encode(&message))).into_response()
-        }
-        Ok(outcome) => {
-            let message = format!(
-                "已归档 {} 张（原图 {}）→ {}（{}）",
-                outcome.image_count,
-                format_bytes(outcome.image_bytes),
-                outcome.file_name,
-                format_bytes(outcome.bytes)
-            );
-            Redirect::to(&format!("/gallery?flash={}", encode(&message))).into_response()
-        }
-        Err(error) => {
-            let message = format!("归档失败：{error}");
-            Redirect::to(&format!("/gallery?flash={}", encode(&message))).into_response()
-        }
-    }
+    let message = match crate::image_archive::run(&state, dry_run).await {
+        Ok(outcome) if outcome.dry_run => format!(
+            "预演：将归档 {} 张（{}），包名 {}；未做任何删除",
+            outcome.image_count,
+            format_bytes(outcome.image_bytes),
+            outcome.file_name
+        ),
+        Ok(outcome) => format!(
+            "已归档 {} 张（原图 {}）→ {}（{}）",
+            outcome.image_count,
+            format_bytes(outcome.image_bytes),
+            outcome.file_name,
+            format_bytes(outcome.bytes)
+        ),
+        Err(error) => format!("归档失败：{error}"),
+    };
+    Redirect::to(&format!(
+        "/gallery?tab=archive&flash={}",
+        encode(&message)
+    ))
+    .into_response()
 }
 
 /// `POST /gallery/gc`：清理没有任何记录引用的参考图文件。
@@ -131,24 +263,21 @@ pub async fn gc(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Respo
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    match crate::references::collect_garbage(&state).await {
-        Ok(removed) => Redirect::to(&format!(
-            "/gallery?flash={}",
-            encode(&format!("已清理 {removed} 个无引用的参考图文件"))
-        ))
-        .into_response(),
-        Err(error) => Redirect::to(&format!(
-            "/gallery?flash={}",
-            encode(&format!("清理失败：{error}"))
-        ))
-        .into_response(),
-    }
+    let message = match crate::references::collect_garbage(&state).await {
+        Ok(removed) => format!("已清理 {removed} 个无引用的参考图文件"),
+        Err(error) => format!("清理失败：{error}"),
+    };
+    Redirect::to(&format!(
+        "/gallery?tab=archive&flash={}",
+        encode(&message)
+    ))
+    .into_response()
 }
 
 /// `POST /api/images/archive`（管理面 JSON 版）
 pub async fn archive_api(
     State(state): State<Arc<AppState>>,
-    axum::extract::Query(query): axum::extract::Query<ArchiveQuery>,
+    Query(query): Query<ArchiveQuery>,
 ) -> Result<axum::Json<serde_json::Value>, crate::error::ApiError> {
     let outcome = crate::image_archive::run(&state, query.dry_run)
         .await
