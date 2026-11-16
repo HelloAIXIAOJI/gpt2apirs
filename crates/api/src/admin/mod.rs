@@ -19,6 +19,7 @@ use crate::session;
 use crate::state::AppState;
 
 pub mod accounts;
+pub mod backups;
 pub mod gallery;
 pub mod keys;
 pub mod toast;

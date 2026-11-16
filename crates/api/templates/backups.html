@@ -1,0 +1,44 @@
+{% extends "shell.html" %}
+{% block title %}备份 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>备份</h1></header>
+
+<section class="panel">
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
+  {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+
+  <p class="muted">备份包含账号、API key 元数据、图片元数据与图片文件本体，写到 data/backups。</p>
+  <form class="batch-bar" method="post" action="/backups/create">
+    <button class="btn" type="submit">立即备份</button>
+  </form>
+
+  <h2 class="section-title">已有备份</h2>
+  {% if rows.is_empty() %}
+  <p class="empty">还没有备份。</p>
+  {% else %}
+  <table class="table">
+    <thead><tr><th>文件</th><th>大小</th><th>时间</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td class="path">{{ row.file }}</td>
+        <td class="num">{{ row.bytes }}</td>
+        <td class="num">{{ row.modified }}</td>
+        <td class="row-actions">
+          <a class="btn btn--ghost" href="/backups/download/{{ row.file }}">下载</a>
+          <form method="post" action="/backups/restore" class="inline-form">
+            <input type="hidden" name="file" value="{{ row.file }}">
+            <button class="btn btn--ghost" type="submit" onclick="return confirm('恢复是合并写入，不会删现有数据。确定恢复？')">恢复</button>
+          </form>
+          <form method="post" action="/backups/delete" class="inline-form">
+            <input type="hidden" name="file" value="{{ row.file }}">
+            <button class="btn btn--danger" type="submit" onclick="return confirm('删除后无法找回，确定？')">删除</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

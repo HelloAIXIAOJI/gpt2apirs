@@ -461,3 +461,28 @@ async fn gallery_panel_returns_fragment_only() {
     assert!(!reply.body.contains("<html"), "局部不应带整页骨架");
     assert!(reply.body.contains("在线图片") || reply.body.contains("共 "), "{}", reply.body);
 }
+
+#[tokio::test]
+async fn backups_page_requires_session() {
+    let reply = send("GET", "/backups", None, None).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location.as_deref(), Some("/"));
+}
+
+#[tokio::test]
+async fn backups_page_lists_actions() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/backups", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("立即备份"), "{}", reply.body);
+    assert!(reply.body.contains("已有备份"), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn backups_download_rejects_path_traversal() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/backups/download/..%2F..%2Fetc%2Fpasswd", None, Some(&cookie)).await;
+    assert_ne!(reply.status, StatusCode::OK, "{}", reply.body);
+}

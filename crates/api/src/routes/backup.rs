@@ -23,8 +23,8 @@ fn data_dir() -> Result<std::path::PathBuf, ApiError> {
     gpt2apirs_core::paths::data_dir().map_err(internal)
 }
 
-/// `POST /api/backup` —— 打一个备份包。
-pub async fn create_backup(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+/// 打一个备份包，返回摘要（管理页与接口共用）。
+pub async fn create(state: &Arc<AppState>) -> Result<Value, ApiError> {
     let data = data_dir()?;
     let dir = backup::backup_dir(&data);
     std::fs::create_dir_all(&dir).map_err(internal)?;
@@ -43,13 +43,23 @@ pub async fn create_backup(State(state): State<Arc<AppState>>) -> Result<Json<Va
         .map_err(internal)?;
 
     tracing::info!(file = %file_name, bytes, accounts = bundle.accounts.len(), "创建备份");
-    Ok(Json(json!({
+    Ok(json!({
         "file": file_name,
         "bytes": bytes,
         "accounts": bundle.accounts.len(),
         "api_keys": bundle.api_keys.len(),
         "images": bundle.image_assets.len(),
-    })))
+    }))
+}
+
+/// `POST /api/backup` —— 打一个备份包。
+pub async fn create_backup(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    Ok(Json(create(&state).await?))
+}
+
+/// 备份文件名是否安全：只接受裸文件名，挡掉 `../` 与绝对路径。
+pub fn name_is_safe(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && !name.contains('\\') && !name.contains("..")
 }
 
 /// `GET /api/backups` —— 列出已有备份。
@@ -88,13 +98,13 @@ pub async fn restore(
     State(state): State<Arc<AppState>>,
     Json(request): Json<RestoreRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let name = request.file.trim();
-    // 只接受裸文件名：挡掉 ../ 与绝对路径
-    if name.is_empty()
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains("..")
-    {
+    Ok(Json(restore_file(&state, &request.file).await?))
+}
+
+/// 恢复一个备份包（管理页与接口共用）。
+pub async fn restore_file(state: &Arc<AppState>, raw_name: &str) -> Result<Value, ApiError> {
+    let name = raw_name.trim();
+    if !name_is_safe(name) {
         return Err(ApiError::admin(AppError::invalid_param(
             "file 必须是 backups 目录下的文件名",
             "file",
@@ -120,12 +130,12 @@ pub async fn restore(
         files = files_written,
         "恢复备份"
     );
-    Ok(Json(json!({
+    Ok(json!({
         "ok": true,
         "accounts_inserted": stats.accounts_inserted,
         "api_keys_inserted": stats.api_keys_inserted,
         "images_inserted": stats.images_inserted,
         "files_written": files_written,
         "settings_applied": stats.settings_applied,
-    })))
+    }))
 }
