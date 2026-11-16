@@ -60,6 +60,18 @@ pub async fn run(state: &Arc<AppState>, dry_run: bool) -> anyhow::Result<Outcome
         );
     }
 
+    // 参考图按 image_id 归组，挂到对应条目上。
+    let mut refs_by_image: std::collections::HashMap<uuid::Uuid, Vec<gpt2apirs_storage::repo::ImageReferenceRow>> =
+        std::collections::HashMap::new();
+    if let Ok(all_refs) = gpt2apirs_storage::repo::ImageReferenceRepo::new(state.db.clone())
+        .list_all()
+        .await
+    {
+        for row in all_refs {
+            refs_by_image.entry(row.image_id).or_default().push(row);
+        }
+    }
+
     let entries: Vec<ArchiveEntry> = rows
         .iter()
         .map(|row| ArchiveEntry {
@@ -71,11 +83,25 @@ pub async fn run(state: &Arc<AppState>, dry_run: bool) -> anyhow::Result<Outcome
             account_id: row.account_id,
             prompt: row.prompt.clone(),
             created_at: row.created_at,
+            references: refs_by_image
+                .get(&row.id)
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| gpt2apirs_storage::archive::ArchiveReference {
+                            ordinal: item.ordinal,
+                            rel_path: item.rel_path.clone(),
+                            mime: item.mime.clone(),
+                            bytes: item.bytes,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
         .collect();
 
     let dir = archive_dir()?;
-    let stats = archive::write_archive(&dir, &file_name, &entries, &data_dir.join("images"))?;
+    let stats = archive::write_archive(&dir, &file_name, &entries, &data_dir)?;
     archive::verify_archive(&dir.join(&file_name), stats.image_count)?;
 
     // 校验通过之后才允许删除：先删文件（缺失视为已删），再删记录。
