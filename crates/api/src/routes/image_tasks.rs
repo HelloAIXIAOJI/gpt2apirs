@@ -40,6 +40,12 @@ pub struct TaskSubmitRequest {
     /// 输出图片格式：png / jpeg / webp / gif。
     #[serde(default)]
     pub output_format: Option<String>,
+    /// GIF 帧数（仅 `output_format=gif` 时有意义）。
+    #[serde(default)]
+    pub frame_count: Option<u32>,
+    /// GIF 每帧时长（毫秒）。
+    #[serde(default)]
+    pub frame_duration_ms: Option<u32>,
     /// 结果返回格式：url（默认）/ b64_json。
     #[serde(default)]
     pub response_format: Option<String>,
@@ -69,6 +75,15 @@ pub struct TaskView {
     pub model: String,
     /// 张数。
     pub n: u32,
+    /// 输出格式（png/jpeg/webp/gif）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<String>,
+    /// GIF 帧数。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_count: Option<u32>,
+    /// GIF 帧时长（毫秒）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_duration_ms: Option<u32>,
     /// 创建时间（RFC3339）。
     pub created_at: String,
     /// 更新时间（RFC3339）。
@@ -121,6 +136,9 @@ pub fn task_view(task: &ImageTask) -> TaskView {
         prompt: task.prompt.clone(),
         model: task.model.clone(),
         n: task.n,
+        output_format: task.output_format.clone(),
+        frame_count: task.frame_count,
+        frame_duration_ms: task.frame_duration_ms,
         created_at: task.created_at.to_rfc3339(),
         updated_at: task.updated_at.to_rfc3339(),
         finished_at: task.finished_at.map(|t| t.to_rfc3339()),
@@ -208,6 +226,9 @@ pub async fn submit(
     image_request.upstream_model =
         gpt2apirs_generate::models::upstream_model_for(&requested_model).to_string();
     image_request.output_format = output_format;
+    // 帧参数只在 GIF 时生效，与同步接口保持一致。
+    image_request.frame_count = body.frame_count;
+    image_request.frame_duration_ms = body.frame_duration_ms;
     image_request.size = crate::routes::image_common::checked_size(body.size.as_deref())?;
     image_request.quality = crate::routes::image_common::checked_quality(body.quality.as_deref())?;
 
@@ -220,6 +241,9 @@ pub async fn submit(
         model: requested_model,
         n,
         response_format,
+        output_format: image_request.output_format.map(|format| format.label().to_string()),
+        frame_count: image_request.frame_count,
+        frame_duration_ms: image_request.frame_duration_ms,
         base_url,
         created_at: now,
         updated_at: now,
@@ -250,6 +274,12 @@ pub async fn submit_edit(
         model: prepared_edit.request.model.clone(),
         n: prepared_edit.request.n,
         response_format: prepared_edit.response_format.clone(),
+        output_format: prepared_edit
+            .request
+            .output_format
+            .map(|format| format.label().to_string()),
+        frame_count: prepared_edit.request.frame_count,
+        frame_duration_ms: prepared_edit.request.frame_duration_ms,
         base_url: prepared_edit.base_url.clone(),
         created_at: now,
         updated_at: now,
