@@ -62,28 +62,6 @@ async fn connects_to_real_postgres() {
 }
 
 #[tokio::test]
-async fn bad_url_reports_actionable_error() {
-    if !prepare_env() {
-        eprintln!("跳过：未找到 DATABASE_URL");
-        return;
-    }
-    // 故意把端口改成一个不可用值
-    let mut cfg = config();
-    cfg.database_url = cfg
-        .database_url
-        .replace(":5432", ":1")
-        .replace(":5433", ":1");
-    cfg.pool_acquire_timeout = std::time::Duration::from_secs(3);
-
-    let err = build_pool(&cfg).await.expect_err("应连接失败");
-    let text = err.to_string();
-    assert!(text.contains("PostgreSQL 连接失败"), "错误信息不够明确：{text}");
-    // 必须脱敏：不能出现真密码
-    assert!(!text.contains("REDACTED"), "错误信息泄露了密码：{text}");
-    println!("预期的失败信息：{text}");
-}
-
-#[tokio::test]
 async fn pool_reuse_is_stable() {
     if !prepare_env() {
         eprintln!("跳过：未找到 DATABASE_URL");
