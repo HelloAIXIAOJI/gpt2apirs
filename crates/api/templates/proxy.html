@@ -1,0 +1,80 @@
+{% extends "shell.html" %}
+{% block title %}代理 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>代理</h1></header>
+
+<section class="panel">
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
+  {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+
+  <div class="stat-grid stat-grid--four">
+    <article class="stat">
+      <span class="stat-label">代理进程</span>
+      <span class="stat-value">{% if running %}<span class="badge badge--ok">运行中</span>{% else %}<span class="badge">未运行</span>{% endif %}</span>
+      <span class="stat-sub">{% if !proxy_url.is_empty() %}{{ proxy_url }}{% else %}全部上游请求直连{% endif %}</span>
+    </article>
+    <article class="stat">
+      <span class="stat-label">当前出口</span>
+      <span class="stat-value">{% if !selected.is_empty() %}{{ selected }}{% else %}自动{% endif %}</span>
+      <span class="stat-sub">切节点立即生效，新请求走新出口</span>
+    </article>
+    <article class="stat">
+      <span class="stat-label">节点数</span>
+      <span class="stat-value">{{ node_count }}</span>
+      <span class="stat-sub">{% if !skipped.is_empty() %}跳过 {{ skipped.len() }} 个{% else %}无跳过{% endif %}</span>
+    </article>
+  </div>
+
+  {% if !last_error.is_empty() %}
+  <p class="stat-error">最近错误：{{ last_error }}</p>
+  {% endif %}
+  {% if !skipped.is_empty() %}
+  <details class="muted">
+    <summary>被跳过的节点（{{ skipped.len() }}）</summary>
+    <ul>{% for item in skipped %}<li>{{ item }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+
+  <h2 class="section-title">订阅</h2>
+  <form class="stack-form" method="post" action="/proxy/start">
+    <label for="url">订阅地址</label>
+    <input id="url" name="url" type="text" value="{{ subscription_url }}" placeholder="https://…" autocomplete="off">
+    <div class="batch-bar">
+      <button class="btn" type="submit">启动 / 重新拉取订阅</button>
+    </div>
+  </form>
+  <form method="post" action="/proxy/stop" class="inline-form">
+    <button class="btn btn--ghost" type="submit" onclick="return confirm('停止后所有上游请求走直连，确定？')">停止代理</button>
+  </form>
+
+  <h2 class="section-title">节点</h2>
+  {% if nodes.is_empty() %}
+  <p class="empty">还没有节点：先启动一次订阅。</p>
+  {% else %}
+  <form method="post" action="/proxy/probe" class="inline-form">
+    <button class="btn btn--ghost" type="submit">全部测速{% if probed %}（已测）{% endif %}</button>
+  </form>
+  <table class="table">
+    <thead><tr><th>节点</th><th>协议</th><th>地址</th><th>延迟</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for node in nodes %}
+      <tr>
+        <td>{{ node.name }}{% if node.current %} <span class="badge badge--ok">当前</span>{% endif %}</td>
+        <td>{{ node.kind }}</td>
+        <td class="path">{{ node.endpoint }}</td>
+        <td class="num">{{ node.delay }}</td>
+        <td>
+          {% if !node.current %}
+          <form method="post" action="/proxy/select" class="inline-form">
+            <input type="hidden" name="name" value="{{ node.name }}">
+            <button class="btn btn--ghost" type="submit">切换到此</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

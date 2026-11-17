@@ -21,6 +21,7 @@ use crate::state::AppState;
 pub mod accounts;
 pub mod backups;
 pub mod gallery;
+pub mod proxy;
 pub mod tasks;
 pub mod keys;
 pub mod toast;
@@ -345,7 +346,8 @@ mod tests {
         ] {
             assert!(html.contains(expected), "缺少 {expected}：{html}");
         }
-        assert!(html.contains("is-disabled"), "未建页面应显示为禁用项：{html}");
+        // 侧栏所有页面都已建成：不应再出现禁用项（新增未建页面时这条会提醒恢复断言）。
+        assert!(!html.contains("is-disabled"), "页面已全部就绪，侧栏不应有禁用项：{html}");
     }
 
     #[test]
