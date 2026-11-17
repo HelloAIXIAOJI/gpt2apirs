@@ -79,7 +79,7 @@ fn generates_caches_and_removes() {
     assert!(first.is_file(), "缩略图应落盘");
     let thumb_rel = gpt2apirs_api::thumbnails::thumb_rel(&rel).expect("路径");
     assert!(thumb_rel.starts_with("thumbnails/images/"), "{thumb_rel}");
-    assert!(thumb_rel.ends_with(".jpg"), "{thumb_rel}");
+    assert!(thumb_rel.ends_with(".webp"), "{thumb_rel}");
 
     // 长边压到 480，宽高比保持 3:2
     let decoded = image::open(&first).expect("解码缩略图");
@@ -154,7 +154,7 @@ async fn route_serves_jpeg_thumbnail() {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_string();
-    assert_eq!(content_type, "image/jpeg");
+    assert_eq!(content_type, "image/webp");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

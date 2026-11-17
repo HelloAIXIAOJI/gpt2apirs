@@ -9,8 +9,8 @@ use anyhow::Context;
 
 /// 长边上限（像素）。
 pub const MAX_EDGE: u32 = 480;
-/// JPEG 质量。
-const QUALITY: u8 = 80;
+/// WebP 质量（0-100）。
+const QUALITY: f32 = 80.0;
 
 /// 缩略图缓存目录。
 pub fn dir() -> anyhow::Result<PathBuf> {
@@ -23,7 +23,7 @@ pub fn thumb_rel(rel_path: &str) -> Option<String> {
     if normalized.is_empty() || normalized.contains("..") || !normalized.starts_with("images/") {
         return None;
     }
-    let stem = Path::new(&normalized).with_extension("jpg");
+    let stem = Path::new(&normalized).with_extension("webp");
     Some(format!("thumbnails/{}", stem.display()))
 }
 
@@ -52,15 +52,12 @@ pub fn ensure_in(root: &Path, rel_path: &str) -> anyhow::Result<Option<PathBuf>>
     let bytes = std::fs::read(&source).context("读原图失败")?;
     let image = image::load_from_memory(&bytes).context("解码原图失败")?;
     let scaled = image.thumbnail(MAX_EDGE, MAX_EDGE);
-    // 统一成 JPEG：透明区域铺白，避免变成黑底。
-    let rgb = scaled.to_rgb8();
-    let temp = thumb.with_extension("jpg.part");
-    let mut out = std::fs::File::create(&temp).context("建临时文件失败")?;
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, QUALITY);
-    encoder
-        .encode_image(&image::DynamicImage::ImageRgb8(rgb))
-        .context("编码缩略图失败")?;
-    drop(out);
+    // WebP 支持透明通道，直接按 RGBA 编码，不用铺底色。
+    let rgba = scaled.to_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+    let encoded = webp::Encoder::from_rgba(rgba.as_raw(), width, height).encode(QUALITY);
+    let temp = thumb.with_extension("webp.part");
+    std::fs::write(&temp, &*encoded).context("写缩略图失败")?;
     std::fs::rename(&temp, &thumb).context("重命名缩略图失败")?;
     Ok(Some(thumb))
 }

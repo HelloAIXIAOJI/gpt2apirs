@@ -147,7 +147,7 @@ pub async fn serve_thumbnail(AxumPath(path): AxumPath<String>) -> Response {
     match tokio::fs::read(&thumb).await {
         Ok(bytes) => (
             [
-                (header::CONTENT_TYPE, "image/jpeg".to_string()),
+                (header::CONTENT_TYPE, "image/webp".to_string()),
                 (header::CACHE_CONTROL, "private, max-age=600".to_string()),
             ],
             bytes,
