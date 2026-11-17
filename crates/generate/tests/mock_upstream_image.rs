@@ -85,7 +85,12 @@ async fn image_pipeline_runs_against_local_mock() {
     );
 
     let image = &result.images[0];
-    assert!(!image.bytes.is_empty(), "落盘字节数应大于 0：{image:?}");
+    // 默认不保留字节（url 模式白占内存），但 size 必须准确、文件必须真的写下去。
+    assert!(image.size > 0, "落盘字节数应大于 0：{image:?}");
+    assert!(
+        image.bytes.is_empty(),
+        "没声明 keep_bytes 时不该把字节留在内存里：{image:?}"
+    );
     assert!(image.width > 0 && image.height > 0, "应读到图片尺寸：{image:?}");
     assert_eq!(image.mime, "image/png", "{image:?}");
     // rel_path 是相对**数据目录**的（形如 images/2026/11/13/xxx.png）
@@ -93,6 +98,8 @@ async fn image_pipeline_runs_against_local_mock() {
         .expect("数据目录")
         .join(&image.rel_path);
     assert!(saved.exists(), "文件应真的存在：{}", saved.display());
+    let on_disk = std::fs::metadata(&saved).expect("读元数据").len();
+    assert_eq!(on_disk as usize, image.size, "落盘大小应与 size 一致");
 
     // 七个阶段都得真的走到
     assert_eq!(diag.bootstrap_status, 200);
