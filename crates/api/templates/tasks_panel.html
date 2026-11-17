@@ -6,7 +6,7 @@
   <p class="empty">当前没有任务。</p>
   {% else %}
   <table class="table">
-    <thead><tr><th>状态</th><th>提示词</th><th>模型</th><th>张数</th><th>创建</th><th>耗时</th><th>结果</th><th>操作</th></tr></thead>
+    <thead><tr><th>状态</th><th>提示词</th><th>模型</th><th>张数</th><th>阶段</th><th>创建</th><th>耗时</th><th>用量(入/出/总)</th><th>结果</th><th>操作</th></tr></thead>
     <tbody>
       {% for row in rows %}
       <tr>
@@ -14,8 +14,10 @@
         <td class="prompt-cell">{{ row.prompt }}{% if !row.error.is_empty() %}<div class="stat-error">{{ row.error }}</div>{% endif %}</td>
         <td>{{ row.model }}</td>
         <td class="num">{{ row.n }}</td>
+        <td>{{ row.progress }}</td>
         <td class="num">{{ row.created_at }}</td>
         <td class="num">{{ row.duration }}</td>
+        <td class="num">{{ row.tokens }}</td>
         <td class="task-thumbs">
           {% for image in row.images %}
           <a class="task-thumb" href="{{ image.url }}" target="_blank" rel="noreferrer"><img src="{{ image.url }}" alt="" loading="lazy"></a>

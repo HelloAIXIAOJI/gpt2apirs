@@ -92,6 +92,13 @@ pub struct TaskView {
     /// 失败原因。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// 当前阶段。
+    pub progress: String,
+    /// 耗时（毫秒）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    /// token 用量。
+    pub usage: serde_json::Value,
     /// 结果。
     pub data: Vec<TaskDatum>,
 }
@@ -141,6 +148,13 @@ pub fn task_view(task: &ImageTask) -> TaskView {
         updated_at: task.updated_at.to_rfc3339(),
         finished_at: task.finished_at.map(|t| t.to_rfc3339()),
         error: task.error.clone(),
+        progress: task.progress.clone(),
+        duration_ms: task.duration_ms,
+        usage: serde_json::json!({
+            "input_tokens": task.input_tokens,
+            "output_tokens": task.output_tokens,
+            "total_tokens": task.input_tokens + task.output_tokens,
+        }),
         data,
     }
 }
@@ -249,9 +263,13 @@ pub async fn submit(
         finished_at: None,
         images: Vec::new(),
         error: None,
+        progress: "排队中".to_string(),
+        duration_ms: None,
+        input_tokens: 0,
+        output_tokens: 0,
     };
     let view = task_view(&task);
-    crate::image_tasks::submit(state, task, image_request, key);
+    crate::image_tasks::submit(state, task, image_request, key).await;
     Ok(Json(view))
 }
 
@@ -285,6 +303,10 @@ pub async fn submit_edit(
         finished_at: None,
         images: Vec::new(),
         error: None,
+        progress: "排队中".to_string(),
+        duration_ms: None,
+        input_tokens: 0,
+        output_tokens: 0,
     };
     let view = task_view(&task);
     crate::image_tasks::submit_edit(
@@ -292,8 +314,10 @@ pub async fn submit_edit(
         task,
         prepared_edit.request,
         prepared_edit.prepared,
+        prepared_edit.input_image_tokens,
         key,
-    );
+    )
+    .await;
     Ok(Json(view))
 }
 

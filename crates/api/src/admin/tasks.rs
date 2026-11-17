@@ -32,6 +32,8 @@ pub struct TaskRow {
     n: String,
     created_at: String,
     duration: String,
+    progress: String,
+    tokens: String,
     error: String,
     images: Vec<ResultThumb>,
 }
@@ -145,6 +147,13 @@ fn load(state: &AppState) -> (Vec<TaskRow>, usize) {
                 n: task.n.to_string(),
                 created_at: task.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
                 duration,
+                progress: task.progress.clone(),
+                tokens: format!(
+                    "{} / {} / {}",
+                    task.input_tokens,
+                    task.output_tokens,
+                    task.input_tokens + task.output_tokens
+                ),
                 error: task.error.clone().unwrap_or_default(),
                 images: task
                     .images

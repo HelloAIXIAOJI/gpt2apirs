@@ -89,6 +89,14 @@ pub struct ImageTask {
     pub images: Vec<TaskImage>,
     /// 失败原因（对外文案）。
     pub error: Option<String>,
+    /// 当前阶段（排队中 / 生成中 / 已完成 / 已中断）。
+    pub progress: String,
+    /// 耗时（毫秒，完成时结算）。
+    pub duration_ms: Option<i64>,
+    /// 参考图折算的输入 token。
+    pub input_tokens: i64,
+    /// 生成图片折算的输出 token。
+    pub output_tokens: i64,
 }
 
 struct Inner {
@@ -204,6 +212,14 @@ impl ImageTaskStore {
         removed
     }
 
+    /// 启动时把库里的任务灌进内存（重启后历史仍可见）。
+    pub fn hydrate(&self, task: ImageTask) {
+        let mut inner = self.lock();
+        inner.order.push_back(task.id);
+        inner.tasks.insert(task.id, task);
+        Self::evict_locked(&mut inner, self.capacity, self.retention, Utc::now());
+    }
+
     /// 置为运行中；任务已被删除或不是 queued 则返回 false。
     pub fn mark_running(&self, id: Uuid) -> bool {
         let mut inner = self.lock();
@@ -214,57 +230,182 @@ impl ImageTaskStore {
             return false;
         }
         task.status = TaskStatus::Running;
+        task.progress = "生成中".to_string();
         task.updated_at = Utc::now();
         true
     }
 
-    /// 写入终态；任务已被删除则返回 false（结果被丢弃）。
-    pub fn finish(&self, id: Uuid, outcome: Result<Vec<TaskImage>, String>) -> bool {
+    /// 更新阶段文案（任务已被删除则忽略）。
+    pub fn set_progress(&self, id: Uuid, progress: &str) {
         let mut inner = self.lock();
-        let Some(task) = inner.tasks.get_mut(&id) else {
-            return false;
-        };
+        if let Some(task) = inner.tasks.get_mut(&id) {
+            task.progress = progress.to_string();
+            task.updated_at = Utc::now();
+        }
+    }
+
+    /// 写入终态；任务已被删除则返回 `None`（结果被丢弃）。
+    ///
+    /// 返回结算后的快照，调用方拿它落库（耗时、token 都在里面）。
+    pub fn finish(
+        &self,
+        id: Uuid,
+        outcome: Result<Vec<TaskImage>, String>,
+        input_tokens: i64,
+        output_tokens: i64,
+    ) -> Option<ImageTask> {
+        let mut inner = self.lock();
+        let task = inner.tasks.get_mut(&id)?;
         let now = Utc::now();
         task.updated_at = now;
         task.finished_at = Some(now);
+        task.duration_ms = Some((now - task.created_at).num_milliseconds().max(0));
+        task.input_tokens = input_tokens;
+        task.output_tokens = output_tokens;
         match outcome {
             Ok(images) => {
                 task.status = TaskStatus::Succeeded;
+                task.progress = "已完成".to_string();
                 task.images = images;
             }
             Err(message) => {
                 task.status = TaskStatus::Failed;
+                task.progress = "已失败".to_string();
                 task.error = Some(message);
             }
         }
-        true
+        Some(task.clone())
+    }
+}
+
+/// 库里的行还原成内存任务（重启后把历史灌回来）。
+pub fn task_from_row(row: &gpt2apirs_storage::repo::ImageTaskRow) -> ImageTask {
+    let status = match row.status.as_str() {
+        "queued" => TaskStatus::Queued,
+        "running" => TaskStatus::Running,
+        "succeeded" => TaskStatus::Succeeded,
+        _ => TaskStatus::Failed,
+    };
+    let images: Vec<gpt2apirs_storage::repo::TaskImageRow> =
+        serde_json::from_value(row.images.clone()).unwrap_or_default();
+    ImageTask {
+        id: row.id,
+        status,
+        prompt: row.prompt.clone(),
+        model: row.model.clone(),
+        n: row.n.max(1) as u32,
+        response_format: row.response_format.clone(),
+        output_format: row.output_format.clone(),
+        frame_count: row.frame_count.map(|value| value as u32),
+        frame_duration_ms: row.frame_duration_ms.map(|value| value as u32),
+        base_url: row.base_url.clone(),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        finished_at: row.finished_at,
+        images: images
+            .into_iter()
+            .map(|image| TaskImage {
+                mime: leak_mime(&image.mime),
+                rel_path: image.rel_path,
+                width: image.width.max(0) as u32,
+                height: image.height.max(0) as u32,
+            })
+            .collect(),
+        error: row.error.clone(),
+        progress: row.progress.clone().unwrap_or_else(|| "未知".to_string()),
+        duration_ms: row.duration_ms,
+        input_tokens: row.input_tokens.unwrap_or(0),
+        output_tokens: row.output_tokens.unwrap_or(0),
+    }
+}
+
+/// 任务结果里的 mime 是 `&'static str`；库里读出来是 String，这里归一化。
+fn leak_mime(raw: &str) -> &'static str {
+    match raw {
+        "image/png" => "image/png",
+        "image/jpeg" => "image/jpeg",
+        "image/webp" => "image/webp",
+        "image/gif" => "image/gif",
+        _ => "image/png",
+    }
+}
+
+/// 任务落库（失败只记日志：数据库抖一下不该让任务本身失败）。
+async fn persist_new(state: &Arc<AppState>, task: &ImageTask) {
+    let repo = gpt2apirs_storage::repo::ImageTaskRepo::new(state.db.clone());
+    let record = gpt2apirs_storage::repo::NewImageTask {
+        id: task.id,
+        prompt: task.prompt.clone(),
+        model: task.model.clone(),
+        n: task.n as i32,
+        response_format: task.response_format.clone(),
+        output_format: task.output_format.clone(),
+        frame_count: task.frame_count.map(|value| value as i32),
+        frame_duration_ms: task.frame_duration_ms.map(|value| value as i32),
+        base_url: task.base_url.clone(),
+    };
+    if let Err(error) = repo.insert(&record).await {
+        tracing::warn!(%error, id = %task.id, "任务落库失败");
+    }
+}
+
+/// 结算落库：进度、耗时、token、结果一起写回。
+async fn persist_finish(state: &Arc<AppState>, task: &ImageTask) {
+    let repo = gpt2apirs_storage::repo::ImageTaskRepo::new(state.db.clone());
+    let images: Vec<gpt2apirs_storage::repo::TaskImageRow> = task
+        .images
+        .iter()
+        .map(|image| gpt2apirs_storage::repo::TaskImageRow {
+            rel_path: image.rel_path.clone(),
+            mime: image.mime.to_string(),
+            width: image.width as i32,
+            height: image.height as i32,
+        })
+        .collect();
+    let succeeded = task.status == TaskStatus::Succeeded;
+    if let Err(error) = repo
+        .finish(
+            task.id,
+            succeeded,
+            &images,
+            task.error.as_deref(),
+            task.duration_ms.unwrap_or_default(),
+            task.input_tokens,
+            task.output_tokens,
+        )
+        .await
+    {
+        tracing::warn!(%error, id = %task.id, "任务结算落库失败");
     }
 }
 
 /// 提交任务并起后台执行，返回任务 id。
-pub fn submit(
+pub async fn submit(
     state: Arc<AppState>,
     task: ImageTask,
     request: gpt2apirs_generate::ImageRequest,
     key: Option<crate::auth::ApiKeyIdentity>,
 ) -> Uuid {
     let id = task.id;
-    state.image_tasks.insert(task);
+    state.image_tasks.insert(task.clone());
+    persist_new(&state, &task).await;
     tokio::spawn(run(state, id, request, key));
     id
 }
 
 /// 提交图生图任务并起后台执行（参考图字节随任务一起带去）。
-pub fn submit_edit(
+pub async fn submit_edit(
     state: Arc<AppState>,
     task: ImageTask,
     request: gpt2apirs_generate::ImageRequest,
     prepared: Vec<(Vec<u8>, String)>,
+    input_tokens: i64,
     key: Option<crate::auth::ApiKeyIdentity>,
 ) -> Uuid {
     let id = task.id;
-    state.image_tasks.insert(task);
-    tokio::spawn(run_edit(state, id, request, prepared, key));
+    state.image_tasks.insert(task.clone());
+    persist_new(&state, &task).await;
+    tokio::spawn(run_edit(state, id, request, prepared, input_tokens, key));
     id
 }
 
@@ -273,6 +414,7 @@ async fn run_edit(
     id: Uuid,
     request: gpt2apirs_generate::ImageRequest,
     prepared: Vec<(Vec<u8>, String)>,
+    input_tokens: i64,
     key: Option<crate::auth::ApiKeyIdentity>,
 ) {
     let store = state.image_tasks.clone();
@@ -285,7 +427,9 @@ async fn run_edit(
     let prompt = request.prompt.clone();
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
     if let Err(error) = crate::routes::image_flow::ensure_disk_space() {
-        store.finish(id, Err(error.error.message()));
+        if let Some(task) = store.finish(id, Err(error.error.message()), 0, 0) {
+            persist_finish(&state, &task).await;
+        }
         return;
     }
     match crate::routes::image_flow::run_edit(&state, request, prepared.clone(), deadline).await {
@@ -311,10 +455,24 @@ async fn run_edit(
                     height: image.height,
                 })
                 .collect();
-            store.finish(id, Ok(images));
+            let output_tokens: i64 = images
+                .iter()
+                .map(|image| {
+                    gpt2apirs_core::tokens::count_generated_image_tokens(
+                        image.width,
+                        image.height,
+                        "auto",
+                    )
+                })
+                .sum();
+            if let Some(task) = store.finish(id, Ok(images), input_tokens, output_tokens) {
+                persist_finish(&state, &task).await;
+            }
         }
         Err(error) => {
-            store.finish(id, Err(error.error.message()));
+            if let Some(task) = store.finish(id, Err(error.error.message()), input_tokens, 0) {
+                persist_finish(&state, &task).await;
+            }
         }
     }
 }
@@ -334,6 +492,10 @@ async fn run(
         return;
     }
     let prompt = request.prompt.clone();
+    let quality = request
+        .quality
+        .clone()
+        .unwrap_or_else(|| "auto".to_string());
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
     let outcome = match crate::routes::image_flow::run_generation(&state, request, deadline).await {
         Ok(slots) => {
@@ -357,7 +519,22 @@ async fn run(
         }
         Err(error) => Err(error.error.message()),
     };
-    store.finish(id, outcome);
+    let output_tokens: i64 = match &outcome {
+        Ok(images) => images
+            .iter()
+            .map(|image| {
+                gpt2apirs_core::tokens::count_generated_image_tokens(
+                    image.width,
+                    image.height,
+                    &quality,
+                )
+            })
+            .sum(),
+        Err(_) => 0,
+    };
+    if let Some(finished) = store.finish(id, outcome, 0, output_tokens) {
+        persist_finish(&state, &finished).await;
+    }
     drop(permit);
 }
 
@@ -383,6 +560,10 @@ mod tests {
             finished_at: None,
             images: Vec::new(),
             error: None,
+            progress: "排队中".to_string(),
+            duration_ms: None,
+            input_tokens: 0,
+            output_tokens: 0,
         }
     }
 
@@ -401,7 +582,7 @@ mod tests {
             width: 1,
             height: 1,
         }];
-        assert!(store.finish(id, Ok(images)));
+        assert!(store.finish(id, Ok(images), 0, 0).is_some());
         let done = store.get(id).unwrap();
         assert_eq!(done.status, TaskStatus::Succeeded);
         assert_eq!(done.images.len(), 1);
@@ -415,7 +596,7 @@ mod tests {
         let id = t.id;
         store.insert(t);
         assert!(store.mark_running(id));
-        assert!(store.finish(id, Err("上游超时".to_string())));
+        assert!(store.finish(id, Err("上游超时".to_string()), 0, 0).is_some());
         let done = store.get(id).unwrap();
         assert_eq!(done.status, TaskStatus::Failed);
         assert_eq!(done.error.as_deref(), Some("上游超时"));
@@ -430,7 +611,7 @@ mod tests {
         assert!(store.delete(id));
         assert!(store.get(id).is_none());
         // 删除后 finish 应是 no-op
-        assert!(!store.finish(id, Ok(Vec::new())));
+        assert!(store.finish(id, Ok(Vec::new()), 0, 0).is_none(), "任务已删掉，结果应被丢弃");
         // 重复删除返回 false
         assert!(!store.delete(id));
     }
@@ -474,7 +655,7 @@ mod tests {
         let id_first = first.id;
         store.insert(first);
         store.mark_running(id_first);
-        store.finish(id_first, Ok(Vec::new()));
+        store.finish(id_first, Ok(Vec::new()), 0, 0);
         store.insert(task());
         // 第三个触发淘汰最老终态
         store.insert(task());
