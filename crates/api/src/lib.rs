@@ -11,6 +11,7 @@ pub mod clearance;
 pub mod error;
 pub mod image_archive;
 pub mod image_response;
+pub mod images_download;
 pub mod image_tasks;
 pub mod admin;
 pub mod login_throttle;
@@ -234,6 +235,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(system::health))
         .route("/health/ready", get(system::ready))
         .route("/version", get(system::version))
+        .route("/images/download", get(admin::gallery::download_all))
         .route("/images/{*path}", get(static_files::serve_image))
         .route("/image-thumbnails/{*path}", get(static_files::serve_thumbnail));
 

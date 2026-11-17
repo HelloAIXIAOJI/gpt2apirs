@@ -1,6 +1,7 @@
 {% if data.tab == "browse" %}
 <div class="panel-head">
   <span class="muted">共 {{ data.count }} 张 · {{ data.bytes }} · 第 {{ data.page }} / {{ data.pages }} 页</span>
+  <a class="btn btn--ghost" href="/images/download">打包下载</a>
 </div>
 {% if !data.error.is_empty() %}<p class="stat-error">{{ data.error }}</p>{% endif %}
 

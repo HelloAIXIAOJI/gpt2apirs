@@ -135,6 +135,59 @@ pub async fn index(
     })
 }
 
+/// `GET /images/download` —— 把在线图片打包成 tar.gz 流式下载。
+pub async fn download_all(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let repo = ImageAssetRepo::new(state.db.clone());
+    // 仓储单次最多 200 条，这里分页取全量，别把大库静默截断。
+    let mut rows = Vec::new();
+    let mut offset = 0i64;
+    loop {
+        match repo
+            .list(&ImageAssetQuery {
+                account_id: None,
+                since: None,
+                limit: 200,
+                offset,
+            })
+            .await
+        {
+            Ok(batch) => {
+                let count = batch.len() as i64;
+                rows.extend(batch);
+                if count < 200 {
+                    break;
+                }
+                offset += 200;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "读取图片列表失败");
+                break;
+            }
+        }
+    }
+    let Ok(root) = gpt2apirs_core::paths::data_dir() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "定位数据目录失败").into_response();
+    };
+    let items: Vec<(String, std::path::PathBuf)> = rows
+        .iter()
+        .map(|row| {
+            let absolute = root.join(row.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            (row.rel_path.clone(), absolute)
+        })
+        .collect();
+    let file_name = format!(
+        "images-{}.tar.gz",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S")
+    );
+    crate::images_download::tar_gz_stream(file_name, items)
+}
+
 /// `GET /gallery/panel` —— 只回面板内容，供标签与翻页局部刷新。
 pub async fn panel(
     State(state): State<Arc<AppState>>,
