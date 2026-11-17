@@ -29,6 +29,24 @@ pub struct NodeView {
     pub port: u16,
 }
 
+/// 默认探测目标：空设置会让控制接口报 `invalid delay test query`，所以必须有兜底。
+pub const DEFAULT_PROBE_URL: &str = "https://www.gstatic.com/generate_204";
+
+/// 取探测目标：设置优先，空或没有 scheme 时回落到默认值。
+pub fn probe_url_from(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        DEFAULT_PROBE_URL.to_string()
+    }
+}
+
+/// 测速并发：节点多就多开几条，避免几十个节点串成几十秒。
+pub fn probe_concurrency(node_count: usize) -> usize {
+    (node_count / 4).clamp(6, 24)
+}
+
 /// 测试结果。
 #[derive(Debug, Clone, Serialize)]
 pub struct ProbeView {
@@ -116,33 +134,56 @@ impl ProxyService {
             .collect()
     }
 
-    /// 拉订阅并启动代理核；返回状态视图。
-    pub async fn start(
+    /// 拉订阅、更新节点表；代理已在跑就用新节点重建，没跑就只缓存节点。
+    ///
+    /// 与「启动」分开：拉取失败不影响正在用的出口，也不阻止用已缓存节点启动。
+    pub async fn refresh(
         self: &Arc<Self>,
         subscription_url: &str,
         selected: Option<&str>,
     ) -> anyhow::Result<StatusView> {
-        // 先拉订阅并解析，成功之后再停旧实例：拉取失败时不能把正在用的出口拆掉。
-        // 服务商对订阅拉取有频率限制，60 秒内重复拉会被 403，先自己挡住。
-        {
-            let guard = self.lock();
-            if let Some(last) = guard.last_fetch {
-                let elapsed = last.elapsed();
-                if elapsed < std::time::Duration::from_secs(60) {
-                    anyhow::bail!(
-                        "距上次拉取订阅只有 {} 秒，服务商可能限流；请 {} 秒后再试",
-                        elapsed.as_secs(),
-                        60 - elapsed.as_secs()
-                    );
-                }
-            }
-        }
         let text = fetch_subscription(subscription_url).await?;
-        self.lock().last_fetch = Some(std::time::Instant::now());
         let parsed = subscription::parse(&text).map_err(|error| anyhow::anyhow!(error))?;
         if parsed.nodes.is_empty() {
             anyhow::bail!("订阅里没有可用节点");
         }
+        {
+            let mut guard = self.lock();
+            guard.nodes = parsed
+                .nodes
+                .into_iter()
+                .enumerate()
+                .map(|(index, node)| (format!("n{index}"), node))
+                .collect();
+            guard.skipped = parsed.skipped;
+            guard.last_fetch = Some(std::time::Instant::now());
+            guard.last_error = None;
+        }
+        if self.status().running {
+            self.restart_with_cached(selected)?;
+        }
+        Ok(self.status())
+    }
+
+    /// 用已缓存的节点启动代理核；没有节点则报错，让调用方先去刷新订阅。
+    pub fn start_cached(self: &Arc<Self>, selected: Option<&str>) -> anyhow::Result<StatusView> {
+        if self.lock().nodes.is_empty() {
+            anyhow::bail!("还没有节点：先刷新订阅，再用缓存启动");
+        }
+        self.restart_with_cached(selected)?;
+        Ok(self.status())
+    }
+
+    /// 用当前节点表重建配置并重启代理核（不动节点表本身）。
+    fn restart_with_cached(self: &Arc<Self>, selected: Option<&str>) -> anyhow::Result<()> {
+        let nodes = {
+            let guard = self.lock();
+            guard
+                .nodes
+                .iter()
+                .map(|(_, node)| node.clone())
+                .collect::<Vec<_>>()
+        };
         self.stop();
 
         let dir = self.data_dir.lock().map(|guard| guard.clone()).unwrap_or_default();
@@ -155,7 +196,7 @@ impl ProxyService {
             group: "outbound".to_string(),
             selected: selected.map(str::to_string),
         };
-        std::fs::write(&path, config::render(&parsed.nodes, &layout))?;
+        std::fs::write(&path, config::render(&nodes, &layout))?;
 
         let listen = format!("127.0.0.1:{LISTEN_PORT}")
             .parse()
@@ -163,23 +204,14 @@ impl ProxyService {
         let core = Core::start(path, listen)?;
         let control = Arc::new(control::Control::new(API_PORT, &secret()?)?);
 
-        {
-            let mut guard = self.lock();
-            guard.core = Some(core);
-            guard.control = Some(control);
-            guard.nodes = parsed
-                .nodes
-                .into_iter()
-                .enumerate()
-                .map(|(index, node)| (format!("n{index}"), node))
-                .collect();
-            guard.skipped = parsed.skipped;
-            guard.selected = selected
-                .filter(|name| !name.trim().is_empty())
-                .map(str::to_string);
-            guard.last_error = None;
-        }
-        Ok(self.status())
+        let mut guard = self.lock();
+        guard.core = Some(core);
+        guard.control = Some(control);
+        guard.selected = selected
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_string);
+        guard.last_error = None;
+        Ok(())
     }
 
     /// 停止代理核。
@@ -313,4 +345,37 @@ async fn fetch_subscription(url: &str) -> anyhow::Result<String> {
         anyhow::bail!("订阅返回 {}：{}", response.status, response.body);
     }
     Ok(response.body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_url_falls_back_when_empty_or_malformed() {
+        assert_eq!(probe_url_from(""), DEFAULT_PROBE_URL);
+        assert_eq!(probe_url_from("   "), DEFAULT_PROBE_URL);
+        assert_eq!(probe_url_from("www.example.com"), DEFAULT_PROBE_URL);
+        assert_eq!(
+            probe_url_from("https://example.com/204"),
+            "https://example.com/204"
+        );
+    }
+
+    #[test]
+    fn probe_concurrency_bounds() {
+        assert_eq!(probe_concurrency(0), 6, "没有节点也至少 6");
+        assert_eq!(probe_concurrency(8), 6);
+        assert_eq!(probe_concurrency(44), 11);
+        assert_eq!(probe_concurrency(400), 24, "上限 24");
+    }
+
+    #[test]
+    fn start_cached_without_nodes_explains_what_to_do() {
+        let dir = std::env::temp_dir().join(format!("gpt2apirs-proxy-{}", std::process::id()));
+        let service = std::sync::Arc::new(ProxyService::new(dir));
+        let error = service.start_cached(None).expect_err("没有节点应报错");
+        let message = error.to_string();
+        assert!(message.contains("先刷新订阅"), "{message}");
+    }
 }
