@@ -177,6 +177,25 @@ async fn run() -> Result<()> {
         oauth,
         api_keys,
     ));
+    // 异步任务：上次进程留下的未完成任务标失败，最近历史灌回内存供页面查看。
+    {
+        let repo = gpt2apirs_storage::repo::ImageTaskRepo::new(state.db.clone());
+        match repo.fail_unfinished("服务重启，任务中断").await {
+            Ok(0) => {}
+            Ok(count) => tracing::warn!(count, "启动时把中断的任务标为失败"),
+            Err(error) => tracing::warn!(%error, "启动恢复任务状态失败"),
+        }
+        match repo.list_recent(200).await {
+            Ok(rows) => {
+                for row in &rows {
+                    state.image_tasks.hydrate(gpt2apirs_api::image_tasks::task_from_row(row));
+                }
+                tracing::info!(count = rows.len(), "已载入历史任务");
+            }
+            Err(error) => tracing::warn!(%error, "载入历史任务失败"),
+        }
+    }
+
     // 订阅代理：设置里启用过就按保存的地址起一次；失败只记日志，不影响主服务。
     if let Err(error) = gpt2apirs_api::routes::proxy::start_from_settings(&state).await {
         tracing::warn!(%error, "订阅代理启动失败");
