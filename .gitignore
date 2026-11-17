@@ -7,8 +7,9 @@
 *.db-shm
 *.db-wal
 
-# 密钥与本地配置
-.env
+# 密钥与本地配置：任何 .env 变体（含 .env.bak.*）都不入库，只保留示例
+.env*
+!.env.example
 
 # 规划文档不纳入版本控制
 /docs
