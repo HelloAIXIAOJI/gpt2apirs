@@ -39,6 +39,7 @@ sqlx = { workspace = true }
 uuid = { workspace = true }
 base64 = { workspace = true }
 askama = { version = "0.16.1", default-features = false, features = ["std", "derive"] }
+webp = "0.3.1"
 
 [dev-dependencies]
 gpt2apirs-testkit = { workspace = true }
