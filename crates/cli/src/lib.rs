@@ -4,4 +4,5 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod auto_archive;
 pub mod retention;

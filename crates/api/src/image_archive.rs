@@ -35,6 +35,16 @@ pub fn archive_dir() -> anyhow::Result<std::path::PathBuf> {
 pub async fn run(state: &Arc<AppState>, dry_run: bool) -> anyhow::Result<Outcome> {
     let repo = ImageAssetRepo::new(state.db.clone());
     let rows = load_all(&repo).await?;
+    archive_rows(state, rows, dry_run).await
+}
+
+/// 只归档指定的一批（自动阈值归档用）。
+pub async fn archive_rows(
+    state: &Arc<AppState>,
+    rows: Vec<gpt2apirs_storage::repo::ImageAssetRow>,
+    dry_run: bool,
+) -> anyhow::Result<Outcome> {
+    let repo = ImageAssetRepo::new(state.db.clone());
     let image_bytes: u64 = rows.iter().map(|row| row.bytes.max(0) as u64).sum();
     let file_name = format!("archive-{}.tar.gz", Utc::now().format("%Y%m%d-%H%M%S"));
 
@@ -143,6 +153,56 @@ pub async fn run(state: &Arc<AppState>, dry_run: bool) -> anyhow::Result<Outcome
     })
 }
 
+/// 超过阈值时，挑出「最老的一批」，让剩余量落到阈值的 80%。
+///
+/// 纯函数：只按传入顺序（新到旧）与体积算，不碰数据库与磁盘。
+pub fn select_for_threshold(
+    rows: &[gpt2apirs_storage::repo::ImageAssetRow],
+    threshold_bytes: u64,
+) -> Vec<gpt2apirs_storage::repo::ImageAssetRow> {
+    if threshold_bytes == 0 {
+        return Vec::new();
+    }
+    let total: u64 = rows.iter().map(|row| row.bytes.max(0) as u64).sum();
+    if total <= threshold_bytes {
+        return Vec::new();
+    }
+    let target = threshold_bytes / 5 * 4;
+    let mut picked = Vec::new();
+    let mut remaining = total;
+    // rows 是新到旧，从尾部挑最老的。
+    for row in rows.iter().rev() {
+        if remaining <= target {
+            break;
+        }
+        remaining = remaining.saturating_sub(row.bytes.max(0) as u64);
+        picked.push(row.clone());
+    }
+    picked
+}
+
+/// 按阈值归档：返回 `None` 表示没到阈值、什么也没做。
+pub async fn run_threshold(
+    state: &Arc<AppState>,
+    threshold_bytes: u64,
+) -> anyhow::Result<Option<Outcome>> {
+    if threshold_bytes == 0 {
+        return Ok(None);
+    }
+    let repo = ImageAssetRepo::new(state.db.clone());
+    let rows = load_all(&repo).await?;
+    let picked = select_for_threshold(&rows, threshold_bytes);
+    if picked.is_empty() {
+        return Ok(None);
+    }
+    tracing::info!(
+        picked = picked.len(),
+        threshold_mb = threshold_bytes / (1024 * 1024),
+        "在线图片超过阈值，开始自动归档"
+    );
+    archive_rows(state, picked, false).await.map(Some)
+}
+
 /// 分页取全部图片记录（仓储单次最多 200 条）。
 async fn load_all(repo: &ImageAssetRepo) -> anyhow::Result<Vec<ImageAssetRow>> {
     const PAGE: i64 = 200;
@@ -165,4 +225,57 @@ async fn load_all(repo: &ImageAssetRepo) -> anyhow::Result<Vec<ImageAssetRow>> {
         offset += PAGE;
     }
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpt2apirs_storage::repo::ImageAssetRow;
+
+    fn row(id: u8, bytes: i64, minutes_ago: i64) -> ImageAssetRow {
+        ImageAssetRow {
+            id: uuid::Uuid::from_u128(id as u128),
+            rel_path: format!("images/2026/11/17/{id}.png"),
+            mime: "image/png".to_string(),
+            bytes,
+            width: 4,
+            height: 4,
+            account_id: None,
+            prompt: None,
+            api_key_id: None,
+            api_key_prefix: None,
+            created_at: Utc::now() - chrono::Duration::minutes(minutes_ago),
+        }
+    }
+
+    #[test]
+    fn select_for_threshold_is_off_by_default() {
+        let rows = vec![row(1, 10, 1), row(2, 10, 2)];
+        assert!(select_for_threshold(&rows, 0).is_empty(), "阈值 0 表示关闭");
+    }
+
+    #[test]
+    fn select_for_threshold_keeps_under_limit() {
+        let rows = vec![row(1, 10, 1), row(2, 10, 2)];
+        assert!(select_for_threshold(&rows, 100).is_empty(), "没超就一张都不动");
+    }
+
+    #[test]
+    fn select_for_threshold_picks_oldest_until_under_target() {
+        // 新到旧：10、10、10、10（共 40）；阈值 24 → 目标 19（80%）。
+        // 从最老的开始挑：10 → 剩 30，仍 > 19；再挑 10 → 剩 20，仍 > 19；再挑 10 → 剩 10 ≤ 19，停。
+        let rows = vec![
+            row(1, 10, 1),
+            row(2, 10, 2),
+            row(3, 10, 3),
+            row(4, 10, 4),
+        ];
+        let picked = select_for_threshold(&rows, 24);
+        assert_eq!(picked.len(), 3, "应挑走三张最老的");
+        let oldest: Vec<uuid::Uuid> = picked.iter().map(|item| item.id).collect();
+        assert!(oldest.contains(&uuid::Uuid::from_u128(4)));
+        assert!(oldest.contains(&uuid::Uuid::from_u128(3)));
+        assert!(oldest.contains(&uuid::Uuid::from_u128(2)));
+        assert!(!oldest.contains(&uuid::Uuid::from_u128(1)), "最新的应留下");
+    }
 }
