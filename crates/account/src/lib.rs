@@ -26,8 +26,7 @@ pub use model::{Account, AccountStatus, Plan, Source};
 pub use oauth::{OAuthError, OAuthSessions, OAuthStart, SharedSessions};
 pub use pool::{
     AccountLease, AccountPool, InvalidOutcome, PoolConfig, PoolError, Purpose, SelectionFilter,
-    should_defer_invalid,
-};
+    should_defer_invalid, ClientResolver};
 pub use progress::{OperationError, OperationKind, OperationProgress, ProgressStore};
 pub use refresh::{RefreshError, RefreshOutcome, refresh_tokens};
 pub use remote::{RemoteError, RemoteInfo, fetch_remote_info};
