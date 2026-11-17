@@ -198,7 +198,7 @@ pub async fn probe(
             names,
             &probe_url,
             timeout_ms,
-            crate::proxy_service::probe_concurrency(state.proxy_service.status().node_count),
+            request.concurrency.unwrap_or(10).clamp(1, 32),
         )
         .await;
     Json(json!({ "results": results }))

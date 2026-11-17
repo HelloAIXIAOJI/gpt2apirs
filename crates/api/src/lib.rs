@@ -207,6 +207,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/proxy/stop", post(admin::proxy::stop))
         .route("/proxy/select", post(admin::proxy::select))
         .route("/proxy/probe", post(admin::proxy::probe))
+        .route("/proxy/probe.json", post(admin::proxy::probe_json))
         .route("/keys", get(admin::keys::index))
         .route("/keys/create", post(admin::keys::create))
         .route("/keys/{id}/revoke", post(admin::keys::revoke))

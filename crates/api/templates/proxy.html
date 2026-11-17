@@ -1,5 +1,76 @@
 {% extends "shell.html" %}
-{% block title %}代理 · 管理后台{% endblock %}
+{% block title %}代理 · 管理后台<script>
+  (function () {
+    var button = document.getElementById("probe-all");
+    if (!button) return;
+    var status = document.getElementById("probe-status");
+
+    function cellFor(name) {
+      return document.querySelector("[data-probe=\"" + CSS.escape(name) + "\"]");
+    }
+
+    async function probeOne(name) {
+      var cell = cellFor(name);
+      try {
+        var response = await fetch("/proxy/probe.json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ names: [name] })
+        });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        var payload = await response.json();
+        var item = (payload.results || [])[0];
+        if (cell) cell.classList.remove("probing");
+        if (item && item.delay_ms != null) {
+          if (cell) { cell.textContent = item.delay_ms + " ms"; cell.classList.remove("probe-bad"); }
+          return true;
+        }
+        if (cell) {
+          cell.textContent = "失败：" + ((item && item.error) || "未知");
+          cell.classList.add("probe-bad");
+        }
+        return false;
+      } catch (error) {
+        if (cell) {
+          cell.classList.remove("probing");
+          cell.textContent = "失败：" + error.message;
+          cell.classList.add("probe-bad");
+        }
+        return false;
+      }
+    }
+
+    button.addEventListener("click", async function () {
+      var cells = Array.prototype.slice.call(document.querySelectorAll("[data-probe]"));
+      var names = cells.map(function (cell) { return cell.getAttribute("data-probe"); });
+      cells.forEach(function (cell) {
+        cell.textContent = "测速中…";
+        cell.classList.add("probing");
+        cell.classList.remove("probe-bad");
+      });
+      button.disabled = true;
+      var cursor = 0;
+      var ok = 0;
+      var bad = 0;
+      var done = 0;
+      status.textContent = "0 / " + names.length;
+
+      async function worker() {
+        while (cursor < names.length) {
+          var name = names[cursor++];
+          (await probeOne(name)) ? ok++ : bad++;
+          done++;
+          status.textContent = done + " / " + names.length + "（成功 " + ok + "，失败 " + bad + "）";
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(10, names.length) }, worker));
+      status.textContent = "完成：成功 " + ok + "，失败 " + bad;
+      button.disabled = false;
+    });
+  })();
+</script>
+{% endblock %}
 {% block content %}
 <header id="topbar"><h1>代理</h1></header>
 
@@ -57,9 +128,10 @@
   {% if nodes.is_empty() %}
   <p class="empty">还没有节点：先启动一次订阅。</p>
   {% else %}
-  <form method="post" action="/proxy/probe" class="inline-form">
-    <button class="btn btn--ghost" type="submit">全部测速{% if probed %}（已测）{% endif %}</button>
-  </form>
+  <div class="batch-bar">
+    <button class="btn btn--ghost" type="button" id="probe-all">全部测速（10 并发）</button>
+    <span class="muted" id="probe-status"></span>
+  </div>
   <table class="table">
     <thead><tr><th>节点</th><th>协议</th><th>地址</th><th>延迟</th><th>操作</th></tr></thead>
     <tbody>
@@ -68,7 +140,7 @@
         <td>{{ node.name }}{% if node.current %} <span class="badge badge--ok">当前</span>{% endif %}</td>
         <td>{{ node.kind }}</td>
         <td class="path">{{ node.endpoint }}</td>
-        <td class="num">{{ node.delay }}</td>
+        <td class="num" data-probe="{{ node.name }}">{{ node.delay }}</td>
         <td>
           {% if !node.current %}
           <form method="post" action="/proxy/select" class="inline-form">
