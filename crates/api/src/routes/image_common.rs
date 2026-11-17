@@ -27,3 +27,8 @@ pub fn checked_size(raw: Option<&str>) -> Result<Option<String>, ApiError> {
         .map_err(|message| ApiError::openai(AppError::invalid_param(message, "size")))?;
     Ok(normalized)
 }
+
+/// 单次请求允许的最大张数（来自运行设置，夹在 1..=32）。
+pub fn max_n(settings: &gpt2apirs_core::settings::RuntimeSettings) -> u32 {
+    settings.get_i64("image_max_n").clamp(1, 32) as u32
+}

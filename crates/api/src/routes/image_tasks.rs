@@ -18,8 +18,6 @@ use crate::image_tasks::{ImageTask, TaskStatus};
 use crate::state::AppState;
 
 /// 合法张数上限（与同步接口一致）。
-const MAX_N: u32 = 4;
-
 #[derive(Debug, Deserialize)]
 /// 提交异步生图任务的请求体。
 pub struct TaskSubmitRequest {
@@ -187,9 +185,10 @@ pub async fn submit(
         return Err(ApiError::openai(AppError::invalid_param("prompt 不能为空", "prompt")));
     }
     let n = body.n.unwrap_or(1);
-    if n == 0 || n > MAX_N {
+    let limit = crate::routes::image_common::max_n(&state.settings);
+    if n == 0 || n > limit {
         return Err(ApiError::openai(AppError::invalid_param(
-            format!("n 必须在 1..={MAX_N}"),
+            format!("n 必须在 1..={limit}"),
             "n",
         )));
     }
