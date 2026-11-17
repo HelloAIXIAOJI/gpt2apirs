@@ -23,6 +23,7 @@ const PAGE_SIZE: i64 = 24;
 /// 一页里的图片。
 pub struct ImageCard {
     url: String,
+    thumb: String,
     title: String,
     meta: String,
 }
@@ -32,6 +33,11 @@ impl ImageCard {
         let title = row.prompt.clone().unwrap_or_else(|| "（无提示词）".to_string());
         Self {
             url: format!("{base}/{}", row.rel_path),
+            // 网格用缩略图，灯箱打开原图。
+            thumb: format!(
+                "{base}/image-thumbnails/{}",
+                row.rel_path.trim_start_matches("images/")
+            ),
             title: title.chars().take(80).collect(),
             meta: format!(
                 "{} · {}",

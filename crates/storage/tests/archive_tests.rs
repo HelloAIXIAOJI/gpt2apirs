@@ -120,3 +120,33 @@ fn archive_includes_references() {
     assert!(names.iter().any(|name| name == "manifest.json"), "{names:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn archive_excludes_thumbnails() {
+    // 缩略图是派生数据：可以随时重建，所以不该进包（归档后原图会被删，缩略图直接丢弃）。
+    let root = temp_root("thumbs");
+    let rel = "images/2026/11/16/a.png";
+    let thumb_rel = "thumbnails/images/2026/11/16/a.jpg";
+    std::fs::create_dir_all(root.join("thumbnails/images/2026/11/16")).expect("建缩略图目录");
+    std::fs::write(root.join(rel), vec![1u8; 16]).expect("写图");
+    std::fs::write(root.join(thumb_rel), vec![7u8; 8]).expect("写缩略图");
+
+    let stats = archive::write_archive(&root.join("archives"), "t.tar.gz", &[entry(rel, 16)], &root)
+        .expect("写包");
+    assert_eq!(stats.image_count, 1);
+    archive::verify_archive(&root.join("archives/t.tar.gz"), 1).expect("校验通过");
+
+    let file = std::fs::File::open(root.join("archives/t.tar.gz")).expect("开包");
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let names: Vec<String> = archive
+        .entries()
+        .expect("读包")
+        .map(|item| item.expect("条目").path().expect("路径").to_string_lossy().to_string())
+        .collect();
+    assert!(
+        !names.iter().any(|name| name.starts_with("thumbnails/")),
+        "缩略图不该进包：{names:?}"
+    );
+    assert!(names.iter().any(|name| name == "manifest.json"), "{names:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}

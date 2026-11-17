@@ -18,6 +18,7 @@ pub mod routes;
 pub mod session;
 pub mod state;
 pub mod static_files;
+pub mod thumbnails;
 pub mod system;
 
 use std::sync::Arc;
@@ -229,7 +230,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(system::health))
         .route("/health/ready", get(system::ready))
         .route("/version", get(system::version))
-        .route("/images/{*path}", get(static_files::serve_image));
+        .route("/images/{*path}", get(static_files::serve_image))
+        .route("/image-thumbnails/{*path}", get(static_files::serve_thumbnail));
 
     public
         .merge(ui)

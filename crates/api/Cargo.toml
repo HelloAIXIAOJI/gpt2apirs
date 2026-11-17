@@ -13,6 +13,7 @@ default = []
 tls = ["gpt2apirs-http/tls", "gpt2apirs-generate/tls", "gpt2apirs-account/tls"]
 
 [dependencies]
+image = { workspace = true }
 gpt2apirs-proxy-core = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }

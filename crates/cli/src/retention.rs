@@ -74,6 +74,8 @@ pub async fn run_once(
     match images.purge_older_than(image_hours).await {
         Ok(paths) => {
             for rel_path in paths {
+                // 缩略图是派生数据，随原图一起清掉。
+                gpt2apirs_api::thumbnails::remove(&rel_path);
                 let absolute = data_dir.join(rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
                 if let Ok(metadata) = std::fs::metadata(&absolute) {
                     images_freed += metadata.len();

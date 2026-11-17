@@ -107,6 +107,8 @@ pub async fn run(state: &Arc<AppState>, dry_run: bool) -> anyhow::Result<Outcome
 
     // 校验通过之后才允许删除：先删文件（缺失视为已删），再删记录。
     for row in &rows {
+        // 缩略图不进归档包，归档后也一并清掉：它是可重建的派生数据。
+        crate::thumbnails::remove(&row.rel_path);
         let absolute = data_dir.join(row.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
         match std::fs::remove_file(&absolute) {
             Ok(()) => {}
