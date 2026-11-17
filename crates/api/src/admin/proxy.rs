@@ -39,7 +39,6 @@ struct ProxyPage {
     skipped: Vec<String>,
     subscription_url: String,
     nodes: Vec<NodeRow>,
-    probed: bool,
 }
 
 /// 订阅表单。
@@ -263,6 +262,35 @@ pub async fn select(
     }
 }
 
+/// 单批测速请求：前端按 10 并发逐节点调用，自己更新单元格。
+#[derive(Debug, Default, Deserialize)]
+pub struct ProbeBatch {
+    /// 要测的节点名；空表示全部。
+    #[serde(default)]
+    pub names: Vec<String>,
+}
+
+/// `POST /proxy/probe.json` —— 返回测速结果，供页面用 JS 就地更新。
+pub async fn probe_json(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::Json(batch): axum::Json<ProbeBatch>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let url = crate::proxy_service::probe_url_from(&state.settings.get_string("proxy_probe_url"));
+    let timeout = state.settings.get_i64("proxy_probe_timeout_ms").max(1000) as u64;
+    let names = if batch.names.is_empty() {
+        None
+    } else {
+        Some(batch.names)
+    };
+    // 页面侧按 10 并发自行调度，这里每批也只开 10。
+    let results = state.proxy_service.probe(names, &url, timeout, 10).await;
+    axum::Json(serde_json::json!({ "results": results })).into_response()
+}
+
 /// `POST /proxy/probe` —— 全部节点测速后直接渲染结果。
 pub async fn probe(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !has_session(&state, &headers) {
@@ -329,7 +357,6 @@ fn build(
         skipped: status.skipped,
         subscription_url: state.settings.get_string("proxy_subscription_url"),
         nodes,
-        probed: delays.is_some(),
     }
 }
 

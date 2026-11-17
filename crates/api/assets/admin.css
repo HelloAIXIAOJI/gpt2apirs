@@ -931,3 +931,6 @@ button:disabled {
   color: var(--text);
   font-size: 0.9rem;
 }
+
+.probing { color: var(--muted); font-style: italic; }
+.probe-bad { color: #c2453f; }
