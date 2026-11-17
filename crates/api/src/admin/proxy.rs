@@ -291,6 +291,22 @@ pub async fn probe_json(
     axum::Json(serde_json::json!({ "results": results })).into_response()
 }
 
+/// `POST /proxy/clearance` —— 用当前出口测一次能不能过 Cloudflare。
+pub async fn clearance(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let outcome = crate::clearance::probe(&state, crate::clearance::DEFAULT_CLEARANCE_URL, 15_000).await;
+    let message = format!("Cloudflare 探测：{}", outcome.as_text());
+    let error = if outcome.is_ok() {
+        String::new()
+    } else {
+        message.clone()
+    };
+    let flash = if outcome.is_ok() { message } else { String::new() };
+    render(build(&state, flash, error, None))
+}
+
 /// `POST /proxy/probe` —— 全部节点测速后直接渲染结果。
 pub async fn probe(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !has_session(&state, &headers) {

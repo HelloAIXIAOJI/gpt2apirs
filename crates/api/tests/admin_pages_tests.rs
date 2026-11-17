@@ -556,3 +556,13 @@ async fn gallery_title_is_clean() {
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert!(reply.body.contains("<title>图片 · 管理后台</title>"), "{}", reply.body);
 }
+
+#[tokio::test]
+async fn proxy_page_has_clearance_button() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/proxy", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("/proxy/clearance"), "缺少 Cloudflare 探测入口");
+    assert!(reply.body.contains("测 Cloudflare"), "{}", reply.body);
+}
