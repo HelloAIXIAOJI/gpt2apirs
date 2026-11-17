@@ -1,172 +1,121 @@
-# gpt2apirs
+<h1 align="center">GPT2API-RS</h1>
 
-把 ChatGPT 网页版的能力（文本对话、生图、图生图、联网检索）转成 OpenAI / Anthropic 兼容接口，
-自带账号池、配额同步与失败换号。适合给自建网关（如 New API）当上游用，也可以直接调用。
+<p align="center">
+把 ChatGPT 网页版封装成自托管的 OpenAI / Anthropic 兼容接口。<br>
+一个二进制，自带账号池、图片归档与管理后台。
+</p>
 
-- **OpenAI 兼容**：`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/images/edits`、`/v1/models`
-- **Anthropic 兼容**：`/v1/messages`、`/v1/messages/count_tokens`
-- **真流式**：文本 SSE 边收边转，首字延迟不等于总耗时
-- **账号池**：导入去重、OAuth 授权、用 refresh_token 续期、同步上游配额、按失败类型决定换不换号
-- **管理后台**：总览 / 账号 / 日志 / 代理 / 图片 / 设置 / 密钥 / 备份
+<p align="center">
+  <a href="https://github.com/HelloAIXIAOJI/gpt2apirs/actions/workflows/test.yml"><img src="https://github.com/HelloAIXIAOJI/gpt2apirs/actions/workflows/test.yml/badge.svg" alt="tests"></a>
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="license">
+  <img src="https://img.shields.io/badge/rust-2024-orange.svg" alt="rust">
+</p>
 
-MIT · Rust 2024 · axum · PostgreSQL · BoringSSL
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#功能">功能</a> ·
+  <a href="#效果展示">效果展示</a> ·
+  <a href="#api">API</a> ·
+  <a href="#配置">配置</a> ·
+  <a href="#常见问题">常见问题</a>
+</p>
 
----
+> [!WARNING]
+> 本项目通过分析 ChatGPT 网页端接口提供兼容 API，仅供个人学习与技术研究使用。
+>
+> - 请勿用于商业用途、批量滥用或转售服务。
+> - 使用本项目有账号被限流或封禁的风险，请勿使用重要账号测试。
 
-## 接口一览
+## 快速开始
 
-| 接口 | 说明 |
-|---|---|
-| `POST /v1/chat/completions` | 文本对话，支持 `stream: true` 与 `n > 1` |
-| `POST /v1/responses` | OpenAI Responses 格式，流式/非流式 |
-| `POST /v1/messages` | Anthropic Messages 格式，流式/非流式 |
-| `POST /v1/messages/count_tokens` | tiktoken 真实计数，与实际上报口径一致 |
-| `POST /v1/images/generations` | 生图，`n > 1` 并行（多账号各扣一次配额） |
-| `POST /v1/images/edits` | 图生图/改图，支持 mask |
-| `GET /v1/models`、`GET /v1/models/{id}` | 只列真正支持的模型 |
-| `POST /v1/search` | 联网检索 |
-| `GET /health`、`GET /health/ready`、`GET /version` | 存活 / 就绪（DB 不可用返回 503）|
-| `GET /api/*`、`GET /admin` | 管理后台（后台会话或 `ADMIN_KEY`）|
-
-对外只暴露两个模型名：`text`（文本）与 `image`（生图/改图）。上游的具体型号由本项目内部决定，不写进对外契约——上游会换型号，写死等于让调用方跟着一起改。旧的 `gpt-5-5` / `gpt-image-2` 仍接受，但不再出现在 `/v1/models` 里。
-
----
-
-## 部署
-
-### 1. 准备
-
-依赖：Rust（nightly）、PostgreSQL 18、NASM（编译 BoringSSL 用）。
+需要 Rust 与 PostgreSQL。
 
 ```bash
-cp .env.example .env   # 然后改成你自己的值
-```
-
-### 2. 编译
-
-```bash
-# Linux / macOS：先装 cmake、ninja、nasm
+git clone https://github.com/HelloAIXIAOJI/gpt2apirs && cd gpt2apirs
+cp .env.example .env               # 填 DATABASE_URL 与 ADMIN_KEY
 cargo build --release --features tls
+./target/release/gpt2apirs
 ```
 
-Windows 上 BoringSSL 对环境敏感（VS 生成器找不到 cl、Ninja 下把 cl 当汇编器），**直接用脚本**，它会把 vcvars、Ninja、NASM 和工具链文件都配好：
-
-```powershell
-powershell -File tools\build.ps1 -CargoArgs build,--release,--features,tls
-```
-
-> `--features tls` 不能省。不开启时编译出来的是存根客户端，第一次请求会报「未启用 tls feature」。
-
-### 3. 配置
-
-`.env` 必须与可执行文件**同目录**（例如 `target/release/.env`）。
-
-| 变量 | 必填 | 说明 |
-|---|---|---|
-| `DATABASE_URL` | 是 | `postgres://user:pass@host:5432/db?sslmode=disable` |
-| `ADMIN_KEY` | 是 | 管理后台登录口令，至少 8 字符；调用 `/v1/*` 不用它 |
-| `HOST` / `PORT` | 否 | 默认 `0.0.0.0:8000` |
-| `DATA_DIR` | 否 | 图片落盘目录 |
-| `PUBLIC_BASE_URL` | 否 | 对外基础地址，用于拼图片 URL |
-
-调用 `/v1/*` 用的是 API key：登录后台后在「密钥」页创建，与 `ADMIN_KEY` 完全分离。
-
-### 4. 起服务
+启动后打开 `http://127.0.0.1:8000/admin`，用 `ADMIN_KEY` 登录，导入账号并在「密钥」页创建 API key。
 
 ```bash
-./gpt2apirs
-```
-
-### 5. 第一条请求
-
-```bash
-curl http://127.0.0.1:8000/v1/models -H "Authorization: Bearer $API_KEY"
-
 curl http://127.0.0.1:8000/v1/chat/completions \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"text","messages":[{"role":"user","content":"你好"}]}'
 ```
 
-账号通过管理后台「账号」页导入（token 或 OAuth 授权），导入后会自动同步上游配额。
+## 功能
 
----
+OpenAI 与 Anthropic 双协议兼容，文本支持流式输出。
 
-## 订阅出口（可选）
+### 账号池
 
-服务器直连不到上游时，可以填一条 Clash 格式的订阅，把全部上游流量（文本、搜索、生图）走节点。
+- 支持 token 与 OAuth 授权导入
+- 账号过期自动刷新，配额定期同步
+- 账号失效时自动换号
 
-- 代理核是**进程内嵌**的（`vendor/shoes` + `crates/proxy-core`），只有本地 `127.0.0.1` 监听，不碰系统代理
-- 支持 hysteria2 / vless（含 reality、vision）/ trojan；其它协议会被跳过并在页面上写明原因
-- 管理后台「图片」页顶部就是出口区：订阅地址、保存并启动、停止、全部测速、逐节点测速与切换
-- 账号自己配了 `proxy` 时以账号为准，否则走全局出口
-- 订阅拉取有 60 秒冷却：服务商对高频拉取会返回 403
+### 图片
 
-相关设置项：`proxy_enabled`、`proxy_subscription_url`、`proxy_selected_node`、
-`proxy_probe_url`、`proxy_probe_timeout_ms`、`proxy_auto_refresh_minutes`。
+- 生图与图生图
+- 图片浏览、归档与打包下载
 
-## 运行设置
+### 出口代理
 
-管理后台「设置」页，或 `PUT /api/settings`。改完即时生效，不用重启。常用几项：
+- 内置代理内核，支持 Clash 订阅
+- 支持节点测速与切换
 
-| 键 | 作用 |
+### 管理后台
+
+- 概览、账号、图片、任务、日志、备份、设置
+- 运行参数热更新，无需重启
+
+## 效果展示
+
+| 概览 | 账号池 |
+|:---:|:---:|
+| ![概览](readme/img/overview.png) | ![账号池](readme/img/accounts.png) |
+
+| 图片（浏览 / 归档） | 代理（节点 / 测速） |
+|:---:|:---:|
+| ![图片](readme/img/gallery.png) | ![代理](readme/img/proxy.png) |
+
+## API
+
+对外提供两个模型名：`text` 与 `image`。
+
+| 接口 | 说明 |
 |---|---|
-| `refresh_account_interval_minute` | 账号状态轮询间隔 |
-| `image_max_account_attempts` / `text_max_account_attempts` | 失败换号的最多尝试次数 |
-| `image_account_concurrency` / `account_processing_concurrency` | 单账号 / 全局并发 |
-| `image_task_concurrency` | 异步生图任务的并发 |
-| `console_request_timeout_secs` | 单请求超时 |
-| `chat_cache_ttl_secs` | 相同请求的结果缓存时长 |
-| `log_retention_hours` / `image_retention_hours` | 日志与图片保留时长 |
-| `chat_blocked_keywords` / `rich_text_policy` | 请求侧关键词拦截、富文本标签处理 |
+| `POST /v1/chat/completions` | 文本对话 |
+| `POST /v1/responses` | Responses 格式 |
+| `POST /v1/messages` | Anthropic 格式 |
+| `POST /v1/messages/count_tokens` | token 计数 |
+| `POST /v1/images/generations` | 文生图 |
+| `POST /v1/images/edits` | 图生图 |
+| `POST /v1/search` | 联网检索 |
+| `GET /v1/models` | 模型列表 |
 
-越界值会被钳到合法区间，未知键直接拒收。
+## 配置
 
----
+`.env` 与可执行文件同目录。
 
-## 失败分类
-
-上游失败会归到固定几类，客户端拿到的状态码据此决定，不换号的类型也一并说明：
-
-| 分类 | 客户端状态码 | 换号 |
+| 变量 | 必填 | 说明 |
 |---|---|---|
-| 请求本身有问题（参数、模型不存在、超长） | 400 | 否 |
-| 内容策略拦截 | 400 | 否（换号也没用）|
-| 配额 / 限流 | 429 | 是 |
-| 账号凭证失效、需要人工验证 | 401 / 403 / 503 | 是（并标记账号）|
-| 上游协议/网络异常、空回复 | 502 | 是 |
-| 没有可用账号 | 503 | — |
-
----
-
-## 已知限制
-
-- **Turnstile 求解未经验证**：能对真实挑战解出 token 并交给上游，但上游目前不校验该 token，
-  所以「解出来」不等于「解对了」。上游一旦开始校验，会以 503 失败并标记账号需人工验证。
-- **依赖上游网页接口**：上游随时可能改协议。失败分类和降级能兜住单次异常，兜不住整体改版。
-- **按单实例设计**：异步生图任务存在进程内存里（重启会丢），账号池并发槽位与后台轮询也没有跨实例协调，
-  多副本部署会让同一账号的并发翻倍、任务在别的实例上查不到。
-- **账号 token 明文存库**：数据库泄露等于账号被拿走，请自行做好库的访问控制。
-- **不做用户侧限流**：并发与额度请交给前面的网关（如 New API）。
-- `temperature` / `top_p` / `max_tokens` 目前被忽略：上游链路不接受这些参数。
-
----
+| `DATABASE_URL` | 是 | PostgreSQL 连接串 |
+| `ADMIN_KEY` | 是 | 后台登录口令 |
+| `DATA_DIR` | 否 | 图片与归档目录 |
+| `PUBLIC_BASE_URL` | 否 | 对外地址 |
 
 ## 常见问题
 
-**第一次请求报「未启用 tls feature」**：编译时漏了 `--features tls`。
+**第一次请求报「未启用 tls feature」**：编译时缺少 `--features tls`。
 
-**启动就报 `DATABASE_URL` 缺失**：`.env` 不在可执行文件同目录，或变量为空。程序不会从当前工作目录找。
+**启动报 `DATABASE_URL` 缺失**：`.env` 不在可执行文件同目录。
 
-**`/v1/*` 返回 401**：调用要用后台「密钥」页创建的 API key；`ADMIN_KEY` 只能登后台，后台会话 cookie 也不能用于 `/v1/*`。
+**`/v1/*` 返回 401**：需使用「密钥」页创建的 API key，`ADMIN_KEY` 仅用于登录后台。
 
-**请求返回 503 `account_not_available`**：没有可用账号（全部失效或在冷却）。看后台「账号」页的状态。
-
-**异步生图任务查不到**：服务重启过，任务记录在内存里，重启即丢。
-
----
-
-## 开发与测试
+## 本地开发
 
 ```bash
 cargo test --workspace
@@ -174,14 +123,6 @@ cargo check --workspace --all-targets
 cargo check --workspace --all-features --all-targets
 ```
 
-仓库带 GitHub Actions，六个独立工作流，可分别触发：测试、编译检查（默认/全特性）、编译（默认/全特性）、tls 链路 mock 测试。
-
-需要数据库的测试在缺 `DATABASE_URL` 时会自行跳过；带 `mock_` 前缀的测试用进程内假上游，不消耗真实配额。
-
----
-
 ## 许可证
 
 MIT。
-
-本项目只是把网页接口转成兼容 API 的客户端实现，使用它可能违反上游服务条款，账号风险自负。
