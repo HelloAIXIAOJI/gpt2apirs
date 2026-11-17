@@ -25,6 +25,10 @@ fn account_pool(db: &sqlx::PgPool) -> Arc<gpt2apirs_account::AccountPool> {
 }
 
 fn state() -> Arc<AppState> {
+    state_with(HashMap::new())
+}
+
+fn state_with(values: HashMap<String, Value>) -> Arc<AppState> {
     let map: HashMap<&'static str, &'static str> = HashMap::from([
         (
             "DATABASE_URL",
@@ -40,7 +44,7 @@ fn state() -> Arc<AppState> {
         .expect("lazy pool");
     Arc::new(AppState::new(
         config,
-        Arc::new(RuntimeSettings::new(HashMap::new())),
+        Arc::new(RuntimeSettings::new(values)),
         pool.clone(),
         Arc::new(
             gpt2apirs_http::Client::new(gpt2apirs_http::ClientOptions::default()).expect("client"),
@@ -59,7 +63,11 @@ fn assert_openai_error(body: &Value, code: &str) {
     assert_eq!(body["error"]["code"], code, "{body}");
 }
 
-async fn post_task(body: Value, auth: Option<&str>) -> (StatusCode, Value) {
+async fn post_task(
+    state: Arc<AppState>,
+    body: Value,
+    auth: Option<&str>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder()
         .method("POST")
         .uri("/api/image-tasks/generations")
@@ -67,7 +75,7 @@ async fn post_task(body: Value, auth: Option<&str>) -> (StatusCode, Value) {
     if let Some(token) = auth {
         builder = builder.header("authorization", format!("Bearer {token}"));
     }
-    let response = build_router(state())
+    let response = build_router(state)
         .oneshot(
             builder
                 .body(Body::from(serde_json::to_vec(&body).expect("序列化")))
@@ -84,7 +92,7 @@ async fn post_task(body: Value, auth: Option<&str>) -> (StatusCode, Value) {
 
 #[tokio::test]
 async fn requires_auth() {
-    let (status, _) = post_task(serde_json::json!({ "prompt": "x" }), None).await;
+    let (status, _) = post_task(state(), serde_json::json!({ "prompt": "x" }), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
@@ -92,6 +100,7 @@ async fn requires_auth() {
 async fn accepts_gif_frame_parameters() {
     // 回归点：异步任务以前只认 output_format，frame_count / frame_duration_ms 会被静默丢掉。
     let (status, body) = post_task(
+        state(),
         serde_json::json!({
             "prompt": "一个转圈的猫",
             "model": "image",
@@ -115,6 +124,7 @@ async fn accepts_gif_frame_parameters() {
 #[tokio::test]
 async fn rejects_bad_output_format() {
     let (status, body) = post_task(
+        state(),
         serde_json::json!({ "prompt": "x", "output_format": "bmp" }),
         Some(TEST_KEY),
     )
@@ -126,9 +136,42 @@ async fn rejects_bad_output_format() {
 #[tokio::test]
 async fn rejects_n_out_of_range() {
     let (status, body) = post_task(
+        state(),
         serde_json::json!({ "prompt": "x", "n": 9 }),
         Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn n_limit_follows_setting() {
+    // 默认上限 4：n=5 拒绝
+    let (status, body) = post_task(
+        state(),
+        serde_json::json!({ "prompt": "x", "n": 5 }),
+        Some(TEST_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // 把上限调到 8：n=6 应被接受，n=9 仍拒绝
+    let mut values = HashMap::new();
+    values.insert("image_max_n".to_string(), serde_json::json!(8));
+    let (status, body) = post_task(
+        state_with(values.clone()),
+        serde_json::json!({ "prompt": "x", "n": 6 }),
+        Some(TEST_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["n"], 6, "{body}");
+
+    let (status, _) = post_task(
+        state_with(values),
+        serde_json::json!({ "prompt": "x", "n": 9 }),
+        Some(TEST_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

@@ -126,10 +126,13 @@ pub async fn prepare_edit(
         )));
     };
 
-    validate(&parsed)?;
+    validate(&parsed, &state.settings)?;
 
     let prompt = parsed.prompt.trim().to_string();
-    let n = parsed.n.unwrap_or(1).clamp(1, 4);
+    let n = parsed
+        .n
+        .unwrap_or(1)
+        .clamp(1, crate::routes::image_common::max_n(&state.settings));
     let response_format = parsed
         .response_format
         .as_deref()
@@ -308,7 +311,10 @@ pub async fn edit_images(
     }))
 }
 
-fn validate(parsed: &EditRequest) -> Result<(), ApiError> {
+fn validate(
+    parsed: &EditRequest,
+    settings: &gpt2apirs_core::settings::RuntimeSettings,
+) -> Result<(), ApiError> {
     if parsed.prompt.trim().is_empty() {
         return Err(ApiError::openai(AppError::invalid_param(
             "prompt 不能为空",
@@ -316,9 +322,10 @@ fn validate(parsed: &EditRequest) -> Result<(), ApiError> {
         )));
     }
     if let Some(n) = parsed.n {
-        if n == 0 || n > 4 {
+        let limit = crate::routes::image_common::max_n(settings);
+        if n == 0 || n > limit {
             return Err(ApiError::openai(AppError::invalid_param(
-                "n 必须在 1..=4",
+                format!("n 必须在 1..={limit}"),
                 "n",
             )));
         }

@@ -217,7 +217,7 @@ impl ImageRequest {
 
     /// 设置张数（自动钳到 1..=4）。
     pub fn with_n(mut self, n: u32) -> Self {
-        self.n = n.clamp(1, 4);
+        self.n = n.clamp(1, 32);
         self
     }
 }
@@ -313,7 +313,7 @@ pub async fn generate_images(
     let mut combined = ImageResult::default();
     let mut diagnostics = FlowDiagnostics::default();
 
-    for index in 0..request.n.clamp(1, 4) {
+    for index in 0..request.n.clamp(1, 32) {
         let (result, diag) = generate_one(client, token, request, deadline).await?;
         if index == 0 {
             diagnostics = diag;

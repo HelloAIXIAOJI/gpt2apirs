@@ -12,9 +12,6 @@ use crate::error::ApiError;
 use crate::routes::image_flow::run_generation;
 use crate::state::AppState;
 
-/// 合法张数上限。
-const MAX_N: u32 = 4;
-
 #[derive(Debug, Deserialize)]
 /// OpenAI 兼容的生成请求。
 pub struct ImageGenerationRequest {
@@ -123,9 +120,10 @@ pub async fn generate(
     }
 
     let n = body.n.unwrap_or(1);
-    if n == 0 || n > MAX_N {
+    let limit = crate::routes::image_common::max_n(&state.settings);
+    if n == 0 || n > limit {
         return Err(ApiError::openai(AppError::invalid_param(
-            format!("n 必须在 1..={MAX_N}"),
+            format!("n 必须在 1..={limit}"),
             "n",
         )));
     }

@@ -161,7 +161,7 @@ pub async fn run_generation(
 ) -> Result<Vec<SlotOutcome>, ApiError> {
     // SSE 没带回图片时的兜底轮询，读三个 image_poll_* 设置。
     request.poll = PollPolicy::from_settings(&state.settings);
-    let total = request.n.clamp(1, 4) as usize;
+    let total = request.n.clamp(1, 32) as usize;
     let mut set: JoinSet<SlotResult> = JoinSet::new();
 
     for _ in 0..total {
@@ -284,7 +284,7 @@ pub async fn run_edit(
     deadline: Deadline,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
     request.poll = PollPolicy::from_settings(&state.settings);
-    let total = request.n.clamp(1, 4) as usize;
+    let total = request.n.clamp(1, 32) as usize;
     let mut set: JoinSet<SlotResult> = JoinSet::new();
 
     for _ in 0..total {
