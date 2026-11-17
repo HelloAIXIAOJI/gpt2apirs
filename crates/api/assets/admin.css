@@ -920,3 +920,14 @@ button:disabled {
 .badge--ok { background: rgba(60, 180, 110, 0.15); color: #2e9e63; }
 .badge--danger { background: rgba(220, 80, 80, 0.15); color: #c2453f; }
 .badge--warn { background: rgba(220, 170, 60, 0.18); color: #a97a1c; }
+
+.stack-form { display: flex; flex-direction: column; gap: 0.4rem; max-width: 40rem; }
+.stack-form label { font-size: 0.85rem; color: var(--muted); }
+.stack-form input {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.9rem;
+}

@@ -20,7 +20,7 @@ pub struct NavItem {
 const ITEMS: &[(&str, &str, bool)] = &[
     ("概览", "/overview", true),
     ("账号", "/accounts", true),
-    ("代理", "/proxy", false),
+    ("代理", "/proxy", true),
     ("图片", "/gallery", true),
     ("任务", "/tasks", true),
     ("日志", "/logs", true),
@@ -66,7 +66,7 @@ mod tests {
         let ready: Vec<&str> = items.iter().filter(|i| i.ready).map(|i| i.label).collect();
         assert_eq!(
             ready,
-            vec!["概览", "账号", "图片", "任务", "日志", "密钥", "备份", "设置"]
+            vec!["概览", "账号", "代理", "图片", "任务", "日志", "密钥", "备份", "设置"]
         );
     }
 }

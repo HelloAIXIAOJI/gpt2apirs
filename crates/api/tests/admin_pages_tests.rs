@@ -512,3 +512,21 @@ async fn tasks_panel_returns_fragment() {
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert!(!reply.body.contains("<html"), "局部不应带整页骨架");
 }
+
+#[tokio::test]
+async fn proxy_page_requires_session() {
+    let reply = send("GET", "/proxy", None, None).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location.as_deref(), Some("/"));
+}
+
+#[tokio::test]
+async fn proxy_page_renders_controls() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/proxy", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("订阅地址"), "{}", reply.body);
+    assert!(reply.body.contains("停止代理"), "{}", reply.body);
+    assert!(reply.body.contains("代理进程"), "{}", reply.body);
+}
