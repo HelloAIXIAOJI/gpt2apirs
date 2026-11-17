@@ -1,0 +1,126 @@
+name: 发布构建
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # debug 包不带调试符号：产物从 GB 级降到百 MB 级，仍是未优化构建
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: linux-x86_64-release
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            profile: release
+          - artifact: linux-x86_64-debug
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            profile: debug
+          - artifact: linux-aarch64-release
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            profile: release
+          - artifact: linux-aarch64-debug
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            profile: debug
+          - artifact: windows-x86_64-release
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            profile: release
+          - artifact: macos-aarch64-release
+            os: macos-14
+            target: aarch64-apple-darwin
+            profile: release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.artifact }}
+
+      - name: 安装构建依赖（Linux）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build nasm perl pkg-config libclang-dev
+
+      - name: 安装构建依赖（macOS）
+        if: runner.os == 'macOS'
+        run: brew install ninja nasm
+
+      - name: 安装构建依赖（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\nasm" | Out-File -FilePath $env:GITHUB_PATH -Append
+          if (Test-Path "C:\Program Files\LLVM\bin") {
+            "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+          }
+
+      - name: 编译（release）
+        if: matrix.profile == 'release'
+        run: cargo build --locked --release --features tls --target ${{ matrix.target }} -p gpt2apirs-cli
+
+      - name: 编译（debug）
+        if: matrix.profile == 'debug'
+        run: cargo build --locked --features tls --target ${{ matrix.target }} -p gpt2apirs-cli
+
+      - name: 打包（Linux / macOS）
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          mkdir -p dist
+          name="gpt2apirs-${version}-${{ matrix.target }}-${{ matrix.profile }}"
+          cp "target/${{ matrix.target }}/${{ matrix.profile }}/gpt2apirs" "dist/${name}"
+          chmod +x "dist/${name}"
+          tar -czf "dist/${name}.tar.gz" -C dist "${name}"
+          rm "dist/${name}"
+          ls -lh dist
+
+      - name: 打包（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          $source = "target/${{ matrix.target }}/${{ matrix.profile }}/gpt2apirs.exe"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $name = "gpt2apirs-$version-${{ matrix.target }}-${{ matrix.profile }}"
+          Copy-Item $source "dist/$name.exe"
+          Compress-Archive -Path "dist/$name.exe" -DestinationPath "dist/$name.zip" -Force
+          Remove-Item "dist/$name.exe"
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+
+      - name: 上传到 Release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
