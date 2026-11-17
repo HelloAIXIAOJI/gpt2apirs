@@ -905,3 +905,18 @@ button:disabled {
 .inline-form { display: inline; }
 
 .row-actions { display: flex; gap: 0.4rem; align-items: center; }
+
+.task-thumbs { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.task-thumb {
+  width: 44px;
+  height: 44px;
+  border-radius: 0.35rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  display: block;
+}
+.task-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.prompt-cell { max-width: 22rem; }
+.badge--ok { background: rgba(60, 180, 110, 0.15); color: #2e9e63; }
+.badge--danger { background: rgba(220, 80, 80, 0.15); color: #c2453f; }
+.badge--warn { background: rgba(220, 170, 60, 0.18); color: #a97a1c; }
