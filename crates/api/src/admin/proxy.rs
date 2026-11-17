@@ -104,7 +104,9 @@ pub async fn start(
             None,
         ));
     }
-    match state.proxy_service.start(&url, None).await {
+    match state.proxy_service.refresh(&url, None).await.and_then(|_| {
+        state.proxy_service.start_cached(None)
+    }) {
         Ok(status) => {
             state
                 .egress
@@ -129,6 +131,78 @@ pub async fn start(
             &state,
             String::new(),
             format!("启动失败：{error}"),
+            None,
+        )),
+    }
+}
+
+/// `POST /proxy/start-cached` —— 用已缓存节点启动（不拉订阅）。
+pub async fn start_cached(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    match state.proxy_service.start_cached(None) {
+        Ok(status) => {
+            state
+                .egress
+                .set(Some(&format!("http://127.0.0.1:{}", crate::proxy_service::LISTEN_PORT)));
+            let message = format!(
+                "已用缓存节点启动，{} 个节点，当前出口 {}",
+                status.node_count,
+                status.selected.clone().unwrap_or_else(|| "（自动）".to_string())
+            );
+            render(build(&state, message, String::new(), None))
+        }
+        Err(error) => render(build(
+            &state,
+            String::new(),
+            format!("启动失败：{error}"),
+            None,
+        )),
+    }
+}
+
+/// `POST /proxy/refresh` —— 只拉订阅更新节点，不动出口（跑着就热重启）。
+pub async fn refresh(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<StartForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let mut url = form.url.trim().to_string();
+    if url.is_empty() {
+        url = state.settings.get_string("proxy_subscription_url");
+    }
+    if url.trim().is_empty() {
+        return render(build(
+            &state,
+            String::new(),
+            "订阅地址不能为空".to_string(),
+            None,
+        ));
+    }
+    match state.proxy_service.refresh(&url, None).await {
+        Ok(status) => {
+            if let Err(error) = persist(&state, &url, status.selected.as_deref()).await {
+                return render(build(
+                    &state,
+                    String::new(),
+                    format!("订阅已更新，但保存配置失败：{}", error.error.message()),
+                    None,
+                ));
+            }
+            let message = format!("订阅已刷新，当前 {} 个节点", status.node_count);
+            render(build(&state, message, String::new(), None))
+        }
+        Err(error) => render(build(
+            &state,
+            String::new(),
+            format!("刷新订阅失败：{error}"),
             None,
         )),
     }
@@ -194,9 +268,13 @@ pub async fn probe(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Re
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    let url = state.settings.get_string("proxy_probe_url");
+    let url = crate::proxy_service::probe_url_from(&state.settings.get_string("proxy_probe_url"));
     let timeout = state.settings.get_i64("proxy_probe_timeout_ms").max(1000) as u64;
-    let results = state.proxy_service.probe(None, &url, timeout, 6).await;
+    let concurrency = crate::proxy_service::probe_concurrency(state.proxy_service.status().node_count);
+    let results = state
+        .proxy_service
+        .probe(None, &url, timeout, concurrency)
+        .await;
     let mut delays: HashMap<String, String> = HashMap::new();
     for item in results {
         let text = match (item.delay_ms, item.error) {

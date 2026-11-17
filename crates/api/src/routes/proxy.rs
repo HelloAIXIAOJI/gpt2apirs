@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::error::ApiError;
-use crate::proxy_service::{LISTEN_PORT, ProxyService};
+use crate::proxy_service::LISTEN_PORT;
 use crate::state::AppState;
 
 type ApiResult<T> = Result<Json<T>, ApiError>;
@@ -32,37 +32,88 @@ pub async fn status(State(state): State<Arc<AppState>>) -> Json<Value> {
 /// 启动请求。
 #[derive(Debug, Deserialize)]
 pub struct StartRequest {
-    /// 订阅地址。
-    pub url: String,
+    /// 订阅地址；给了就先刷新订阅再启动，不给就用已缓存的节点启动。
+    #[serde(default)]
+    pub url: Option<String>,
     /// 默认选中的节点。
     #[serde(default)]
     pub selected: Option<String>,
 }
 
-/// `POST /api/proxy/start`
+/// `POST /api/proxy/start` —— 用已缓存节点启动；带 url 时先刷新。
 pub async fn start(
     State(state): State<Arc<AppState>>,
     Json(request): Json<StartRequest>,
 ) -> ApiResult<Value> {
-    let url = request.url.trim().to_string();
-    if url.is_empty() {
-        return Err(ApiError::admin(AppError::invalid_param(
-            "订阅地址不能为空",
-            "url",
-        )));
-    }
     let selected = request
         .selected
         .as_deref()
         .map(str::trim)
         .filter(|name| !name.is_empty());
+    let url = request
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let status = match url {
+        Some(url) => {
+            let status = state
+                .proxy_service
+                .refresh(url, selected)
+                .await
+                .map_err(internal)?;
+            persist(&state, url, selected).await?;
+            state
+                .proxy_service
+                .start_cached(selected)
+                .map_err(internal)?;
+            status
+        }
+        None => state
+            .proxy_service
+            .start_cached(selected)
+            .map_err(internal)?,
+    };
+    state.egress.set(Some(&egress_url()));
+    Ok(Json(json!(status)))
+}
+
+/// 刷新订阅请求。
+#[derive(Debug, Deserialize)]
+pub struct RefreshRequest {
+    /// 订阅地址；空表示用设置里已保存的地址。
+    #[serde(default)]
+    pub url: Option<String>,
+    /// 选中节点。
+    #[serde(default)]
+    pub selected: Option<String>,
+}
+
+/// `POST /api/proxy/refresh` —— 只拉订阅、更新节点表，不动正在跑的出口（跑着就热重启）。
+pub async fn refresh(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<RefreshRequest>,
+) -> ApiResult<Value> {
+    let url = request
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.settings.get_string("proxy_subscription_url"));
+    if url.trim().is_empty() {
+        return Err(ApiError::admin(AppError::invalid_param(
+            "订阅地址为空：先在设置或本请求里给出",
+            "url",
+        )));
+    }
     let status = state
         .proxy_service
-        .start(&url, selected)
+        .refresh(&url, request.selected.as_deref())
         .await
         .map_err(internal)?;
-    state.egress.set(Some(&egress_url()));
-    persist(&state, &url, status.selected.as_deref()).await?;
+    persist(&state, &url, request.selected.as_deref()).await?;
     Ok(Json(json!(status)))
 }
 
@@ -128,10 +179,11 @@ pub async fn probe(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ProbeRequest>,
 ) -> Json<Value> {
-    let probe_url = request
-        .url
-        .filter(|url| !url.trim().is_empty())
-        .unwrap_or_else(|| state.settings.get_string("proxy_probe_url"));
+    let probe_url = crate::proxy_service::probe_url_from(
+        &request
+            .url
+            .unwrap_or_else(|| state.settings.get_string("proxy_probe_url")),
+    );
     let timeout_ms = request
         .timeout_ms
         .unwrap_or_else(|| state.settings.get_i64("proxy_probe_timeout_ms").max(1000) as u64);
@@ -142,7 +194,12 @@ pub async fn probe(
     };
     let results = state
         .proxy_service
-        .probe(names, &probe_url, timeout_ms, 6)
+        .probe(
+            names,
+            &probe_url,
+            timeout_ms,
+            crate::proxy_service::probe_concurrency(state.proxy_service.status().node_count),
+        )
         .await;
     Json(json!({ "results": results }))
 }
@@ -181,10 +238,10 @@ pub async fn start_from_settings(state: &Arc<AppState>) -> anyhow::Result<()> {
     } else {
         Some(selected.as_str())
     };
-    state.proxy_service.start(&url, selected).await?;
+    // 启动流程：拉一次订阅拿到节点，再用这些节点起代理核。
+    state.proxy_service.refresh(&url, selected).await?;
+    state.proxy_service.start_cached(selected)?;
     state.egress.set(Some(&egress_url()));
     Ok(())
 }
 
-#[allow(dead_code)]
-fn _assert_service_type(_: &ProxyService) {}

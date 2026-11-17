@@ -188,7 +188,8 @@ async fn run() -> Result<()> {
                 } else {
                     Some(selected.as_str())
                 };
-                match task_state.proxy_service.start(&url, selected).await {
+                // 定时任务只刷新订阅；出口由用户手动启动或启动时按设置恢复。
+                match task_state.proxy_service.refresh(&url, selected).await {
                     Ok(status) => tracing::info!(nodes = status.node_count, "订阅已自动刷新"),
                     Err(error) => tracing::warn!(%error, "订阅自动刷新失败"),
                 }

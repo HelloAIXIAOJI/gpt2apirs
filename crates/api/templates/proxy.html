@@ -36,16 +36,22 @@
   {% endif %}
 
   <h2 class="section-title">订阅</h2>
-  <form class="stack-form" method="post" action="/proxy/start">
+  <form class="stack-form" method="post" action="/proxy/refresh">
     <label for="url">订阅地址</label>
     <input id="url" name="url" type="text" value="{{ subscription_url }}" placeholder="https://…" autocomplete="off">
     <div class="batch-bar">
-      <button class="btn" type="submit">启动 / 重新拉取订阅</button>
+      <button class="btn" type="submit">刷新订阅</button>
     </div>
   </form>
-  <form method="post" action="/proxy/stop" class="inline-form">
-    <button class="btn btn--ghost" type="submit" onclick="return confirm('停止后所有上游请求走直连，确定？')">停止代理</button>
-  </form>
+  <p class="muted">刷新只更新节点表；启动用现有节点，两者互不依赖。</p>
+  <div class="batch-bar">
+    <form method="post" action="/proxy/start-cached" class="inline-form">
+      <button class="btn" type="submit">用现有节点启动</button>
+    </form>
+    <form method="post" action="/proxy/stop" class="inline-form">
+      <button class="btn btn--ghost" type="submit" onclick="return confirm('停止后所有上游请求走直连，确定？')">停止代理</button>
+    </form>
+  </div>
 
   <h2 class="section-title">节点</h2>
   {% if nodes.is_empty() %}
