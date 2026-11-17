@@ -530,3 +530,29 @@ async fn proxy_page_renders_controls() {
     assert!(reply.body.contains("停止代理"), "{}", reply.body);
     assert!(reply.body.contains("代理进程"), "{}", reply.body);
 }
+
+#[tokio::test]
+async fn proxy_title_is_clean_and_script_in_body() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/proxy", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    // 标题里不许混入脚本：模板块顺序写错时脚本会被塞进 <title>。
+    assert!(
+        reply.body.contains("<title>代理 · 管理后台</title>"),
+        "标题被污染：{}",
+        reply.body
+    );
+    let body_at = reply.body.find("</head>").expect("应有 head");
+    let script_at = reply.body.find("probe-all").expect("应有测速脚本");
+    assert!(script_at > body_at, "脚本必须在 body 里");
+}
+
+#[tokio::test]
+async fn gallery_title_is_clean() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/gallery", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("<title>图片 · 管理后台</title>"), "{}", reply.body);
+}
