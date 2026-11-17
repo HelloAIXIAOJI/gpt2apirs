@@ -71,6 +71,12 @@ pub struct ImageTask {
     pub n: u32,
     /// 返回格式：url / b64_json。
     pub response_format: String,
+    /// 输出格式（png/jpeg/webp/gif）；空表示按上游默认。
+    pub output_format: Option<String>,
+    /// GIF 帧数。
+    pub frame_count: Option<u32>,
+    /// GIF 每帧时长（毫秒）。
+    pub frame_duration_ms: Option<u32>,
     /// 对外基础地址（拼结果 URL 用）。
     pub base_url: String,
     /// 创建时间。
@@ -368,6 +374,9 @@ mod tests {
             model: gpt2apirs_generate::models::DEFAULT_IMAGE_MODEL.to_string(),
             n: 1,
             response_format: "url".to_string(),
+            output_format: None,
+            frame_count: None,
+            frame_duration_ms: None,
             base_url: "http://localhost:8080".to_string(),
             created_at: now,
             updated_at: now,
