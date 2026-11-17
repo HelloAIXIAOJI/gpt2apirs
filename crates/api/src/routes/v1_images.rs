@@ -205,13 +205,16 @@ pub async fn generate(
     let mut items = Vec::with_capacity(slots.iter().map(|slot| slot.images.len()).sum());
     for slot in &mut slots {
         for image in std::mem::take(&mut slot.images) {
-            items.push(crate::image_response::ImageItem {
-                url: if want_b64 || image.rel_path.is_empty() {
-                    None
+            items.push(crate::image_response::StreamItem {
+                source: if want_b64 {
+                    crate::image_response::ItemSource::Bytes(image.bytes)
                 } else {
-                    Some(format!("{base_url}/{}", image.rel_path))
+                    crate::image_response::ItemSource::Url(if image.rel_path.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{base_url}/{}", image.rel_path)
+                    })
                 },
-                bytes: if want_b64 { Some(image.bytes) } else { None },
                 prompt: Some(prompt.clone()),
             });
         }
