@@ -34,5 +34,5 @@ pub use accounts::{
     stats, sync_accounts, test_account, update_account,
 };
 pub use v1_image_edits::edit_images;
-pub use v1_images::{ImageGenerationRequest, ImageGenerationResponse, generate};
+pub use v1_images::{ImageGenerationRequest, generate};
 pub use v1_models::{get_model, list_models};
