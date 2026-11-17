@@ -148,6 +148,11 @@ pub struct ImageRequest {
     pub images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
     /// 结果轮询策略（SSE 没带回图片时的兜底）。
     pub poll: PollPolicy,
+    /// 是否在结果里保留图片字节。
+    ///
+    /// `response_format=url` 时不需要：图已落盘，字节留着纯属白占内存
+    /// （一张 2 MB 的图，n=4 就白占 8 MB）。只有要回 b64 时才置 true。
+    pub keep_bytes: bool,
 }
 
 impl ImageRequest {
@@ -166,6 +171,7 @@ impl ImageRequest {
             frame_duration_ms: None,
             images: Vec::new(),
             poll: PollPolicy::default(),
+            keep_bytes: false,
         }
     }
 
@@ -225,8 +231,10 @@ impl ImageRequest {
 /// 已落盘的一张图片。
 #[derive(Debug, Clone)]
 pub struct GeneratedImage {
-    /// 图片字节。
+    /// 图片字节；`keep_bytes=false` 时为空（已落盘，不再需要）。
     pub bytes: Vec<u8>,
+    /// 字节数（无论是否保留字节都准确）。
+    pub size: usize,
     /// 相对 `DATA_DIR` 的路径，例如 `images/2026/11/11/<uuid>.png`。
     pub rel_path: String,
     /// MIME 类型，例如 `image/png`。
@@ -238,10 +246,13 @@ pub struct GeneratedImage {
 }
 
 impl GeneratedImage {
-    /// base64 内容（`response_format=b64_json` 用）。
-    pub fn to_base64(&self) -> String {
+    /// base64 内容（`response_format=b64_json` 用）；没留字节时返回 `None`。
+    pub fn to_base64(&self) -> Option<String> {
+        if self.bytes.is_empty() {
+            return None;
+        }
         use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD.encode(&self.bytes)
+        Some(base64::engine::general_purpose::STANDARD.encode(&self.bytes))
     }
 }
 
@@ -633,7 +644,17 @@ async fn fetch_images(
         }
     }
 
-    download_urls(client, auth, &request.user_agent, &urls, target_format, deadline, images).await
+    download_urls(
+        client,
+        auth,
+        &request.user_agent,
+        &urls,
+        target_format,
+        request.keep_bytes,
+        deadline,
+        images,
+    )
+    .await
 }
 
 /// 逐个下载 URL，成功的落盘后追加到 `images`。
@@ -646,6 +667,7 @@ async fn download_urls(
     user_agent: &str,
     urls: &[String],
     target_format: crate::format::OutputFormat,
+    keep_bytes: bool,
     deadline: Deadline,
     images: &mut Vec<GeneratedImage>,
 ) -> std::result::Result<(), GenerateError> {
@@ -663,7 +685,7 @@ async fn download_urls(
         if response.status != 200 {
             continue;
         }
-        match save_image_as(&response.body, target_format) {
+        match save_image_as(&response.body, target_format, keep_bytes) {
             Ok(Some(saved)) => images.push(saved),
             Ok(None) => {}
             Err(error) => {
@@ -780,7 +802,7 @@ fn merge_ids(existing: &mut Vec<String>, incoming: Vec<String>) -> bool {
 ///
 /// 无法识别的格式返回 `Ok(None)`。
 pub fn save_image(bytes: &[u8]) -> Result<Option<GeneratedImage>> {
-    save_image_as(bytes, crate::format::OutputFormat::Png)
+    save_image_as(bytes, crate::format::OutputFormat::Png, true)
 }
 
 /// 按目标格式落盘：先转码，再用目标格式的扩展名与 MIME。
@@ -789,6 +811,7 @@ pub fn save_image(bytes: &[u8]) -> Result<Option<GeneratedImage>> {
 pub fn save_image_as(
     bytes: &[u8],
     format: crate::format::OutputFormat,
+    keep_bytes: bool,
 ) -> Result<Option<GeneratedImage>> {
     if image::guess_format(bytes).is_err() {
         return Ok(None);
@@ -817,8 +840,10 @@ pub fn save_image_as(
     std::fs::rename(&temp, &absolute)
         .with_context(|| format!("重命名图片失败: {}", absolute.display()))?;
 
+    let size = converted.len();
     Ok(Some(GeneratedImage {
-        bytes: converted,
+        bytes: if keep_bytes { converted } else { Vec::new() },
+        size,
         rel_path,
         mime,
         width,
@@ -835,8 +860,10 @@ fn unpersisted_image(
     let (mime, _) = sniff_mime(&converted)?;
     let (width, height) =
         gpt2apirs_core::tokens::image_size_from_bytes(&converted).unwrap_or((0, 0));
+    let size = converted.len();
     Some(GeneratedImage {
         bytes: converted,
+        size,
         rel_path: String::new(),
         mime,
         width,
@@ -1008,6 +1035,45 @@ mod tests {
     fn save_image_rejects_non_image() {
         let saved = save_image(b"hello").expect("不应报错");
         assert!(saved.is_none(), "非图片应返回 None");
+    }
+
+    #[test]
+    fn save_image_can_skip_bytes() {
+        // url 模式下不需要字节：落盘后不保留，size 仍然准确。
+        let mut buffer = Vec::new();
+        let pixel = image::RgbaImage::from_pixel(3, 5, image::Rgba([10, 20, 30, 255]));
+        image::DynamicImage::ImageRgba8(pixel)
+            .write_to(
+                &mut std::io::Cursor::new(&mut buffer),
+                image::ImageFormat::Png,
+            )
+            .expect("编码 PNG");
+
+        let dropped = save_image_as(&buffer, crate::format::OutputFormat::Png, false)
+            .expect("落盘")
+            .expect("应有图片");
+        assert!(dropped.bytes.is_empty(), "不保留字节时 bytes 应为空");
+        assert!(dropped.size > 0, "size 必须准确");
+        assert!(dropped.to_base64().is_none(), "没字节就不能出 b64");
+        let absolute = gpt2apirs_core::paths::data_dir()
+            .expect("数据目录")
+            .join(dropped.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        assert_eq!(
+            std::fs::metadata(&absolute).expect("文件应存在").len() as usize,
+            dropped.size
+        );
+        let _ = std::fs::remove_file(&absolute);
+
+        let kept = save_image_as(&buffer, crate::format::OutputFormat::Png, true)
+            .expect("落盘")
+            .expect("应有图片");
+        assert_eq!(kept.bytes.len(), kept.size, "保留字节时长度应与 size 一致");
+        assert!(kept.to_base64().is_some());
+        let _ = std::fs::remove_file(
+            gpt2apirs_core::paths::data_dir()
+                .expect("数据目录")
+                .join(kept.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)),
+        );
     }
 
     #[test]

@@ -207,6 +207,7 @@ pub async fn prepare_edit(
 
     // ---- 并行 n 张 + 换号重试（内部会重新上传参考图）----
     let mut image_request = ImageRequest::new(prompt.clone()).with_n(n);
+    image_request.keep_bytes = response_format != "url";
     image_request.model = requested_model.clone();
     image_request.upstream_model =
         gpt2apirs_generate::models::upstream_model_for(&requested_model).to_string();
@@ -296,7 +297,7 @@ pub async fn edit_images(
             });
         } else {
             data.push(ImageDatum {
-                b64_json: Some(image.to_base64()),
+                b64_json: image.to_base64(),
                 url: None,
                 revised_prompt: Some(prompt.clone()),
             });

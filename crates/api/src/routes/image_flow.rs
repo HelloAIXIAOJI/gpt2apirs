@@ -248,7 +248,7 @@ pub async fn record_assets(
             let asset = gpt2apirs_storage::repo::NewImageAsset {
                 rel_path: image.rel_path.clone(),
                 mime: image.mime.to_string(),
-                bytes: image.bytes.len() as i64,
+                bytes: image.size as i64,
                 width: image.width as i32,
                 height: image.height as i32,
                 account_id: if slot.account_id.is_nil() { None } else { Some(slot.account_id) },
