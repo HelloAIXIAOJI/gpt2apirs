@@ -49,9 +49,9 @@ pub async fn sync_account(
             reason: format!("账号 {account_id} 不存在"),
         })?;
 
-    let client = pool.client()?;
+    let client = pool.client(&account.proxy)?;
     let remote = match fetch_remote_info(
-        client,
+        &client,
         &account.access_token,
         pool.user_agent(),
         deadline,
@@ -125,8 +125,10 @@ pub async fn refresh_account_token(
         return Err(RefreshError::Terminal("没有 refresh_token".to_string()));
     };
 
-    let client = pool.client().map_err(|error| RefreshError::Retryable(error.to_string()))?;
-    let outcome = refresh_tokens(client, &refresh_token, deadline).await?;
+    let client = pool
+        .client(&account.proxy)
+        .map_err(|error| RefreshError::Retryable(error.to_string()))?;
+    let outcome = refresh_tokens(&client, &refresh_token, deadline).await?;
 
     let updated = pool
         .repo()

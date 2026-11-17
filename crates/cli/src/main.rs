@@ -116,9 +116,19 @@ async fn run() -> Result<()> {
         image_concurrency,
         auto_remove_invalid: false,
     };
+    // 账号池按「账号代理 → 全局出口 → 直连」取客户端，出口换节点后无需重建。
+    let egress = Arc::new(gpt2apirs_api::state::Egress::default());
+    let clients = Arc::new(gpt2apirs_api::state::ClientFactory::new(
+        client.clone(),
+        egress.clone(),
+    ));
+    let resolver: gpt2apirs_account::ClientResolver = {
+        let clients = clients.clone();
+        Arc::new(move |proxy: &str| clients.get(proxy))
+    };
     let accounts = Arc::new(
         AccountPool::new(account_repo, pool_config.clone())
-            .with_http((*client).clone(), gpt2apirs_http::DEFAULT_USER_AGENT),
+            .with_resolver(resolver, gpt2apirs_http::DEFAULT_USER_AGENT),
     );
     let loaded = accounts.reload().await.context("载入账号池快照失败")?;
     tracing::info!(accounts = loaded, concurrency = image_concurrency, "账号池已就绪");
@@ -154,11 +164,14 @@ async fn run() -> Result<()> {
     let data_dir = paths::data_dir()?;
     gpt2apirs_cli::retention::spawn(settings.clone(), pool.clone(), data_dir);
 
-    let state = Arc::new(AppState::new(
+    // 状态与账号池共用同一套出口：账号页的测试/同步/刷新才会走代理。
+    let state = Arc::new(AppState::with_egress(
         config.clone(),
         settings,
         pool.clone(),
         client,
+        clients,
+        egress,
         accounts.clone(),
         progress,
         oauth,

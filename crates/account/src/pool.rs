@@ -5,6 +5,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+/// 按代理串解析上游客户端；由调用方决定「账号代理 / 全局出口 / 直连」。
+pub type ClientResolver =
+    Arc<dyn Fn(&str) -> anyhow::Result<Arc<gpt2apirs_http::Client>> + Send + Sync>;
+
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dashmap::DashMap;
 use gpt2apirs_core::Deadline;
@@ -40,6 +44,10 @@ pub enum PoolError {
     /// 池未配置 HTTP 客户端，无法访问上游。
     #[error("账号池未配置 HTTP 客户端，无法执行上游操作")]
     NoHttpClient,
+
+    /// 解析客户端失败（代理串非法等）。
+    #[error("解析上游客户端失败：{0}")]
+    HttpClient(String),
 }
 
 /// 取号用途。决定状态与配额的准入条件。
@@ -194,7 +202,8 @@ pub struct AccountPool {
     slots: DashMap<Uuid, Arc<Semaphore>>,
     cursor: AtomicUsize,
     notify: Arc<Notify>,
-    client: Option<gpt2apirs_http::Client>,
+    /// 按代理串取客户端（账号代理 → 全局出口 → 直连由外层实现）。
+    clients: std::sync::RwLock<Option<ClientResolver>>,
     user_agent: String,
 }
 
@@ -216,17 +225,23 @@ impl AccountPool {
             slots: DashMap::new(),
             cursor: AtomicUsize::new(0),
             notify: Arc::new(Notify::new()),
-            client: None,
+            clients: std::sync::RwLock::new(None),
             user_agent: String::new(),
         }
     }
 
-    /// 挂上 HTTP 客户端，解锁同步/刷新能力。
-    pub fn with_http(mut self, client: gpt2apirs_http::Client, user_agent: impl Into<String>) -> Self {
-        self.client = Some(client);
+    /// 挂上客户端解析器，解锁同步/刷新能力。
+    ///
+    /// 解析器按「账号代理 → 全局出口 → 直连」取客户端；
+    /// 所以出口换节点后这里不需要重建。
+    pub fn with_resolver(mut self, resolver: ClientResolver, user_agent: impl Into<String>) -> Self {
+        if let Ok(mut guard) = self.clients.write() {
+            *guard = Some(resolver);
+        }
         self.user_agent = user_agent.into();
         self
     }
+
 
     /// 仓储引用。
     pub fn repo(&self) -> &AccountRepo {
@@ -433,11 +448,20 @@ impl AccountPool {
 
     /// 是否配置了 HTTP 客户端。
     pub fn has_http(&self) -> bool {
-        self.client.is_some()
+        self.clients
+            .read()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
     }
 
-    pub(crate) fn client(&self) -> Result<&gpt2apirs_http::Client, PoolError> {
-        self.client.as_ref().ok_or(PoolError::NoHttpClient)
+    pub(crate) fn client(&self, proxy: &str) -> Result<Arc<gpt2apirs_http::Client>, PoolError> {
+        let resolver = self
+            .clients
+            .read()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .ok_or(PoolError::NoHttpClient)?;
+        resolver(proxy).map_err(|error| PoolError::HttpClient(error.to_string()))
     }
 
     pub(crate) fn user_agent(&self) -> &str {
@@ -852,4 +876,34 @@ mod tests {
             .await
             .expect("应可再取");
     }
+
+    #[tokio::test]
+    async fn resolver_receives_account_proxy() {
+        // 不变量：账号自己的 proxy 必须原样交给解析器，不能被忽略成直连。
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let recorder = seen.clone();
+        let resolver: ClientResolver = std::sync::Arc::new(move |proxy: &str| {
+            recorder.lock().expect("锁").push(proxy.to_string());
+            Ok(std::sync::Arc::new(
+                gpt2apirs_http::Client::new(gpt2apirs_http::ClientOptions::default())
+                    .expect("客户端"),
+            ))
+        });
+        let pool = logic_only_pool(PoolConfig::default()).with_resolver(resolver, "ua");
+
+        pool.client("http://127.0.0.1:7890").expect("应能取到客户端");
+        pool.client("").expect("空串表示走全局出口");
+        assert_eq!(
+            seen.lock().expect("锁").clone(),
+            vec!["http://127.0.0.1:7890".to_string(), String::new()]
+        );
+    }
+
+    #[tokio::test]
+    async fn client_without_resolver_reports_no_http() {
+        let pool = logic_only_pool(PoolConfig::default());
+        assert!(matches!(pool.client(""), Err(PoolError::NoHttpClient)));
+    }
+
 }
+

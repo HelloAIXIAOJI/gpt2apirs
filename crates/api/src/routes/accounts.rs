@@ -707,7 +707,8 @@ pub async fn test_account(
     image_request.upstream_model = gpt2apirs_generate::models::upstream_model_for(&model).to_string();
 
     let started = std::time::Instant::now();
-    let outcome = generate_images(&state.client, lease.access_token(), &image_request, deadline).await;
+    let client = state.client_for(&lease.account().proxy).map_err(internal)?;
+    let outcome = generate_images(&client, lease.access_token(), &image_request, deadline).await;
     let elapsed_ms = started.elapsed().as_millis() as i64;
     // 空图视为失败：见 v1_images 的同名注释
     let success = outcome
@@ -773,8 +774,10 @@ pub async fn oauth_finish(
     Json(body): Json<OAuthFinishRequest>,
 ) -> ApiResult<ImportResponse> {
     let deadline = Deadline::in_secs(60.0);
+    // OAuth 回调要访问上游，同样走统一出口。
+    let client = state.client_for("").map_err(internal)?;
     let new_account =
-        gpt2apirs_account::oauth::finish(&state.client, &state.oauth, body.session_id, &body.callback, deadline)
+        gpt2apirs_account::oauth::finish(&client, &state.oauth, body.session_id, &body.callback, deadline)
             .await
             .map_err(|error| {
                 ApiError::admin(AppError::invalid_param(

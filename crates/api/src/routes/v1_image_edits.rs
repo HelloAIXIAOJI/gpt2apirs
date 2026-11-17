@@ -162,13 +162,16 @@ pub async fn prepare_edit(
     let deadline = default_request_deadline(&state.settings);
 
     // ---- 准备参考图（mask 合成）----
-    let resolved_images = inputs::resolve_sources(&state.client, &parsed.images, deadline)
+    let outbound = state
+        .client_for("")
+        .map_err(|error| ApiError::openai(AppError::Internal(anyhow::anyhow!("{error}"))))?;
+    let resolved_images = inputs::resolve_sources(&outbound, &parsed.images, deadline)
         .await
         .map_err(input_error)?;
     let resolved_masks = if parsed.masks.is_empty() {
         Vec::new()
     } else {
-        inputs::resolve_sources(&state.client, &parsed.masks, deadline)
+        inputs::resolve_sources(&outbound, &parsed.masks, deadline)
             .await
             .map_err(input_error)?
     };
