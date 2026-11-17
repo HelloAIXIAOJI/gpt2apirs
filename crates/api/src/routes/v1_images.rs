@@ -177,6 +177,8 @@ pub async fn generate(
     let quality = crate::routes::image_common::checked_quality(body.quality.as_deref())?;
 
     let mut image_request = ImageRequest::new(prompt.clone()).with_n(n);
+    // 只有要回 b64 时才保留字节；url 模式图已落盘，留着纯属白占内存。
+    image_request.keep_bytes = response_format != "url";
     image_request.model = requested_model.clone();
     image_request.upstream_model =
         gpt2apirs_generate::models::upstream_model_for(&requested_model).to_string();
@@ -236,7 +238,7 @@ pub async fn generate(
             });
         } else {
             data.push(ImageDatum {
-                b64_json: Some(image.to_base64()),
+                b64_json: image.to_base64(),
                 url: None,
                 revised_prompt: Some(prompt.clone()),
             });

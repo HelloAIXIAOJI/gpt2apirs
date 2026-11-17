@@ -725,7 +725,7 @@ pub async fn test_account(
             Ok(Json(TestResponse {
                 status: "success",
                 elapsed_ms,
-                bytes: first.map(|image| image.bytes.len()),
+                bytes: first.map(|image| image.size),
                 size: first.map(|image| format!("{}x{}", image.width, image.height)),
                 message: None,
             }))
