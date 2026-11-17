@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::{Multipart, State};
 use axum::http::Request;
 use gpt2apirs_core::AppError;
@@ -13,7 +12,7 @@ use serde_json::Value;
 
 use crate::error::ApiError;
 use crate::routes::image_flow::run_edit;
-use crate::routes::v1_images::{ImageDatum, ImageGenerationResponse};
+use axum::response::IntoResponse;
 use crate::state::AppState;
 
 /// 图片字段名（multipart）。
@@ -233,7 +232,7 @@ pub async fn edit_images(
     identity: Option<axum::Extension<crate::auth::ApiKeyIdentity>>,
     State(state): State<Arc<AppState>>,
     request: Request<axum::body::Body>,
-) -> Result<Json<ImageGenerationResponse>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let prepared_edit = prepare_edit(&state, request).await?;
     let prompt = prepared_edit.prompt.clone();
     let response_format = prepared_edit.response_format.clone();
@@ -244,7 +243,7 @@ pub async fn edit_images(
     crate::routes::image_flow::ensure_disk_space()?;
     let deadline = default_request_deadline(&state.settings);
     let requested_n = prepared_edit.request.n;
-    let slots = run_edit(
+    let mut slots = run_edit(
         &state,
         prepared_edit.request,
         prepared_edit.prepared.clone(),
@@ -277,7 +276,6 @@ pub async fn edit_images(
         "图生图完成"
     );
 
-    let mut data = Vec::with_capacity(images.len());
     let mut output_tokens = 0i64;
     for image in &images {
         output_tokens += gpt2apirs_core::tokens::count_generated_image_tokens(
@@ -285,31 +283,32 @@ pub async fn edit_images(
             image.height,
             &quality,
         );
-        if response_format == "url" {
-            data.push(ImageDatum {
-                b64_json: None,
-                url: if image.rel_path.is_empty() {
+    }
+    let want_b64 = response_format != "url";
+    // 借用到此为止：字节直接搬进流式响应。
+    drop(images);
+    let mut items = Vec::with_capacity(slots.iter().map(|slot| slot.images.len()).sum());
+    for slot in &mut slots {
+        for image in std::mem::take(&mut slot.images) {
+            items.push(crate::image_response::ImageItem {
+                url: if want_b64 || image.rel_path.is_empty() {
                     None
                 } else {
                     Some(format!("{base_url}/{}", image.rel_path))
                 },
-                revised_prompt: Some(prompt.clone()),
-            });
-        } else {
-            data.push(ImageDatum {
-                b64_json: image.to_base64(),
-                url: None,
-                revised_prompt: Some(prompt.clone()),
+                bytes: if want_b64 { Some(image.bytes) } else { None },
+                prompt: Some(prompt.clone()),
             });
         }
     }
 
-    Ok(Json(ImageGenerationResponse {
+    Ok(crate::image_response::ImageResponse {
         created: chrono::Utc::now().timestamp(),
         usage: gpt2apirs_core::tokens::image_usage(0, input_image_tokens, output_tokens),
-        data,
+        items,
         message: None,
-    }))
+    }
+    .into_response())
 }
 
 fn validate(
