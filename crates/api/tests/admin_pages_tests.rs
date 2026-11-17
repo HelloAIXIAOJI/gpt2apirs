@@ -486,3 +486,29 @@ async fn backups_download_rejects_path_traversal() {
     let reply = send("GET", "/backups/download/..%2F..%2Fetc%2Fpasswd", None, Some(&cookie)).await;
     assert_ne!(reply.status, StatusCode::OK, "{}", reply.body);
 }
+
+#[tokio::test]
+async fn tasks_page_requires_session() {
+    let reply = send("GET", "/tasks", None, None).await;
+    assert_eq!(reply.status, StatusCode::SEE_OTHER);
+    assert_eq!(reply.location.as_deref(), Some("/"));
+}
+
+#[tokio::test]
+async fn tasks_page_renders_empty_state() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/tasks", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(reply.body.contains("当前没有任务"), "{}", reply.body);
+    assert!(reply.body.contains("tasks-panel"), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn tasks_panel_returns_fragment() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("cookie");
+    let reply = send("GET", "/tasks/panel", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert!(!reply.body.contains("<html"), "局部不应带整页骨架");
+}
