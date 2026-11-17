@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use axum::Json;
+use axum::response::IntoResponse;
 use axum::extract::{Path, Query, Request, State};
 use base64::Engine as _;
 use gpt2apirs_core::AppError;
@@ -120,8 +121,11 @@ fn encode_b64(rel_path: &str) -> Option<String> {
 }
 
 /// 把任务转成对外的视图。
-pub fn task_view(task: &ImageTask) -> TaskView {
-    let want_b64 = task.response_format == "b64_json";
+///
+/// `want_b64=false` 时一律给 URL：列表页一次几百条任务，
+/// 每条都读盘编码 base64 会瞬间吃掉上百 MB。
+pub fn task_view(task: &ImageTask, want_b64: bool) -> TaskView {
+    let want_b64 = want_b64 && task.response_format == "b64_json";
     let mut data = Vec::with_capacity(task.images.len());
     for image in &task.images {
         if want_b64 {
@@ -268,7 +272,7 @@ pub async fn submit(
         input_tokens: 0,
         output_tokens: 0,
     };
-    let view = task_view(&task);
+    let view = task_view(&task, false);
     crate::image_tasks::submit(state, task, image_request, key).await;
     Ok(Json(view))
 }
@@ -308,7 +312,7 @@ pub async fn submit_edit(
         input_tokens: 0,
         output_tokens: 0,
     };
-    let view = task_view(&task);
+    let view = task_view(&task, false);
     crate::image_tasks::submit_edit(
         state,
         task,
@@ -329,21 +333,67 @@ pub async fn list(
     let ids = params.get("ids").map(|raw| parse_ids(raw)).unwrap_or_default();
     let filter = if ids.is_empty() { None } else { Some(ids.as_slice()) };
     let tasks = state.image_tasks.list(filter);
-    Ok(Json(tasks.iter().map(task_view).collect()))
+    Ok(Json(tasks.iter().map(|task| task_view(task, false)).collect()))
+}
+
+/// 任务视图里除了 `data` 之外的字段（流式响应先用它拼前缀）。
+fn task_head(task: &ImageTask) -> serde_json::Map<String, serde_json::Value> {
+    let view = task_view(task, false);
+    let mut value = serde_json::to_value(&view).unwrap_or(serde_json::Value::Null);
+    if let Some(map) = value.as_object_mut() {
+        map.remove("data");
+        return map.clone();
+    }
+    serde_json::Map::new()
 }
 
 /// `GET /api/image-tasks/{id}`
 pub async fn get_one(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> Result<Json<TaskView>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let uuid = Uuid::parse_str(&id)
         .map_err(|_| ApiError::openai(AppError::invalid_param("任务 id 不是合法 UUID", "id")))?;
     let task = state
         .image_tasks
         .get(uuid)
         .ok_or_else(|| ApiError::openai(AppError::not_found("任务不存在")))?;
-    Ok(Json(task_view(&task)))
+    let want_b64 = task.response_format == "b64_json";
+    // base64 走流：每张图按需从磁盘读，编完就丢，不整串驻留。
+    let data_dir = gpt2apirs_core::paths::data_dir().ok();
+    let items = task
+        .images
+        .iter()
+        .map(|image| {
+            let source = if want_b64 {
+                match &data_dir {
+                    Some(root) => crate::image_response::ItemSource::File(
+                        root.join(image.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)),
+                    ),
+                    None => crate::image_response::ItemSource::Url(format!(
+                        "{}/{}",
+                        task.base_url, image.rel_path
+                    )),
+                }
+            } else {
+                crate::image_response::ItemSource::Url(format!("{}/{}", task.base_url, image.rel_path))
+            };
+            crate::image_response::StreamItem {
+                source,
+                prompt: None,
+            }
+        })
+        .collect();
+    let head = task_head(&task);
+    let mut prefix = serde_json::to_string(&serde_json::Value::Object(head)).unwrap_or_default();
+    prefix.truncate(prefix.trim_end().len() - 1);
+    prefix.push_str(",\"data\":[");
+    Ok(crate::image_response::StreamedJson {
+        prefix,
+        items,
+        suffix: "]}".to_string(),
+    }
+    .into_response())
 }
 
 /// `DELETE /api/image-tasks/{id}`
