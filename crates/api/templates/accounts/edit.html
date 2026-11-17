@@ -1,0 +1,35 @@
+{% extends "shell.html" %}
+{% block title %}编辑账号 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>编辑账号</h1></header>
+
+<section class="panel">
+  <p class="muted"><a href="/accounts">← 返回账号池</a></p>
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
+  <form class="edit-form" method="post" action="/accounts/{{ id }}/edit">
+    <label>邮箱<input name="email" value="{{ email }}" placeholder="可留空"></label>
+    <label>代理<input name="proxy" value="{{ proxy }}" placeholder="留空走全局出口，例如 http://127.0.0.1:17899"></label>
+    <label>配额<input name="quota" value="{{ quota }}" inputmode="numeric"></label>
+    <label>套餐
+      <select name="plan">
+        <option value="free"{% if plan == "free" %} selected{% endif %}>free</option>
+        <option value="plus"{% if plan == "plus" %} selected{% endif %}>plus</option>
+        <option value="pro"{% if plan == "pro" %} selected{% endif %}>pro</option>
+      </select>
+    </label>
+    <label>状态
+      <select name="status">
+        <option value="normal"{% if status == "normal" %} selected{% endif %}>正常</option>
+        <option value="limited"{% if status == "limited" %} selected{% endif %}>限流</option>
+        <option value="abnormal"{% if status == "abnormal" %} selected{% endif %}>异常</option>
+        <option value="disabled"{% if status == "disabled" %} selected{% endif %}>禁用</option>
+      </select>
+    </label>
+    <div class="edit-actions">
+      <button type="submit">保存</button>
+      <a class="btn btn--ghost" href="/accounts">取消</a>
+    </div>
+  </form>
+  <p class="muted">改配额会同时标记为「已人工确认」，避免下一轮同步被覆盖。</p>
+</section>
+{% endblock %}

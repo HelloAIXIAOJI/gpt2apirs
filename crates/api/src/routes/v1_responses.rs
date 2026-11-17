@@ -208,11 +208,11 @@ pub async fn create_response(
 
     // 真流式：命中时直接返回 SSE，不走「先跑完再切块」
     if request.stream.unwrap_or(false) {
-        let handle = start_text_stream(&state, messages.clone(), &model, deadline).await?;
+        let handle = start_text_stream(&state, messages.clone(), Vec::new(), &model, deadline).await?;
         return Ok(build_live_stream(handle, &model).into_response());
     }
 
-    let outcome = run_text(&state, &messages, &model, deadline).await?;
+    let outcome = run_text(&state, &messages, &[], &model, deadline).await?;
 
     let prompt_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
     let completion_tokens = gpt2apirs_core::tokens::count_text_tokens(&outcome.result.text, &model);
@@ -257,7 +257,7 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     let created = chrono::Utc::now().timestamp();
     let model = model.to_string();
     let snapshot = handle.snapshot.clone();
-    let messages = handle.messages.clone();
+    let messages = handle.billing_messages.clone();
     let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
     // 1) 开头两件
@@ -382,7 +382,7 @@ mod live_stream_tests {
     #[tokio::test]
     async fn delta_arrives_before_source_closes() {
         let (sender, handle) = channel_handle();
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
         let mut body = response.into_body().into_data_stream();
 
         sender.send(Ok("第一段".to_string())).await.expect("发送");
@@ -416,7 +416,7 @@ mod live_stream_tests {
                 finished: true,
             };
         }
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
 
         sender.send(Ok("你好".to_string())).await.expect("发送");
         sender.send(Ok("世界".to_string())).await.expect("发送");
@@ -436,7 +436,7 @@ mod live_stream_tests {
     #[tokio::test]
     async fn upstream_error_is_reported_at_tail() {
         let (sender, handle) = channel_handle();
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
 
         sender.send(Ok("部分".to_string())).await.expect("发送");
         sender

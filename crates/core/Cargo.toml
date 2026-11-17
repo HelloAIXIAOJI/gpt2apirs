@@ -9,6 +9,9 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+rand = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 tiktoken-rs = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -23,5 +26,6 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 image = { workspace = true }
+fs4 = "1.1.0"
 
 [dev-dependencies]

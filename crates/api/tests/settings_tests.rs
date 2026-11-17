@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
-const AUTH_KEY: &str = "test-admin-key-123456";
+const TEST_KEY: &str = "test-admin-key-123456";
 
 fn state() -> Arc<AppState> {
     let map: HashMap<&'static str, &'static str> = HashMap::from([
@@ -22,7 +22,7 @@ fn state() -> Arc<AppState> {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", AUTH_KEY),
+        ("ADMIN_KEY", TEST_KEY),
     ]);
     let lookup = move |key: &str| map.get(key).map(|v| v.to_string()).filter(|v| !v.is_empty());
     let config = Arc::new(BootstrapConfig::from_lookup(&lookup).expect("配置"));
@@ -43,6 +43,10 @@ fn state() -> Arc<AppState> {
         )),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把的 key
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(TEST_KEY, "test"),
+        )),
     ))
 }
 
@@ -77,7 +81,7 @@ async fn get_settings_requires_auth() {
 
 #[tokio::test]
 async fn get_settings_lists_numeric_and_string_specs() {
-    let (status, body) = send("GET", None, Some(AUTH_KEY)).await;
+    let (status, body) = send("GET", None, Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     let numerics = body["numerics"].as_array().expect("numerics");
@@ -117,7 +121,7 @@ async fn get_settings_lists_numeric_and_string_specs() {
 
 #[tokio::test]
 async fn put_rejects_empty_values() {
-    let (status, body) = send("PUT", Some(json!({"values": {}})), Some(AUTH_KEY)).await;
+    let (status, body) = send("PUT", Some(json!({"values": {}})), Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["detail"]["param"], "values", "{body}");
 }
@@ -127,7 +131,7 @@ async fn put_rejects_unknown_key() {
     let (status, body) = send(
         "PUT",
         Some(json!({"values": {"no_such_setting": 1}})),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -146,7 +150,7 @@ async fn put_rejects_non_numeric_value_for_numeric_key() {
     let (status, body) = send(
         "PUT",
         Some(json!({"values": {"image_account_concurrency": "很多"}})),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -158,7 +162,7 @@ async fn put_rejects_object_value_for_string_key() {
     let (status, body) = send(
         "PUT",
         Some(json!({"values": {"chat_blocked_keywords": {"oops": true}}})),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -172,7 +176,7 @@ async fn put_valid_passes_validation_then_tries_database() {
     let (status, body) = send(
         "PUT",
         Some(json!({"values": {"image_account_concurrency": 2, "chat_blocked_keywords": "a,b"}})),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_ne!(

@@ -2,18 +2,15 @@
 
 use std::sync::Arc;
 
-use axum::Json;
+use axum::response::IntoResponse;
 use axum::extract::{Request, State};
 use gpt2apirs_core::AppError;
 use gpt2apirs_generate::{ImageRequest, default_request_deadline};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::error::ApiError;
 use crate::routes::image_flow::run_generation;
 use crate::state::AppState;
-
-/// 合法张数上限。
-const MAX_N: u32 = 4;
 
 #[derive(Debug, Deserialize)]
 /// OpenAI 兼容的生成请求。
@@ -49,39 +46,13 @@ pub struct ImageGenerationRequest {
     pub stream: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
-/// 单张结果的 OpenAI 结构。
-pub struct ImageDatum {
-    /// base64 内容（`b64_json` 模式）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub b64_json: Option<String>,
-    /// 图片 URL（`url` 模式）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    /// 修正后的提示词（本实现原样回传）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub revised_prompt: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-/// OpenAI 兼容的生成响应。
-pub struct ImageGenerationResponse {
-    /// 生成时间戳（秒）。
-    pub created: i64,
-    /// 结果列表。
-    pub data: Vec<ImageDatum>,
-    /// token 用量。
-    pub usage: serde_json::Value,
-    /// 上游没出图时的文字说明。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
 
 /// `POST /v1/images/generations`
 pub async fn generate(
+    identity: Option<axum::Extension<crate::auth::ApiKeyIdentity>>,
     State(state): State<Arc<AppState>>,
     request: Request,
-) -> Result<Json<ImageGenerationResponse>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     // 申请 body：先取 Host 用于拼 URL，再读 JSON（顺序不能反）
     let host = request
         .headers()
@@ -122,9 +93,10 @@ pub async fn generate(
     }
 
     let n = body.n.unwrap_or(1);
-    if n == 0 || n > MAX_N {
+    let limit = crate::routes::image_common::max_n(&state.settings);
+    if n == 0 || n > limit {
         return Err(ApiError::openai(AppError::invalid_param(
-            format!("n 必须在 1..={MAX_N}"),
+            format!("n 必须在 1..={limit}"),
             "n",
         )));
     }
@@ -141,7 +113,8 @@ pub async fn generate(
     }
     if body.stream == Some(true) {
         return Err(ApiError::openai(AppError::invalid_param(
-            "stream 暂不支持",
+            "上游不提供逐块图片流（SSE 只回 sediment:// 指针，字节要等生成完成后另行下载）；\
+        要边等边查进度请用 POST /api/image-tasks 提交，再用 GET /api/image-tasks/{id} 轮询",
             "stream",
         )));
     }
@@ -150,8 +123,8 @@ pub async fn generate(
     let requested_model = body
         .model
         .clone()
-        .unwrap_or_else(|| gpt2apirs_generate::models::default_model().to_string());
-    if !gpt2apirs_generate::models::is_supported(&requested_model) {
+        .unwrap_or_else(|| gpt2apirs_generate::models::default_image_model().to_string());
+    if !gpt2apirs_generate::models::is_supported_image(&requested_model) {
         let supported = gpt2apirs_generate::models::SUPPORTED_MODELS.join(", ");
         let mut message = format!("不支持的模型 {requested_model:?}；当前支持: {supported}");
         if gpt2apirs_generate::models::NOT_YET_SUPPORTED_MODELS
@@ -173,23 +146,30 @@ pub async fn generate(
     };
     let frame_count = body.frame_count;
     let frame_duration_ms = body.frame_duration_ms;
+    let size = crate::routes::image_common::checked_size(body.size.as_deref())?;
+    let quality = crate::routes::image_common::checked_quality(body.quality.as_deref())?;
 
     let mut image_request = ImageRequest::new(prompt.clone()).with_n(n);
+    // 只有要回 b64 时才保留字节；url 模式图已落盘，留着纯属白占内存。
+    image_request.keep_bytes = response_format != "url";
     image_request.model = requested_model.clone();
     image_request.upstream_model =
         gpt2apirs_generate::models::upstream_model_for(&requested_model).to_string();
     image_request.output_format = output_format;
     image_request.frame_count = frame_count;
     image_request.frame_duration_ms = frame_duration_ms;
+    image_request.size = size;
+    image_request.quality = quality.clone();
 
-    let quality = body.quality.clone().unwrap_or_else(|| "auto".to_string());
+    let quality = quality.unwrap_or_else(|| "auto".to_string());
     let base_url = state.public_base_url(&scheme, &host);
 
     let deadline = default_request_deadline(&state.settings);
 
     // 从账号池取一个账号；租约 Drop 时自动归还槽位。
     // ---- 并行 n 张 + 换号重试（见 image_flow）----
-    let slots = run_generation(&state, image_request, deadline).await?;
+        crate::routes::image_flow::ensure_disk_space()?;
+    let mut slots = run_generation(&state, image_request, deadline).await?;
 
     let mut images: Vec<&gpt2apirs_generate::GeneratedImage> = Vec::new();
     for slot in &slots {
@@ -197,6 +177,13 @@ pub async fn generate(
             images.push(image);
         }
     }
+    if images.len() > n as usize {
+        // 上游偶尔会多给一张：不裁剪，全部返回（数据留全）。
+        tracing::info!(requested = n, got = images.len(), "上游多返回了图片");
+    }
+    let key = identity.map(|axum::Extension(value)| value);
+    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[], key.as_ref()).await;
+
     tracing::info!(
         slots = slots.len(),
         images = images.len(),
@@ -204,7 +191,6 @@ pub async fn generate(
         "生图完成"
     );
 
-    let mut data = Vec::with_capacity(images.len());
     let mut output_tokens = 0i64;
     for image in &images {
         output_tokens += gpt2apirs_core::tokens::count_generated_image_tokens(
@@ -212,25 +198,33 @@ pub async fn generate(
             image.height,
             &quality,
         );
-        if response_format == "url" {
-            data.push(ImageDatum {
-                b64_json: None,
-                url: Some(format!("{base_url}/{}", image.rel_path)),
-                revised_prompt: Some(prompt.clone()),
-            });
-        } else {
-            data.push(ImageDatum {
-                b64_json: Some(image.to_base64()),
-                url: None,
-                revised_prompt: Some(prompt.clone()),
+    }
+    let want_b64 = response_format != "url";
+    // 借用到此为止：下面把字节从 slots 里搬进流式响应，避免整串 base64 复制。
+    drop(images);
+    let mut items = Vec::with_capacity(slots.iter().map(|slot| slot.images.len()).sum());
+    for slot in &mut slots {
+        for image in std::mem::take(&mut slot.images) {
+            items.push(crate::image_response::StreamItem {
+                source: if want_b64 {
+                    crate::image_response::ItemSource::Bytes(image.bytes)
+                } else {
+                    crate::image_response::ItemSource::Url(if image.rel_path.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{base_url}/{}", image.rel_path)
+                    })
+                },
+                prompt: Some(prompt.clone()),
             });
         }
     }
 
-    Ok(Json(ImageGenerationResponse {
+    Ok(crate::image_response::ImageResponse {
         created: chrono::Utc::now().timestamp(),
-        data,
         usage: gpt2apirs_core::tokens::image_usage(0, 0, output_tokens),
+        items,
         message: None,
-    }))
+    }
+    .into_response())
 }

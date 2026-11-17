@@ -1,0 +1,11 @@
+{% extends "shell.html" %}
+{% block title %}任务 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>任务</h1></header>
+
+<section class="panel">
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
+  <p class="muted">异步生图任务只存在内存里，进程重启即清空。</p>
+  {% include "tasks_panel.html" %}
+</section>
+{% endblock %}

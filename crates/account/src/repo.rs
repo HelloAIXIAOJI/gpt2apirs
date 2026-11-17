@@ -627,8 +627,14 @@ fn row_to_account(row: &PgRow) -> Account {
         email: row.get("email"),
         upstream_account_id: row.get("upstream_account_id"),
         plan: Plan::parse(row.get::<String, _>("plan").as_str()),
-        source: Source::parse(row.get::<String, _>("source").as_str()),
-        status: AccountStatus::parse(row.get::<String, _>("status").as_str()),
+        source: Source::parse(row.get::<String, _>("source").as_str()).unwrap_or_else(|| {
+            tracing::warn!(value = %row.get::<String, _>("source"), "账号来源是未知值，按 web 处理");
+            Source::Web
+        }),
+        status: AccountStatus::parse(row.get::<String, _>("status").as_str()).unwrap_or_else(|| {
+            tracing::warn!(value = %row.get::<String, _>("status"), "账号状态是未知值，按异常处理（不会被选中）");
+            AccountStatus::Abnormal
+        }),
         quota: row.get("quota"),
         quota_confirmed: row.get("quota_confirmed"),
         restore_at: row.get("restore_at"),

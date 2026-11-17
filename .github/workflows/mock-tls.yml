@@ -1,0 +1,23 @@
+name: mock 测试（tls 链路）
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+jobs:
+  mock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 安装 BoringSSL 需要的工具
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build nasm
+      - run: |
+          cargo test -p gpt2apirs-generate --features tls \
+            --test mock_upstream --test mock_upstream_image --test mock_faults

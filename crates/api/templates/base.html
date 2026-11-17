@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}管理后台{% endblock %}</title>
+  <link rel="stylesheet" href="/admin/assets/admin.css">
+  <script src="/admin/assets/htmx.min.js" defer></script>
+  <script>
+    // toast 用自己的 OOB 片段插入；这里只负责四秒后自动移除。
+    const pruneToasts = () => {
+      document.querySelectorAll('#toasts .toast').forEach((node) => {
+        if (node.dataset.timer) return;
+        node.dataset.timer = '1';
+        setTimeout(() => node.remove(), 4000);
+      });
+    };
+    document.body.addEventListener('htmx:afterSwap', pruneToasts);
+    document.body.addEventListener('htmx:oobAfterSwap', pruneToasts);
+  </script>
+</head>
+<body>
+{% block body %}{% endblock %}
+<div id="toasts" aria-live="polite"></div>
+</body>
+</html>

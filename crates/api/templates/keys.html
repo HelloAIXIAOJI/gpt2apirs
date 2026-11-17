@@ -1,0 +1,54 @@
+{% extends "shell.html" %}
+{% block title %}密钥 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>密钥</h1></header>
+
+<section class="panel">
+  <p class="summary">生效中 {{ active_count }} 把 · 记录共 {{ total }} 条</p>
+  {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+
+  {% if !plaintext.is_empty() %}
+  <div class="new-key">
+    <p><strong>新密钥只显示这一次，请立刻复制保存：</strong></p>
+    <code class="new-key-value">{{ plaintext }}</code>
+  </div>
+  {% endif %}
+
+  <form class="filters" method="post" action="/keys/create">
+    <label>名称<input name="name" placeholder="例如 本机脚本" required></label>
+    <button type="submit">新建密钥</button>
+  </form>
+
+  <form id="batch-form" method="post" action="/keys/batch" hx-post="/keys/batch" hx-swap="none">
+    <div class="batch-bar">
+      <button class="btn btn--ghost" type="submit" name="action" value="revoke">批量吊销</button>
+      <button class="btn btn--danger" type="submit" name="action" value="delete" onclick="return confirm('删除不可恢复，确定删除选中的密钥？')">批量删除</button>
+      <span class="muted">先勾选下面的行</span>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th class="pick"><input type="checkbox" onclick="document.querySelectorAll('#batch-form input[name=ids]').forEach((box) => box.checked = this.checked)"></th>
+          <th>名称</th><th>前缀</th><th>创建</th><th>最后使用</th><th>状态</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="keys-body">
+        {% for row in rows %}{{ row|safe }}{% endfor %}
+      </tbody>
+    </table>
+  </form>
+
+  <nav class="pager">
+    {% if has_prev %}<a class="btn btn--ghost" href="{{ prev_href }}">上一页</a>{% endif %}
+    <span class="muted">{{ page_label }}</span>
+    {% if has_next %}<a class="btn btn--ghost" href="{{ next_href }}">下一页</a>{% endif %}
+  </nav>
+
+  {% if rows.is_empty() && error.is_empty() %}
+  <p class="empty">还没有密钥。调用 /v1/* 之前先在这里建一把。</p>
+  {% endif %}
+
+  <p class="muted">密钥库里只存哈希，明文只在创建时出现一次；吊销保留记录，删除是物理清理。</p>
+</section>
+{% endblock %}

@@ -39,10 +39,70 @@ pub struct NumericSpec {
     pub description: &'static str,
 }
 
-/// P1 需要的 12 项数值设置。
+/// 运行层数值设置。
 ///
 /// 数值与上游实测边界逐项对齐。
 pub static NUMERIC_SPECS: &[NumericSpec] = &[
+    NumericSpec {
+        key: "image_input_max_mb",
+        default: 10.0,
+        min: 1.0,
+        max: Some(50.0),
+        kind: NumericKind::Integer,
+        unit: Some("MB"),
+        restart_required: false,
+        description: "单张参考图（含 mask）的大小上限；超过直接拒绝，不读进内存。",
+    },
+    NumericSpec {
+        key: "image_archive_threshold_mb",
+        default: 0.0,
+        min: 0.0,
+        max: Some(1_048_576.0),
+        kind: NumericKind::Integer,
+        unit: Some("MB"),
+        restart_required: false,
+        description: "在线图片总量超过该值自动归档最老的一批（0 = 关闭，默认关）。",
+    },
+    NumericSpec {
+        key: "image_max_n",
+        default: 4.0,
+        min: 1.0,
+        max: Some(32.0),
+        kind: NumericKind::Integer,
+        unit: None,
+        restart_required: false,
+        description: "单次请求允许的最大张数；上游上限变化时改这里，不用发版。",
+    },
+    NumericSpec {
+        key: "proxy_enabled",
+        default: 0.0,
+        min: 0.0,
+        max: Some(1.0),
+        kind: NumericKind::Integer,
+        unit: None,
+        restart_required: false,
+        description: "是否启用订阅节点作为全局出口：1 启用，0 直连。",
+    },
+    NumericSpec {
+        key: "proxy_auto_refresh_minutes",
+        default: 60.0,
+        min: 5.0,
+        max: None,
+        kind: NumericKind::Integer,
+        unit: Some("minutes"),
+        restart_required: false,
+        description: "订阅自动刷新间隔；0 表示不自动刷新。",
+    },
+    NumericSpec {
+        key: "proxy_probe_timeout_ms",
+        default: 5000.0,
+        min: 1000.0,
+        max: Some(30000.0),
+        kind: NumericKind::Integer,
+        unit: Some("ms"),
+        restart_required: false,
+        description: "节点测速的单项超时。",
+    },
     NumericSpec {
         key: "image_poll_timeout_secs",
         default: 60.0,
@@ -114,6 +174,16 @@ pub static NUMERIC_SPECS: &[NumericSpec] = &[
         description: "单次请求最多尝试几个账号",
     },
     NumericSpec {
+        key: "text_max_account_attempts",
+        default: 3.0,
+        min: 2.0,
+        max: None,
+        kind: NumericKind::Integer,
+        unit: None,
+        restart_required: false,
+        description: "文本请求最多尝试几个账号",
+    },
+    NumericSpec {
         key: "image_settle_secs",
         default: 5.0,
         min: 0.5,
@@ -172,6 +242,16 @@ pub static NUMERIC_SPECS: &[NumericSpec] = &[
         unit: Some("seconds"),
         restart_required: false,
         description: "文本结果缓存有效期；0 = 关闭",
+    },
+    NumericSpec {
+        key: "image_task_concurrency",
+        default: 2.0,
+        min: 1.0,
+        max: Some(16.0),
+        kind: NumericKind::Integer,
+        unit: None,
+        restart_required: true,
+        description: "异步生图任务并发上限（重启生效）",
     },
 ];
 
@@ -236,6 +316,27 @@ pub struct StringSpec {
 /// 于是没有任何途径能把它设进去，功能形同虚设。
 pub static STRING_SPECS: &[StringSpec] = &[
     StringSpec {
+        key: "proxy_subscription_url",
+        default: "",
+        max_len: 1024,
+        restart_required: false,
+        description: "订阅地址（Clash 格式）。保存后由管理面「开始」按钮拉取并启动代理核。",
+    },
+    StringSpec {
+        key: "proxy_selected_node",
+        default: "",
+        max_len: 128,
+        restart_required: false,
+        description: "当前选中的出口节点名，重启后恢复。",
+    },
+    StringSpec {
+        key: "proxy_probe_url",
+        default: "https://www.gstatic.com/generate_204",
+        max_len: 256,
+        restart_required: false,
+        description: "测速探测目标地址。",
+    },
+    StringSpec {
         key: "rich_text_policy",
         default: "guard+strip",
         max_len: 32,
@@ -288,12 +389,20 @@ mod tests {
             "image_account_concurrency",
             "account_processing_concurrency",
             "image_max_account_attempts",
+            "text_max_account_attempts",
             "image_settle_secs",
             "image_retention_hours",
             "log_retention_hours",
             "console_request_timeout_secs",
             "refresh_account_interval_minute",
             "chat_cache_ttl_secs",
+            "image_task_concurrency",
+            "proxy_enabled",
+            "proxy_auto_refresh_minutes",
+            "proxy_probe_timeout_ms",
+            "image_input_max_mb",
+            "image_archive_threshold_mb",
+            "image_max_n",
         ];
         assert_eq!(NUMERIC_SPECS.len(), expected.len());
         for key in expected {

@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# 第三方源码目录：只作为 path 依赖，不进 workspace、不参与统一 lint
+exclude = ["vendor"]
 members = [
     "crates/core",
     "crates/http",
@@ -9,12 +11,14 @@ members = [
     "crates/storage",
     "crates/api",
     "crates/cli",
+    "crates/testkit",
+    "crates/proxy-core",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/yourname/gpt2apirs"
 authors = ["gpt2apirs contributors"]
@@ -28,6 +32,9 @@ gpt2apirs-account = { path = "crates/account" }
 gpt2apirs-generate = { path = "crates/generate" }
 gpt2apirs-storage = { path = "crates/storage" }
 gpt2apirs-api = { path = "crates/api" }
+# 仅测试用：本地 mock 上游（不发布）
+gpt2apirs-testkit = { path = "crates/testkit" }
+gpt2apirs-proxy-core = { path = "crates/proxy-core" }
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
@@ -67,6 +74,9 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 rand = "0.8"
 sha2 = "0.10"
+hmac = "0.12"
+flate2 = "1"
+tar = "0.4"
 sha3 = "0.10"
 hex = "0.4"
 regex = "1"
@@ -83,8 +93,29 @@ tiktoken-rs = "0.9"
 # .env 加载（与可执行文件同目录）
 dotenvy = "0.15"
 
+# dev/test 只留行号表：默认可执行各带一份上百 MB 的 .pdb，
+# 而测试二进制反复重编会在 build/ 下越堆越多，几周就能吃掉几十 GB。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# 代理核（vendor/shoes）需要的补丁依赖：全部指向 vendor 下的自包含快照
+[patch.crates-io]
+rustls = { path = "vendor/rustls/rustls" }
+blake3 = { path = "vendor/blake3" }
+h3 = { path = "vendor/h3/h3" }
+h3-quinn = { path = "vendor/h3/h3-quinn" }
+hickory-net = { path = "vendor/hickory/crates/net" }
+hickory-proto = { path = "vendor/hickory/crates/proto" }
+hickory-resolver = { path = "vendor/hickory/crates/resolver" }
+nix = { path = "vendor/nix" }
+smoltcp = { path = "vendor/smoltcp" }
+gotatun = { path = "vendor/gotatun/gotatun" }

@@ -78,24 +78,63 @@ pub fn parse_json(text: &str) -> Result<Vec<NewAccount>, ImportParseError> {
 }
 
 fn collect(value: &Value, out: &mut Vec<NewAccount>) {
+    collect_with(value, out, None);
+}
+
+/// 递归收集。外层对象作为上下文传下去：token 藏在子对象里时，
+/// 父层的邮箱与套餐不能丢（凭证嵌套的导出格式很常见）。
+fn collect_with(value: &Value, out: &mut Vec<NewAccount>, context: Option<&Map<String, Value>>) {
     match value {
         Value::Array(items) => {
             for item in items {
-                collect(item, out);
+                collect_with(item, out, context);
             }
         }
         Value::Object(map) => {
-            if let Some(access_token) = pick_string(map, &["access_token", "accessToken"]) {
-                out.push(from_object(map, access_token));
+            if let Some(access_token) = pick_string(map, &["access_token", "accessToken", "token"]) {
+                let merged = merge(context, map);
+                out.push(from_object(&merged, access_token));
                 return;
             }
-            // 没有 token 字段：继续往子节点找（兼容 {data:[...]} / {accounts:[...]}）
+            // 没有 token 字段：继续往子节点找（兼容 {data:[...]}、{accounts:[...]}、{credentials:{...}}）
             for child in map.values() {
-                collect(child, out);
+                collect_with(child, out, Some(map));
+            }
+        }
+        Value::String(text) => {
+            // 字符串数组里的裸 token：部分导出就是 ["eyJ...", "eyJ..."]
+            if looks_like_jwt(text) {
+                let empty = Map::new();
+                out.push(from_object(context.unwrap_or(&empty), text.trim().to_string()));
             }
         }
         _ => {}
     }
+}
+
+/// 合并父层与当前层，当前层优先。
+fn merge(context: Option<&Map<String, Value>>, current: &Map<String, Value>) -> Map<String, Value> {
+    let mut merged = context.cloned().unwrap_or_default();
+    for (key, value) in current {
+        merged.insert(key.clone(), value.clone());
+    }
+    merged
+}
+
+/// 是否像 JWT（三段 base64url 且足够长），用于从字符串数组里挑 token。
+pub fn looks_like_jwt(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.len() < 40 {
+        return false;
+    }
+    let parts: Vec<&str> = trimmed.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=')
+        })
 }
 
 fn from_object(map: &Map<String, Value>, access_token: String) -> NewAccount {
@@ -140,7 +179,13 @@ fn from_object(map: &Map<String, Value>, access_token: String) -> NewAccount {
         source,
         quota: 0,
         quota_confirmed: false,
-        proxy: pick_string(map, &["proxy"]).unwrap_or_default(),
+        proxy: pick_string(map, &["proxy", "proxy_url", "proxyUrl"])
+            .or_else(|| {
+                map.get("proxy")
+                    .and_then(Value::as_object)
+                    .and_then(|proxy| pick_string(proxy, &["url", "server"]))
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -224,6 +269,51 @@ mod tests {
         let text = r#"[{"access_token":"same"},{"access_token":"same"}]"#;
         let accounts = parse_json(text).expect("应解析");
         assert_eq!(accounts.len(), 1);
+    }
+
+    #[test]
+    fn nested_credentials_keeps_parent_email_and_plan() {
+        let text = r#"{"accounts":[{"email":"cpa@example.com","plan_type":"plus","credentials":{"access_token":"eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhYmMiLCJlbWFpbCI6ImFAYi5jb20ifQ.c2lnbmF0dXJlLXN0cmluZw","refresh_token":"rt-x"}}]}"#;
+        let accounts = parse_json(text).expect("应解析");
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].access_token, "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhYmMiLCJlbWFpbCI6ImFAYi5jb20ifQ.c2lnbmF0dXJlLXN0cmluZw");
+        assert_eq!(accounts[0].refresh_token.as_deref(), Some("rt-x"));
+        assert_eq!(
+            accounts[0].email.as_deref(),
+            Some("cpa@example.com"),
+            "父层邮箱不能因为 token 在子对象里就丢掉"
+        );
+        assert_eq!(accounts[0].plan, Plan::Plus);
+    }
+
+    #[test]
+    fn bare_token_strings_in_array_are_accepted() {
+        let text = r#"{"tokens":["eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhYmMiLCJlbWFpbCI6ImFAYi5jb20ifQ.c2lnbmF0dXJlLXN0cmluZw","eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhYmMiLCJlbWFpbCI6ImFAYi5jb20ifQ.c2lnbmF0dXJlLXN0cmluZw.extra"]}"#;
+        let accounts = parse_json(text).expect("应解析");
+        assert_eq!(accounts.len(), 1, "只有三段式 JWT 才算 token");
+        assert_eq!(accounts[0].access_token, "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhYmMiLCJlbWFpbCI6ImFAYi5jb20ifQ.c2lnbmF0dXJlLXN0cmluZw");
+    }
+
+    #[test]
+    fn short_strings_are_not_tokens() {
+        let text = r#"{"tokens":["free","a@b.com"]}"#;
+        assert!(matches!(parse_json(text), Err(ImportParseError::NoAccounts)));
+    }
+
+    #[test]
+    fn proxy_aliases_and_nested_object() {
+        let text = r#"[{"access_token":"tok-a","proxy_url":"http://127.0.0.1:7890"},{"access_token":"tok-b","proxy":{"url":"socks5://127.0.0.1:1080"}}]"#;
+        let accounts = parse_json(text).expect("应解析");
+        assert_eq!(accounts[0].proxy, "http://127.0.0.1:7890");
+        assert_eq!(accounts[1].proxy, "socks5://127.0.0.1:1080");
+    }
+
+    #[test]
+    fn token_alias_is_accepted() {
+        let text = r#"{"accounts":[{"token":"tok-z","email":"z@x.com"}]}"#;
+        let accounts = parse_json(text).expect("应解析");
+        assert_eq!(accounts[0].access_token, "tok-z");
+        assert_eq!(accounts[0].email.as_deref(), Some("z@x.com"));
     }
 
     #[test]

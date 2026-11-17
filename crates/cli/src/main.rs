@@ -58,6 +58,13 @@ async fn run() -> Result<()> {
     for warning in &config.warnings {
         tracing::warn!("{warning}");
     }
+    if let Some(upstream) = gpt2apirs_protocol::endpoints::base_url_override() {
+        tracing::warn!(
+            upstream,
+            env = gpt2apirs_protocol::endpoints::BASE_URL_ENV,
+            "上游站点被环境变量覆盖，所有出站请求都不会打到默认主机"
+        );
+    }
 
     // 数据目录（顺带创建，失败早报）
     match paths::data_dir() {
@@ -73,6 +80,7 @@ async fn run() -> Result<()> {
     // ---- 5. 迁移 ----
     run_migrations(&pool).await.context("数据库迁移失败")?;
     tracing::info!("数据库迁移已完成");
+
 
     // ---- 6. 运行层设置 ----
     let repo = PgSettingsRepo::new(pool.clone());
@@ -107,21 +115,36 @@ async fn run() -> Result<()> {
     let pool_config = PoolConfig {
         image_concurrency,
         auto_remove_invalid: false,
-        verify_on_select: true,
+    };
+    // 账号池按「账号代理 → 全局出口 → 直连」取客户端，出口换节点后无需重建。
+    let egress = Arc::new(gpt2apirs_api::state::Egress::default());
+    let clients = Arc::new(gpt2apirs_api::state::ClientFactory::new(
+        client.clone(),
+        egress.clone(),
+    ));
+    let resolver: gpt2apirs_account::ClientResolver = {
+        let clients = clients.clone();
+        Arc::new(move |proxy: &str| clients.get(proxy))
     };
     let accounts = Arc::new(
         AccountPool::new(account_repo, pool_config.clone())
-            .with_http((*client).clone(), gpt2apirs_http::DEFAULT_USER_AGENT),
+            .with_resolver(resolver, gpt2apirs_http::DEFAULT_USER_AGENT),
     );
     let loaded = accounts.reload().await.context("载入账号池快照失败")?;
     tracing::info!(accounts = loaded, concurrency = image_concurrency, "账号池已就绪");
     if loaded == 0 {
         tracing::warn!(
             "账号池为空：/v1/images/generations 会返回 503。\
-             请用 POST /api/accounts 导入账号（GPT2APIRS_ACCESS_TOKEN 已停用）"
+             请用 POST /api/accounts 导入账号"
         );
     }
 
+    let api_keys = Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Postgres(
+        gpt2apirs_storage::repo::ApiKeyRepo::new(pool.clone()),
+    ));
+    if api_keys.active_count().await.unwrap_or(0) == 0 {
+        tracing::warn!("库里还没有 API key：/v1/* 会全部 401，请登录后台在「密钥」页创建一把");
+    }
     let progress = Arc::new(ProgressStore::new());
     let oauth = Arc::new(OAuthSessions::new());
 
@@ -137,16 +160,79 @@ async fn run() -> Result<()> {
     );
     tracing::info!(interval_minutes = watcher_interval_minutes, "账号池维护任务已启动");
 
-    let state = Arc::new(AppState::new(
+    // 保留期清理：让 log_retention_hours / image_retention_hours 真正生效
+    let data_dir = paths::data_dir()?;
+    gpt2apirs_cli::retention::spawn(settings.clone(), pool.clone(), data_dir);
+
+    // 状态与账号池共用同一套出口：账号页的测试/同步/刷新才会走代理。
+    let state = Arc::new(AppState::with_egress(
         config.clone(),
         settings,
         pool.clone(),
         client,
+        clients,
+        egress,
         accounts.clone(),
         progress,
         oauth,
+        api_keys,
     ));
-    let app = build_router(state);
+    // 容量阈值自动归档（阈值 0 时后台什么也不做）。
+    gpt2apirs_cli::auto_archive::spawn(state.clone());
+
+    // 异步任务：上次进程留下的未完成任务标失败，最近历史灌回内存供页面查看。
+    {
+        let repo = gpt2apirs_storage::repo::ImageTaskRepo::new(state.db.clone());
+        match repo.fail_unfinished("服务重启，任务中断").await {
+            Ok(0) => {}
+            Ok(count) => tracing::warn!(count, "启动时把中断的任务标为失败"),
+            Err(error) => tracing::warn!(%error, "启动恢复任务状态失败"),
+        }
+        match repo.list_recent(200).await {
+            Ok(rows) => {
+                for row in &rows {
+                    state.image_tasks.hydrate(gpt2apirs_api::image_tasks::task_from_row(row));
+                }
+                tracing::info!(count = rows.len(), "已载入历史任务");
+            }
+            Err(error) => tracing::warn!(%error, "载入历史任务失败"),
+        }
+    }
+
+    // 订阅代理：设置里启用过就按保存的地址起一次；失败只记日志，不影响主服务。
+    if let Err(error) = gpt2apirs_api::routes::proxy::start_from_settings(&state).await {
+        tracing::warn!(%error, "订阅代理启动失败");
+    }
+    // 自动刷新：间隔来自运行设置，最小 5 分钟（服务商对高频拉取会 403）。
+    let refresh_minutes = state.settings.get_i64("proxy_auto_refresh_minutes").max(0) as u64;
+    if refresh_minutes >= 5 {
+        let task_state = state.clone();
+        tokio::spawn(async move {
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(refresh_minutes * 60));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                if task_state.settings.get_i64("proxy_enabled") != 1 {
+                    continue;
+                }
+                let url = task_state.settings.get_string("proxy_subscription_url");
+                let selected = task_state.settings.get_string("proxy_selected_node");
+                let selected = if selected.trim().is_empty() {
+                    None
+                } else {
+                    Some(selected.as_str())
+                };
+                // 定时任务只刷新订阅；出口由用户手动启动或启动时按设置恢复。
+                match task_state.proxy_service.refresh(&url, selected).await {
+                    Ok(status) => tracing::info!(nodes = status.node_count, "订阅已自动刷新"),
+                    Err(error) => tracing::warn!(%error, "订阅自动刷新失败"),
+                }
+            }
+        });
+    }
+
+    let app = build_router(state.clone());
 
     let listener = tokio::net::TcpListener::bind(config.bind_address())
         .await
@@ -154,7 +240,10 @@ async fn run() -> Result<()> {
     let local = listener.local_addr().context("读取监听地址失败")?;
     tracing::info!("监听 http://{local}");
 
-    axum::serve(listener, app)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("HTTP 服务异常退出")?;

@@ -1,0 +1,16 @@
+{% extends "shell.html" %}
+{% block title %}概览 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar">
+  <h1>概览</h1>
+</header>
+
+<section id="overview" class="stats">
+  {% for group in groups %}
+  <h2 class="section-title">{{ group.title }}</h2>
+  <div class="stat-grid">
+    {% for card in group.cards %}{{ card|safe }}{% endfor %}
+  </div>
+  {% endfor %}
+</section>
+{% endblock %}

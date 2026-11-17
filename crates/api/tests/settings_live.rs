@@ -18,11 +18,17 @@ use tower::ServiceExt;
 
 const KEYWORD: &str = "gpt2apirs-粗筛测试词";
 
-/// 从真实 env 文件读出的管理面 key（不写死，否则和运行配置不一致就 401）。
-static AUTH_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// 从真实 env 读出的登录口令（后台接口用它；与调用 /v1 的 API key 不同）。
+static ADMIN_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// 预置给 /v1 用的 API key（与 TEST_KEY 同值，模拟旧部署迁移后的 legacy key）。
+static API_KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-fn auth_key() -> &'static str {
-    AUTH_KEY.get().map(String::as_str).unwrap_or("")
+fn admin_key() -> &'static str {
+    ADMIN_KEY.get().map(String::as_str).unwrap_or("")
+}
+
+fn api_key() -> &'static str {
+    API_KEY.get().map(String::as_str).unwrap_or("")
 }
 
 fn prepare_env() -> bool {
@@ -43,9 +49,13 @@ fn prepare_env() -> bool {
 
 async fn state() -> Option<Arc<AppState>> {
     let config = Arc::new(BootstrapConfig::from_env().ok()?);
-    let _ = AUTH_KEY.set(config.auth_key.clone());
+    let _ = ADMIN_KEY.set(config.admin_key.clone());
     let pool = gpt2apirs_storage::pool::build_pool(&config).await.ok()?;
     let repo = PgSettingsRepo::new(pool.clone());
+    // 预置一把 API key，供 /v1/* 调用；多次调用 state() 必须用同一把
+    let test_key = API_KEY
+        .get_or_init(|| gpt2apirs_core::api_key::generate().plaintext)
+        .clone();
     let snapshot = repo.load().await.ok()?;
     let settings = Arc::new(RuntimeSettings::new(snapshot.data));
     Some(Arc::new(AppState::new(
@@ -61,6 +71,10 @@ async fn state() -> Option<Arc<AppState>> {
         )),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(&test_key, "test"),
+        )),
     )))
 }
 
@@ -74,7 +88,13 @@ async fn call(
         .method(method)
         .uri(path)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", auth_key()));
+                .header(
+            "authorization",
+            format!(
+                "Bearer {}",
+                if path.starts_with("/v1/") { api_key() } else { admin_key() }
+            ),
+        );
     let body = match body {
         Some(value) => Body::from(serde_json::to_vec(&value).expect("序列化")),
         None => Body::empty(),
@@ -92,7 +112,7 @@ async fn call(
 
 fn chat_body(text: &str) -> Value {
     json!({
-        "model": "gpt-5-5",
+        "model": "text",
         "messages": [{ "role": "user", "content": text }],
     })
 }

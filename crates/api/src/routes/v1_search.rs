@@ -61,9 +61,13 @@ pub async fn search(
             other => ApiError::openai(AppError::Internal(anyhow::anyhow!("{other}"))),
         })?;
     let account_id = lease.id();
+    crate::call_log::note_account(account_id);
     let token = lease.access_token().to_string();
 
-    let outcome = gpt2apirs_generate::search::search(&state.client, &token, &prompt, &model, deadline).await;
+    let client = state.client_for(lease.account().proxy.trim()).map_err(|error| {
+        ApiError::openai(AppError::Internal(anyhow::anyhow!("代理客户端构建失败：{error}")))
+    })?;
+    let outcome = gpt2apirs_generate::search::search(&client, &token, &prompt, &model, deadline).await;
     let succeeded = outcome.is_ok();
     state.pool.mark_text_result(account_id, succeeded).await.ok();
     drop(lease);

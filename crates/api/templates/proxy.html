@@ -1,0 +1,163 @@
+{% extends "shell.html" %}
+{% block title %}代理 · 管理后台{% endblock %}
+{% block content %}
+
+<header id="topbar"><h1>代理</h1></header>
+
+<section class="panel">
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
+  {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+
+  <div class="stat-grid stat-grid--four">
+    <article class="stat">
+      <span class="stat-label">代理进程</span>
+      <span class="stat-value">{% if running %}<span class="badge badge--ok">运行中</span>{% else %}<span class="badge">未运行</span>{% endif %}</span>
+      <span class="stat-sub">{% if !proxy_url.is_empty() %}{{ proxy_url }}{% else %}全部上游请求直连{% endif %}</span>
+    </article>
+    <article class="stat">
+      <span class="stat-label">当前出口</span>
+      <span class="stat-value">{% if !selected.is_empty() %}{{ selected }}{% else %}自动{% endif %}</span>
+      <span class="stat-sub">切节点立即生效，新请求走新出口</span>
+    </article>
+    <article class="stat">
+      <span class="stat-label">节点数</span>
+      <span class="stat-value">{{ node_count }}</span>
+      <span class="stat-sub">{% if !skipped.is_empty() %}跳过 {{ skipped.len() }} 个{% else %}无跳过{% endif %}</span>
+    </article>
+  </div>
+
+  {% if !last_error.is_empty() %}
+  <p class="stat-error">最近错误：{{ last_error }}</p>
+  {% endif %}
+  {% if !skipped.is_empty() %}
+  <details class="muted">
+    <summary>被跳过的节点（{{ skipped.len() }}）</summary>
+    <ul>{% for item in skipped %}<li>{{ item }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+
+  <h2 class="section-title">订阅</h2>
+  <form class="stack-form" method="post" action="/proxy/refresh">
+    <label for="url">订阅地址</label>
+    <input id="url" name="url" type="text" value="{{ subscription_url }}" placeholder="https://…" autocomplete="off">
+    <div class="batch-bar">
+      <button class="btn" type="submit">刷新订阅</button>
+    </div>
+  </form>
+  <p class="muted">刷新只更新节点表；启动用现有节点，两者互不依赖。</p>
+  <div class="batch-bar">
+    <form method="post" action="/proxy/start-cached" class="inline-form">
+      <button class="btn" type="submit">用现有节点启动</button>
+    </form>
+    <form method="post" action="/proxy/clearance" class="inline-form">
+      <button class="btn btn--ghost" type="submit">测 Cloudflare</button>
+    </form>
+    <form method="post" action="/proxy/stop" class="inline-form">
+      <button class="btn btn--ghost" type="submit" onclick="return confirm('停止后所有上游请求走直连，确定？')">停止代理</button>
+    </form>
+  </div>
+
+  <h2 class="section-title">节点</h2>
+  {% if nodes.is_empty() %}
+  <p class="empty">还没有节点：先启动一次订阅。</p>
+  {% else %}
+  <div class="batch-bar">
+    <button class="btn btn--ghost" type="button" id="probe-all">全部测速（10 并发）</button>
+    <span class="muted" id="probe-status"></span>
+  </div>
+  <table class="table">
+    <thead><tr><th>节点</th><th>协议</th><th>地址</th><th>延迟</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for node in nodes %}
+      <tr>
+        <td>{{ node.name }}{% if node.current %} <span class="badge badge--ok">当前</span>{% endif %}</td>
+        <td>{{ node.kind }}</td>
+        <td class="path">{{ node.endpoint }}</td>
+        <td class="num" data-probe="{{ node.name }}">{{ node.delay }}</td>
+        <td>
+          {% if !node.current %}
+          <form method="post" action="/proxy/select" class="inline-form">
+            <input type="hidden" name="name" value="{{ node.name }}">
+            <button class="btn btn--ghost" type="submit">切换到此</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+
+<script>
+  (function () {
+    var button = document.getElementById("probe-all");
+    if (!button) return;
+    var status = document.getElementById("probe-status");
+
+    function cellFor(name) {
+      return document.querySelector("[data-probe=\"" + CSS.escape(name) + "\"]");
+    }
+
+    async function probeOne(name) {
+      var cell = cellFor(name);
+      try {
+        var response = await fetch("/proxy/probe.json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ names: [name] })
+        });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        var payload = await response.json();
+        var item = (payload.results || [])[0];
+        if (cell) cell.classList.remove("probing");
+        if (item && item.delay_ms != null) {
+          if (cell) { cell.textContent = item.delay_ms + " ms"; cell.classList.remove("probe-bad"); }
+          return true;
+        }
+        if (cell) {
+          cell.textContent = "失败：" + ((item && item.error) || "未知");
+          cell.classList.add("probe-bad");
+        }
+        return false;
+      } catch (error) {
+        if (cell) {
+          cell.classList.remove("probing");
+          cell.textContent = "失败：" + error.message;
+          cell.classList.add("probe-bad");
+        }
+        return false;
+      }
+    }
+
+    button.addEventListener("click", async function () {
+      var cells = Array.prototype.slice.call(document.querySelectorAll("[data-probe]"));
+      var names = cells.map(function (cell) { return cell.getAttribute("data-probe"); });
+      cells.forEach(function (cell) {
+        cell.textContent = "测速中…";
+        cell.classList.add("probing");
+        cell.classList.remove("probe-bad");
+      });
+      button.disabled = true;
+      var cursor = 0;
+      var ok = 0;
+      var bad = 0;
+      var done = 0;
+      status.textContent = "0 / " + names.length;
+
+      async function worker() {
+        while (cursor < names.length) {
+          var name = names[cursor++];
+          (await probeOne(name)) ? ok++ : bad++;
+          done++;
+          status.textContent = done + " / " + names.length + "（成功 " + ok + "，失败 " + bad + "）";
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(10, names.length) }, worker));
+      status.textContent = "完成：成功 " + ok + "，失败 " + bad;
+      button.disabled = false;
+    });
+  })();
+</script>
+{% endblock %}

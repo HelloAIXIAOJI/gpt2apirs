@@ -97,6 +97,10 @@ impl From<AppError> for ApiError {
     }
 }
 
+/// 挂在响应上的错误码，供调用日志中间件读取。
+#[derive(Debug, Clone)]
+pub struct ErrorCodeTag(pub String);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.error.status())
@@ -112,7 +116,22 @@ impl IntoResponse for ApiError {
             );
         }
 
-        (status, Json(payload)).into_response()
+        let code = self.error.error_code().to_string();
+        let mut response = (status, Json(payload)).into_response();
+        if let AppError::RateLimited {
+            retry_after: Some(secs),
+            ..
+        } = &self.error
+        {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        // 中间件据此把错误码写进调用日志
+        response.extensions_mut().insert(ErrorCodeTag(code));
+        response
     }
 }
 
@@ -152,6 +171,15 @@ mod tests {
     }
 
     #[test]
+    fn not_found_code_can_be_overridden() {
+        assert_eq!(AppError::not_found("x").error_code(), "bad_request");
+        let coded = AppError::not_found_coded("模型 x 不存在", "model_not_found");
+        assert_eq!(coded.status(), 404);
+        assert_eq!(coded.error_code(), "model_not_found");
+        assert_eq!(coded.error_type(), "invalid_request_error");
+    }
+
+    #[test]
     fn status_codes_map_correctly() {
         assert_eq!(AppError::invalid("x").status(), 400);
         assert_eq!(AppError::unauthorized("x").status(), 401);
@@ -162,13 +190,7 @@ mod tests {
             .status(),
             403
         );
-        assert_eq!(
-            AppError::NotFound {
-                message: "x".into()
-            }
-            .status(),
-            404
-        );
+        assert_eq!(AppError::not_found("x").status(), 404);
         assert_eq!(
             AppError::RateLimited {
                 message: "x".into(),

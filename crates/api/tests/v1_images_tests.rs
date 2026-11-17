@@ -14,7 +14,7 @@ use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
-const AUTH_KEY: &str = "test-admin-key-123456";
+const TEST_KEY: &str = "test-admin-key-123456";
 
 fn state(access_token: Option<&'static str>) -> Arc<AppState> {
     let mut map: HashMap<&'static str, &'static str> = HashMap::from([
@@ -22,7 +22,7 @@ fn state(access_token: Option<&'static str>) -> Arc<AppState> {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", AUTH_KEY),
+        ("ADMIN_KEY", TEST_KEY),
     ]);
     if let Some(token) = access_token {
         map.insert("GPT2APIRS_ACCESS_TOKEN", token);
@@ -45,6 +45,10 @@ fn state(access_token: Option<&'static str>) -> Arc<AppState> {
         account_pool(&pool),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把与 TEST_KEY 相同的 key
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(TEST_KEY, "test"),
+        )),
     ))
 }
 
@@ -111,7 +115,7 @@ async fn rejects_empty_prompt() {
     let (status, body) = post_image(
         state(None),
         serde_json::json!({"prompt": "   "}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -124,7 +128,7 @@ async fn rejects_n_out_of_range() {
         let (status, body) = post_image(
             state(None),
             serde_json::json!({"prompt": "a cat", "n": n}),
-            Some(AUTH_KEY),
+            Some(TEST_KEY),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "n={n} 应被拒绝");
@@ -137,7 +141,7 @@ async fn rejects_bad_response_format() {
     let (status, body) = post_image(
         state(None),
         serde_json::json!({"prompt": "a cat", "response_format": "xml"}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -145,15 +149,64 @@ async fn rejects_bad_response_format() {
 }
 
 #[tokio::test]
+async fn rejects_malformed_size() {
+    let (status, body) = post_image(
+        state(None),
+        serde_json::json!({"prompt": "a cat", "size": "big"}),
+        Some(TEST_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["param"], "size", "错误应指向 size: {body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("宽x高"),
+        "应说明正确写法: {body}"
+    );
+}
+
+#[tokio::test]
+async fn rejects_unknown_quality() {
+    let (status, body) = post_image(
+        state(None),
+        serde_json::json!({"prompt": "a cat", "quality": "ultra"}),
+        Some(TEST_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["param"], "quality", "错误应指向 quality: {body}");
+}
+
+#[tokio::test]
+async fn accepts_auto_size() {
+    // auto 表示「不干预」，不该被当成非法值；池空 → 503 说明过了参数校验
+    let (status, body) = post_image(
+        state(None),
+        serde_json::json!({"prompt": "a cat", "size": "auto"}),
+        Some(TEST_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+}
+
+#[tokio::test]
 async fn rejects_stream() {
     let (status, body) = post_image(
         state(None),
         serde_json::json!({"prompt": "a cat", "stream": true}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["param"], "stream");
+    // 拒绝要指路：上游没有逐块图片流，异步任务才是边等边查的正路
+    let message = body["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("image-tasks") && message.contains("sediment"),
+        "错误信息应说明原因并指路：{message}"
+    );
 }
 
 #[tokio::test]
@@ -163,7 +216,7 @@ async fn empty_pool_returns_503_no_available_account() {
     let (status, body) = post_image(
         state(None),
         serde_json::json!({"prompt": "a cat"}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -185,7 +238,7 @@ async fn rejects_malformed_json() {
                 .method("POST")
                 .uri("/v1/images/generations")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {AUTH_KEY}"))
+                .header("authorization", format!("Bearer {TEST_KEY}"))
                 .body(Body::from("{not json"))
                 .expect("request"),
         )
@@ -202,14 +255,33 @@ async fn models_requires_auth() {
 }
 
 #[tokio::test]
-async fn models_lists_supported_only() {
-    let (status, body) = get_json(state(None), "/v1/models", Some(AUTH_KEY)).await;
+async fn models_lists_image_model_and_keeps_text_model_out_of_image_validation() {
+    let (status, body) = get_json(state(None), "/v1/models", Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["object"], "list");
     let data = body["data"].as_array().expect("data 应为数组");
-    assert!(!data.is_empty());
     let ids: Vec<&str> = data.iter().filter_map(|m| m["id"].as_str()).collect();
-    assert_eq!(ids, vec!["gpt-image-2"], "只应宣告真正支持的模型");
+    assert!(ids.contains(&"image"), "图片模型必须出现在目录里：{ids:?}");
+    // 目录里的文本模型不能反过来变成合法的图片模型
+    let text_ids: Vec<&str> = data
+        .iter()
+        .filter(|m| m["kind"] == "text")
+        .filter_map(|m| m["id"].as_str())
+        .collect();
+    assert!(!text_ids.is_empty(), "目录应包含文本模型");
+    for id in text_ids {
+        let (status, rejected) = post_image(
+            state(None),
+            serde_json::json!({"prompt": "a cat", "model": id}),
+            Some(TEST_KEY),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "文本模型 {id} 不该被图片接口接受：{rejected}"
+        );
+    }
     for item in data {
         assert_eq!(item["object"], "model");
         assert_eq!(item["owned_by"], "gpt2apirs");
@@ -221,7 +293,7 @@ async fn rejects_unsupported_model() {
     let (status, body) = post_image(
         state(None),
         serde_json::json!({"prompt": "a cat", "model": "dall-e-3"}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -236,8 +308,8 @@ async fn rejects_unsupported_model() {
 async fn rejects_codex_model_with_specific_hint() {
     let (status, body) = post_image(
         state(None),
-        serde_json::json!({"prompt": "a cat", "model": "codex-gpt-image-2"}),
-        Some(AUTH_KEY),
+        serde_json::json!({"prompt": "a cat", "model": "codex-image"}),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -252,7 +324,7 @@ async fn rejects_bad_output_format() {
     let (status, body) = post_image(
         state(None),
         serde_json::json!({"prompt": "a cat", "output_format": "bmp"}),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "不支持的输出格式必须拒绝");
@@ -270,7 +342,7 @@ async fn accepts_gif_output_format() {
             "frame_count": 20,
             "frame_duration_ms": 120
         }),
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_ne!(status, StatusCode::BAD_REQUEST, "gif 不该被参数校验拒绝: {body}");

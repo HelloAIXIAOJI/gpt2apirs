@@ -1,0 +1,16 @@
+[package]
+name = "gpt2apirs-proxy-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+shoes = { path = "../../vendor/shoes" }
+yaml-rust2 = "0.13"
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

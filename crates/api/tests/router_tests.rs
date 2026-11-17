@@ -15,7 +15,7 @@ use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
-const AUTH_KEY: &str = "test-admin-key-123456";
+const TEST_KEY: &str = "test-admin-key-123456";
 
 fn config() -> Arc<BootstrapConfig> {
     let map: HashMap<&'static str, &'static str> = HashMap::from([
@@ -23,7 +23,7 @@ fn config() -> Arc<BootstrapConfig> {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", AUTH_KEY),
+        ("ADMIN_KEY", TEST_KEY),
     ]);
     let lookup = move |key: &str| {
         map.get(key)
@@ -47,6 +47,10 @@ fn state_without_db() -> Arc<AppState> {
         account_pool(&pool),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把的 key
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(TEST_KEY, "test"),
+        )),
     ))
 }
 
@@ -132,7 +136,7 @@ async fn admin_route_accepts_correct_key() {
         build_router(state_without_db()),
         "GET",
         "/api/ping",
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -178,6 +182,10 @@ async fn health_reports_ok_with_real_database() {
         account_pool(&pool),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把的 key
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(TEST_KEY, "test"),
+        )),
     ));
 
     let (status, body) = send(build_router(state), "GET", "/health", None).await;

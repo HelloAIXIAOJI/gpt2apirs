@@ -77,23 +77,86 @@ impl OutputFormat {
 /// 等真有按图调优的需求再做成设置项。
 const JPEG_QUALITY: u8 = 90;
 
-/// 把格式/帧参数拼成上游提示词里的一段指令。
+/// 把格式/帧/尺寸参数拼成上游提示词里的一段指令。
 ///
-/// 上游没有单独的「输出格式」参数，只能靠提示词里的这句话表达意图；
-/// 帧参数同理。没给的值**不补默认**——凭空补一个帧数等于替用户改需求。
+/// 上游没有单独的「输出格式」「输出尺寸」「输出质量」参数，只能靠提示词里的这几句表达意图；
+/// 帧参数同理。没给的值**不补默认**——凭空补一个尺寸等于替用户改需求。
+/// 写了尺寸也**只是倾向**：上游仍会按提示词整体自适应，不保证精确。
 pub fn prompt_hints(
-    format: OutputFormat,
+    format: Option<OutputFormat>,
     frame_count: Option<u32>,
     frame_duration_ms: Option<u32>,
+    size: Option<&str>,
+    quality: Option<&str>,
 ) -> String {
-    let mut lines = vec![format!("生成格式为 {}。", format.label())];
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(format) = format {
+        lines.push(format!("生成格式为 {}。", format.label()));
+    }
     if let Some(count) = frame_count {
         lines.push(format!("frame_count: {count}"));
     }
     if let Some(duration) = frame_duration_ms {
         lines.push(format!("frame_duration_ms: {duration}"));
     }
+    if let Some(size) = size {
+        lines.push(format!("输出图片尺寸为 {size}。"));
+    }
+    if let Some(quality) = quality {
+        lines.push(format!("输出图片质量为 {quality}。"));
+    }
     lines.join("\n")
+}
+
+/// 解析 `quality` 参数。
+///
+/// `auto`、空串、未给 → `None`（不拼提示词）；`low`/`medium`/`high`/`hd` → 规范化；
+/// 其余 400。取值域与 token 估算保持一致，避免「能进 hint 但算不出 token」。
+pub fn parse_quality(raw: &str) -> Result<Option<String>, String> {
+    let text = raw.trim().to_ascii_lowercase();
+    if text.is_empty() || text == "auto" {
+        return Ok(None);
+    }
+    match text.as_str() {
+        "low" | "medium" | "high" | "hd" => Ok(Some(text)),
+        _ => Err(format!(
+            "quality 只能是 auto / low / medium / high，收到 {raw:?}"
+        )),
+    }
+}
+
+/// 单边像素上限（与上游常见上限一致；超过就不当作尺寸，避免拼出荒唐的提示词）。
+pub const MAX_SIZE_DIMENSION: u32 = 8192;
+
+/// 解析 `size` 参数。
+///
+/// `auto`、空串、未给 → `None`（不拼提示词）；合法 `宽x高` → 规范化的 `宽x高`；
+/// 其余一律报错，交给端点转成 400。**不接受**折角写法的其它单位或小数。
+pub fn parse_size(raw: &str) -> Result<Option<String>, String> {
+    let text = raw.trim().to_ascii_lowercase();
+    if text.is_empty() || text == "auto" {
+        return Ok(None);
+    }
+    let mut parts = text.split('x');
+    let (Some(width), Some(height), None) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(format!("尺寸必须写成 宽x高，收到 {raw:?}"));
+    };
+    let parse = |value: &str| -> Option<u32> {
+        let value = value.trim();
+        if value.len() < 2 || value.len() > 5 || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        value.parse::<u32>().ok()
+    };
+    let (Some(width), Some(height)) = (parse(width), parse(height)) else {
+        return Err(format!("尺寸必须写成 宽x高（各 2~5 位数字），收到 {raw:?}"));
+    };
+    if width > MAX_SIZE_DIMENSION || height > MAX_SIZE_DIMENSION {
+        return Err(format!(
+            "尺寸超过上限 {MAX_SIZE_DIMENSION}，收到 {raw:?}"
+        ));
+    }
+    Ok(Some(format!("{width}x{height}")))
 }
 
 /// 把提示词与 hint 拼起来。hint 为空时提示词保持原样。
@@ -263,13 +326,71 @@ mod tests {
 
     #[test]
     fn hints_include_only_given_frame_options() {
-        let hints = prompt_hints(OutputFormat::Gif, None, None);
+        let hints = prompt_hints(Some(OutputFormat::Gif), None, None, None, None);
         assert_eq!(hints, "生成格式为 gif。");
-        let hints = prompt_hints(OutputFormat::Gif, Some(20), None);
+        let hints = prompt_hints(Some(OutputFormat::Gif), Some(20), None, None, None);
         assert!(hints.contains("frame_count: 20"));
         assert!(!hints.contains("frame_duration_ms"), "没给就不该补默认值");
-        let hints = prompt_hints(OutputFormat::Gif, Some(20), Some(120));
+        let hints = prompt_hints(Some(OutputFormat::Gif), Some(20), Some(120), None, None);
         assert!(hints.contains("frame_duration_ms: 120"));
+    }
+
+    #[test]
+    fn size_parsing_accepts_canonical_forms() {
+        assert_eq!(parse_size("1024x1024").unwrap(), Some("1024x1024".to_string()));
+        assert_eq!(parse_size(" 1792X1024 ").unwrap(), Some("1792x1024".to_string()));
+        assert_eq!(parse_size("auto").unwrap(), None);
+        assert_eq!(parse_size("").unwrap(), None);
+        assert_eq!(parse_size("   ").unwrap(), None);
+    }
+
+    #[test]
+    fn size_parsing_rejects_junk() {
+        for bad in ["1024", "1024x", "x1024", "1024*1024", "10.5x10", "1x1", "99999x99999"] {
+            assert!(parse_size(bad).is_err(), "{bad} 应被拒绝");
+        }
+        assert!(parse_size("9000x100").is_err(), "超上限应被拒绝");
+    }
+
+    #[test]
+    fn size_goes_into_prompt_hints() {
+        let hints = prompt_hints(None, None, None, Some("1024x1024"), None);
+        assert_eq!(hints, "输出图片尺寸为 1024x1024。");
+        // 和格式/帧共存时顺序稳定：格式 → 帧 → 尺寸
+        let hints = prompt_hints(Some(OutputFormat::Gif), Some(20), None, Some("512x512"), None);
+        assert!(hints.starts_with("生成格式为 gif。"), "{hints}");
+        assert!(hints.contains("frame_count: 20"), "{hints}");
+        assert!(hints.ends_with("输出图片尺寸为 512x512。"), "{hints}");
+    }
+
+    #[test]
+    fn no_size_means_no_size_line() {
+        let hints = prompt_hints(Some(OutputFormat::Png), None, None, None, None);
+        assert!(!hints.contains("尺寸"), "没给尺寸就不该出现尺寸句：{hints}");
+    }
+
+    #[test]
+    fn quality_parsing_accepts_known_values() {
+        assert_eq!(parse_quality("high").unwrap(), Some("high".to_string()));
+        assert_eq!(parse_quality(" LOW ").unwrap(), Some("low".to_string()));
+        assert_eq!(parse_quality("hd").unwrap(), Some("hd".to_string()));
+        assert_eq!(parse_quality("auto").unwrap(), None);
+        assert_eq!(parse_quality("").unwrap(), None);
+    }
+
+    #[test]
+    fn quality_parsing_rejects_unknown() {
+        for bad in ["ultra", "4k", "true", "medium2"] {
+            assert!(parse_quality(bad).is_err(), "{bad} 应被拒绝");
+        }
+    }
+
+    #[test]
+    fn quality_goes_into_prompt_hints() {
+        let hints = prompt_hints(None, None, None, None, Some("high"));
+        assert_eq!(hints, "输出图片质量为 high。");
+        let hints = prompt_hints(None, None, None, Some("1024x1024"), Some("low"));
+        assert_eq!(hints, "输出图片尺寸为 1024x1024。\n输出图片质量为 low。");
     }
 
     #[test]

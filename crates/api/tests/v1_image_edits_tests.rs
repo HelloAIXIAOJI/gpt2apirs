@@ -15,7 +15,7 @@ use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
-const AUTH_KEY: &str = "test-admin-key-123456";
+const TEST_KEY: &str = "test-admin-key-123456";
 const BOUNDARY: &str = "----gpt2apirsTESTBOUNDARY";
 
 fn account_pool(db: &sqlx::PgPool) -> Arc<gpt2apirs_account::AccountPool> {
@@ -31,7 +31,7 @@ fn state() -> Arc<AppState> {
             "DATABASE_URL",
             "postgres://nobody:nobody@127.0.0.1:1/nodb?sslmode=disable",
         ),
-        ("AUTH_KEY", AUTH_KEY),
+        ("ADMIN_KEY", TEST_KEY),
     ]);
     let lookup = move |key: &str| map.get(key).map(|v| v.to_string()).filter(|v| !v.is_empty());
     let config = Arc::new(BootstrapConfig::from_lookup(&lookup).expect("配置"));
@@ -49,6 +49,10 @@ fn state() -> Arc<AppState> {
         account_pool(&pool),
         Arc::new(gpt2apirs_account::ProgressStore::new()),
         Arc::new(gpt2apirs_account::OAuthSessions::new()),
+        // 调用 /v1/* 用 API key：测试里预置一把与 TEST_KEY 相同的 key
+        Arc::new(gpt2apirs_storage::repo::ApiKeyStore::Memory(
+            gpt2apirs_storage::repo::MemoryApiKeys::new().with_key(TEST_KEY, "test"),
+        )),
     ))
 }
 
@@ -97,10 +101,18 @@ fn multipart_body(parts: Vec<Part>) -> Vec<u8> {
 }
 
 async fn post_multipart(parts: Vec<Part>, auth: Option<&str>) -> (StatusCode, Value) {
+    post_multipart_to("/v1/images/edits", parts, auth).await
+}
+
+async fn post_multipart_to(
+    path: &str,
+    parts: Vec<Part>,
+    auth: Option<&str>,
+) -> (StatusCode, Value) {
     let body = multipart_body(parts);
     let mut builder = Request::builder()
         .method("POST")
-        .uri("/v1/images/edits")
+        .uri(path)
         .header(
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -164,7 +176,7 @@ async fn rejects_unsupported_content_type() {
                 .method("POST")
                 .uri("/v1/images/edits")
                 .header("content-type", "text/plain")
-                .header("authorization", format!("Bearer {AUTH_KEY}"))
+                .header("authorization", format!("Bearer {TEST_KEY}"))
                 .body(Body::from("hello"))
                 .expect("request"),
         )
@@ -176,7 +188,7 @@ async fn rejects_unsupported_content_type() {
 #[tokio::test]
 async fn rejects_missing_prompt() {
     let (status, body) =
-        post_multipart(vec![Part::File("image", "a.png", tiny_png())], Some(AUTH_KEY)).await;
+        post_multipart(vec![Part::File("image", "a.png", tiny_png())], Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["param"], "prompt", "{body}");
 }
@@ -185,7 +197,7 @@ async fn rejects_missing_prompt() {
 async fn rejects_missing_image() {
     let (status, body) = post_multipart(
         vec![Part::Text("prompt", "make it blue".to_string())],
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -206,7 +218,7 @@ async fn rejects_n_out_of_range() {
             Part::Text("n", "9".to_string()),
             Part::File("image", "a.png", tiny_png()),
         ],
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -221,7 +233,7 @@ async fn rejects_stream() {
             Part::Text("stream", "true".to_string()),
             Part::File("image", "a.png", tiny_png()),
         ],
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -236,11 +248,41 @@ async fn rejects_bad_response_format() {
             Part::Text("response_format", "png".to_string()),
             Part::File("image", "a.png", tiny_png()),
         ],
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["param"], "response_format", "{body}");
+}
+
+#[tokio::test]
+async fn rejects_malformed_size() {
+    let (status, body) = post_multipart(
+        vec![
+            Part::File("image", "a.png", tiny_png()),
+            Part::Text("prompt", "换个背景".to_string()),
+            Part::Text("size", "1024".to_string()),
+        ],
+        Some(TEST_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["param"], "size", "错误应指向 size: {body}");
+}
+
+#[tokio::test]
+async fn rejects_unknown_quality() {
+    let (status, body) = post_multipart(
+        vec![
+            Part::File("image", "a.png", tiny_png()),
+            Part::Text("prompt", "换个背景".to_string()),
+            Part::Text("quality", "ultra".to_string()),
+        ],
+        Some(TEST_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["param"], "quality", "错误应指向 quality: {body}");
 }
 
 #[tokio::test]
@@ -252,7 +294,7 @@ async fn multipart_valid_body_reaches_account_pool() {
             Part::Text("prompt", "make it blue".to_string()),
             Part::File("image", "a.png", tiny_png()),
         ],
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -271,7 +313,7 @@ async fn json_body_with_data_url_reaches_account_pool() {
             }
         ),
     });
-    let (status, body) = post_json(body, Some(AUTH_KEY)).await;
+    let (status, body) = post_json(body, Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body["error"]["code"], "no_available_account", "{body}");
 }
@@ -282,7 +324,7 @@ async fn json_body_rejects_file_id_reference() {
         "prompt": "make it blue",
         "images": [{ "file_id": "file-123" }],
     });
-    let (status, body) = post_json(body, Some(AUTH_KEY)).await;
+    let (status, body) = post_json(body, Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
         body["error"]["message"]
@@ -304,7 +346,7 @@ async fn json_body_with_multiple_image_fields() {
             { "b64_json": b64, "filename": "b.png" }
         ],
     });
-    let (status, body) = post_json(body, Some(AUTH_KEY)).await;
+    let (status, body) = post_json(body, Some(TEST_KEY)).await;
     // 两张图都解析成功  走到取号
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
 }
@@ -318,7 +360,7 @@ async fn n_greater_than_one_reaches_account_pool() {
             Part::Text("n", "3".to_string()),
             Part::File("image", "a.png", tiny_png()),
         ],
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -336,9 +378,39 @@ async fn rejects_bad_output_format() {
             Part::Text("output_format", "tiff".to_string()),
             Part::File("image", "a.png", tiny_png()),
         ],
-        Some(AUTH_KEY),
+        Some(TEST_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "不支持的输出格式必须拒绝");
     assert_eq!(body["error"]["param"], "output_format");
+}
+
+#[tokio::test]
+async fn task_edits_requires_auth() {
+    let parts = vec![
+        Part::Text("prompt", "改一下".to_string()),
+        Part::File("image", "a.png", tiny_png()),
+    ];
+    let (status, _) = post_multipart_to("/api/image-tasks/edits", parts, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn task_edits_queues_reference_image_task() {
+    let parts = vec![
+        Part::Text("prompt", "把背景换成白色".to_string()),
+        Part::File("image", "ref.png", tiny_png()),
+    ];
+    let (status, body) = post_multipart_to("/api/image-tasks/edits", parts, Some(TEST_KEY)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "queued", "{body}");
+    assert!(body["id"].is_string(), "{body}");
+    assert_eq!(body["prompt"], "把背景换成白色");
+}
+
+#[tokio::test]
+async fn task_edits_requires_reference_image() {
+    let parts = vec![Part::Text("prompt", "只有提示词".to_string())];
+    let (status, body) = post_multipart_to("/api/image-tasks/edits", parts, Some(TEST_KEY)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }

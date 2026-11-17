@@ -3,9 +3,8 @@
 //! 与生图的三点差别：允许 `limited` 账号（文本不吃图片配额）；记账走 `mark_text_result`（**不扣**配额）；
 //! token 用 tiktoken 真实计算而不是估算。
 //!
-//! 上游是把整段 SSE 一次给全的（见 [docs/m4-text-stream.md]），所以这里**不是真流式**：
-//! 服务端拿到全文后切块下发。对客户端来说 SSE 格式合法，但首字延迟等于总生成时间。
-//! 要真流式必须改 `post_sse` 为增量读取通道 —— 记在 M4.19。
+//! 流式是**真流式**：握手后 `post_sse_stream` 边收边转，每拿到一个完整 SSE 事件就吐一个片段
+//! （见 `generate::text::generate_text_stream`）；首字延迟不再等于总生成时间。
 
 use std::sync::Arc;
 
@@ -48,39 +47,140 @@ pub struct ChatCompletionRequest {
     /// 工具列表（**不支持**，非空即拒）。
     #[serde(default)]
     pub tools: Option<Value>,
+    /// 输出模态（只支持 `text`；要图片请走生图端点）。
+    #[serde(default)]
+    pub modalities: Option<Value>,
 }
 
-/// 把一条消息的 `content` 取成纯文本。
-fn message_text(message: &ChatMessage) -> Result<String, ApiError> {
+/// 校验 `modalities`：只接受纯文本输出。
+///
+/// 这是**声明式能力开关**，不能像 temperature 那样默默忽略 ——
+/// 客户端说「我要图片模态」而我们只回文字，等于让它在错误的假设上继续跑。
+fn ensure_text_modalities(modalities: &Option<Value>) -> Result<(), ApiError> {
+    let Some(value) = modalities else { return Ok(()) };
+    let items = match value {
+        Value::Null => return Ok(()),
+        Value::Array(items) => items,
+        other => {
+            return Err(ApiError::openai(AppError::invalid_param(
+                format!("modalities 必须是字符串数组，收到：{other}"),
+                "modalities",
+            )));
+        }
+    };
+    for item in items {
+        let Some(kind) = item.as_str() else {
+            return Err(ApiError::openai(AppError::invalid_param(
+                format!("modalities 的元素必须是字符串，收到：{item}"),
+                "modalities",
+            )));
+        };
+        if kind.trim().eq_ignore_ascii_case("text") {
+            continue;
+        }
+        return Err(ApiError::openai(AppError::invalid_param(
+            format!(
+                "不支持输出模态 {kind:?}；本实现只返回文本，要出图请用 POST /v1/images/generations"
+            ),
+            "modalities",
+        )));
+    }
+    Ok(())
+}
+
+/// 一条消息的解析结果：纯文本 + 待上传的图片来源。
+struct ChatContent {
+    text: String,
+    images: Vec<gpt2apirs_generate::inputs::ImageSource>,
+}
+
+/// 把一条消息的 `content` 拆成纯文本与图片。
+///
+/// 图片在这里只做**收集**，上传要等拿到账号 token 之后（换号要重传）。
+fn message_content(message: &ChatMessage) -> Result<ChatContent, ApiError> {
     match &message.content {
-        Value::Null => Ok(String::new()),
-        Value::String(text) => Ok(text.clone()),
+        Value::Null => Ok(ChatContent { text: String::new(), images: Vec::new() }),
+        Value::String(text) => Ok(ChatContent { text: text.clone(), images: Vec::new() }),
         Value::Array(parts) => {
-            let mut collected = String::new();
+            let mut text = String::new();
+            let mut images = Vec::new();
             for part in parts {
                 let kind = part.get("type").and_then(Value::as_str).unwrap_or("text");
                 match kind {
                     "text" | "input_text" => {
-                        if let Some(text) = part.get("text").and_then(Value::as_str) {
-                            collected.push_str(text);
+                        if let Some(value) = part.get("text").and_then(Value::as_str) {
+                            text.push_str(value);
                         }
                     }
                     "image_url" | "image" | "input_image" => {
-                        return Err(ApiError::openai(AppError::invalid_param(
-                            "文本端点不支持图片输入；请用 /v1/images/edits",
-                            "messages",
-                        )));
+                        images.push(image_source_from_part(part)?);
                     }
                     _ => {}
                 }
             }
-            Ok(collected)
+            Ok(ChatContent { text, images })
         }
         other => Err(ApiError::openai(AppError::invalid_param(
             format!("content 类型不支持：{other}"),
             "messages",
         ))),
     }
+}
+
+/// 从一个图片 part 里取出图片来源。
+///
+/// 客户端写法不统一：`image_url` 可能是字符串，也可能是 `{url}` 对象；
+/// 有的直接给 `data`。这里按「对象里找 url / 字符串本身就是 url」处理。
+fn image_source_from_part(
+    part: &Value,
+) -> Result<gpt2apirs_generate::inputs::ImageSource, ApiError> {
+    let candidate = part
+        .get("image_url")
+        .and_then(|value| value.get("url").or(Some(value)))
+        .and_then(Value::as_str)
+        .or_else(|| part.get("url").and_then(Value::as_str))
+        .or_else(|| part.get("data").and_then(Value::as_str));
+    let Some(raw) = candidate else {
+        return Err(ApiError::openai(AppError::invalid_param(
+            "图片 part 缺少 url / data",
+            "messages",
+        )));
+    };
+    image_source_from_string(raw)
+}
+
+/// 把一段字符串转成图片来源：data URL / http(s) URL / 裸 base64。
+fn image_source_from_string(
+    raw: &str,
+) -> Result<gpt2apirs_generate::inputs::ImageSource, ApiError> {
+    use gpt2apirs_generate::inputs::ImageSource;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(ApiError::openai(AppError::invalid_param(
+            "图片地址为空",
+            "messages",
+        )));
+    }
+    if trimmed.starts_with("data:") {
+        return Ok(ImageSource::DataUrl(trimmed.to_string()));
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return Ok(ImageSource::RemoteUrl(trimmed.to_string()));
+    }
+    use base64::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(trimmed)
+        .map_err(|_| {
+            ApiError::openai(AppError::invalid_param(
+                "图片既不是 URL 也不是合法 base64",
+                "messages",
+            ))
+        })?;
+    Ok(ImageSource::Inline {
+        data,
+        filename: String::new(),
+        mime: String::new(),
+    })
 }
 
 fn normalize_role(role: &str) -> Result<String, ApiError> {
@@ -135,6 +235,7 @@ pub async fn chat_completions(
             crate::routes::text_common::tools_not_supported("chat.tools"),
         ));
     }
+    ensure_text_modalities(&request.modalities)?;
     if request.messages.is_empty() {
         return Err(ApiError::openai(AppError::invalid_param(
             "messages 不能为空",
@@ -144,13 +245,15 @@ pub async fn chat_completions(
 
     // ---- 归一化 ----
     let mut messages: Vec<(String, String)> = Vec::with_capacity(request.messages.len());
+    let mut images = Vec::new();
     for message in &request.messages {
         let role = normalize_role(&message.role)?;
-        let text = message_text(message)?;
-        messages.push((role, text));
+        let parsed = message_content(message)?;
+        messages.push((role, parsed.text));
+        images.extend(parsed.images);
     }
     let has_content = messages.iter().any(|(_, text)| !text.trim().is_empty());
-    if !has_content {
+    if !has_content && images.is_empty() {
         return Err(ApiError::openai(AppError::invalid_param(
             "messages 里没有非空文本内容",
             "messages",
@@ -169,7 +272,7 @@ pub async fn chat_completions(
         .model
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "gpt-5-5".to_string());
+        .unwrap_or_else(|| gpt2apirs_generate::models::DEFAULT_TEXT_MODEL.to_string());
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
 
     if request.stream.unwrap_or(false) {
@@ -177,6 +280,7 @@ pub async fn chat_completions(
         let handle = start_text_stream(
             &state,
             messages.clone(),
+            images.clone(),
             &requested_model,
             deadline,
         )
@@ -185,7 +289,7 @@ pub async fn chat_completions(
     }
 
     // ---- 取号  生成  记账（与其他文本端点共用）----
-    let outcome = run_text(&state, &messages, &requested_model, deadline).await?;
+    let outcome = run_text(&state, &messages, &images, &requested_model, deadline).await?;
     let result = &outcome.result;
     let diag = &outcome.diag;
 
@@ -236,7 +340,7 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     let created = chrono::Utc::now().timestamp();
     let model = model.to_string();
     let snapshot = handle.snapshot.clone();
-    let messages = handle.messages.clone();
+    let messages = handle.billing_messages.clone();
     let last_error: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
 
     // 1) role 块

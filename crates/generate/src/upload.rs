@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use gpt2apirs_core::Deadline;
 use gpt2apirs_http::Client;
-use gpt2apirs_protocol::endpoints::{BASE_URL, FILE_UPLOAD, file_uploaded};
+use gpt2apirs_protocol::endpoints::{FILE_UPLOAD, base_url, file_uploaded, url as upstream_url};
 use serde_json::Value;
 
 use crate::image_meta;
@@ -98,7 +98,7 @@ pub async fn upload_image(
     });
     let response = client
         .post_json(
-            &format!("{BASE_URL}{path}"),
+            &upstream_url(path),
             &gpt2apirs_http::api_headers(user_agent, token, path),
             &body,
             Some(create_timeout),
@@ -134,8 +134,8 @@ pub async fn upload_image(
         ("Content-Type", meta.mime.to_string()),
         ("x-ms-blob-type", "BlockBlob".to_string()),
         ("x-ms-version", "2020-04-08".to_string()),
-        ("Origin", BASE_URL.to_string()),
-        ("Referer", format!("{BASE_URL}/")),
+        ("Origin", base_url().to_string()),
+        ("Referer", format!("{}/", base_url())),
         ("User-Agent", user_agent.to_string()),
         (
             "Accept",
@@ -156,7 +156,7 @@ pub async fn upload_image(
     let confirm_path = file_uploaded(&file_id);
     let confirm = client
         .post_json(
-            &format!("{BASE_URL}{confirm_path}"),
+            &upstream_url(&confirm_path),
             &gpt2apirs_http::api_headers(user_agent, token, &confirm_path),
             &serde_json::json!({}),
             Some(confirm_timeout),

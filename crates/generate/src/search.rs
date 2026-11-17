@@ -8,7 +8,7 @@ use std::time::Duration;
 use gpt2apirs_core::Deadline;
 use gpt2apirs_http::Client;
 use gpt2apirs_protocol::conversation::parse_conversation_detail;
-use gpt2apirs_protocol::endpoints::{BASE_URL, CONVERSATION, CONVERSATION_PREPARE};
+use gpt2apirs_protocol::endpoints::{CONVERSATION, CONVERSATION_PREPARE, url as upstream_url};
 use gpt2apirs_protocol::search::{
     build_search_conversation_payload, build_search_prepare_payload, parse_search_result,
 };
@@ -50,7 +50,7 @@ pub async fn search(
         .map_err(|error| GenerateError::new(FailureKind::Network, error.to_string()))?;
     let prepare = client
         .post_json(
-            &format!("{BASE_URL}{CONVERSATION_PREPARE}"),
+            &upstream_url(CONVERSATION_PREPARE),
             &gpt2apirs_http::api_headers(DEFAULT_USER_AGENT, token, CONVERSATION_PREPARE),
             &build_search_prepare_payload(query, model),
             Some(budget),
@@ -74,7 +74,7 @@ pub async fn search(
         .map_err(|error| GenerateError::new(FailureKind::Network, error.to_string()))?;
     let sse = client
         .post_sse(
-            &format!("{BASE_URL}{CONVERSATION}"),
+            &upstream_url(CONVERSATION),
             &image_headers(
                 DEFAULT_USER_AGENT,
                 token,

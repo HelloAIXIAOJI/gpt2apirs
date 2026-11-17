@@ -1,0 +1,41 @@
+{% extends "shell.html" %}
+{% block title %}图片 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>图片</h1></header>
+
+<section class="panel">
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
+
+  <nav class="tabs">
+    <a class="tab{% if data.tab == "browse" %} tab--active{% endif %}"
+       href="{{ data.tab_browse_href }}"
+       hx-get="/gallery/panel?tab=browse"
+       hx-target="#gallery-panel" hx-swap="innerHTML"
+       hx-push-url="{{ data.tab_browse_href }}">图片浏览</a>
+    <a class="tab{% if data.tab == "archive" %} tab--active{% endif %}"
+       href="{{ data.tab_archive_href }}"
+       hx-get="/gallery/panel?tab=archive"
+       hx-target="#gallery-panel" hx-swap="innerHTML"
+       hx-push-url="{{ data.tab_archive_href }}">归档</a>
+  </nav>
+
+  <div id="gallery-panel">
+    {% include "gallery_panel.html" %}
+  </div>
+</section>
+
+<link rel="stylesheet" href="/admin/assets/glightbox.css">
+<script src="/admin/assets/glightbox.js"></script>
+<script>
+  (function () {
+    var viewer = null;
+    function initViewer() {
+      if (!window.GLightbox) return;
+      if (viewer) { viewer.destroy(); viewer = null; }
+      viewer = GLightbox({ selector: ".glightbox", touchNavigation: true, loop: true });
+    }
+    document.addEventListener("DOMContentLoaded", initViewer);
+    document.body.addEventListener("htmx:afterSwap", initViewer);
+  })();
+</script>
+{% endblock %}

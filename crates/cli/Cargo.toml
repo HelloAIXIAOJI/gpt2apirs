@@ -18,11 +18,14 @@ name = "gpt2apirs"
 path = "src/main.rs"
 
 [dependencies]
+sqlx = { workspace = true }
 gpt2apirs-core = { workspace = true }
 gpt2apirs-account = { workspace = true }
 gpt2apirs-api = { workspace = true }
 gpt2apirs-storage = { workspace = true }
 gpt2apirs-http = { workspace = true }
+# 只为启动时检查「上游站点是否被环境变量覆盖」，是个无重依赖的小 crate
+gpt2apirs-protocol = { workspace = true }
 axum = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

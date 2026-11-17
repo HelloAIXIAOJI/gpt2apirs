@@ -11,7 +11,7 @@ use gpt2apirs_account::{PoolError, SelectionFilter};
 use gpt2apirs_core::{AppError, Deadline};
 use gpt2apirs_generate::error::{FailureKind, GenerateError};
 use gpt2apirs_generate::upload::UploadedFile;
-use gpt2apirs_generate::{FlowDiagnostics, ImageRequest, generate_images};
+use gpt2apirs_generate::{FlowDiagnostics, ImageRequest, PollPolicy, generate_images};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -72,7 +72,7 @@ fn acquire_error(error: PoolError) -> ApiError {
 /// `op` 收到账号 token，返回成功值或分类错误。
 async fn with_retry<F, Fut>(state: &Arc<AppState>, deadline: Deadline, op: F) -> SlotResult
 where
-    F: Fn(String) -> Fut,
+    F: Fn(String, String) -> Fut,
     Fut: std::future::Future<Output = std::result::Result<SlotOutcome, GenerateError>>,
 {
     let max_attempts = attempts_limit(state);
@@ -98,9 +98,11 @@ where
             }
         };
         let account_id = lease.id();
+        crate::call_log::note_account(account_id);
         let token = lease.access_token().to_string();
+        let proxy = lease.account().proxy.trim().to_string();
 
-        let result = op(token).await;
+        let result = op(token, proxy).await;
         match result {
             Ok(mut outcome) => {
                 outcome.account_id = account_id;
@@ -154,10 +156,12 @@ pub(crate) fn slot_error(error: GenerateError) -> ApiError {
 /// 文生图：`n` 张并行 + 换号重试。
 pub async fn run_generation(
     state: &Arc<AppState>,
-    request: ImageRequest,
+    mut request: ImageRequest,
     deadline: Deadline,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
-    let total = request.n.clamp(1, 4) as usize;
+    // SSE 没带回图片时的兜底轮询，读三个 image_poll_* 设置。
+    request.poll = PollPolicy::from_settings(&state.settings);
+    let total = request.n.clamp(1, 32) as usize;
     let mut set: JoinSet<SlotResult> = JoinSet::new();
 
     for _ in 0..total {
@@ -166,11 +170,14 @@ pub async fn run_generation(
         single.n = 1; // 每个槽位只产 1 张，张数由任务数决定
         set.spawn(async move {
             let inner = outer.clone();
-            with_retry(&outer, deadline, move |token| {
+            with_retry(&outer, deadline, move |token, proxy| {
                 let state = inner.clone();
                 let single = single.clone();
                 async move {
-                    let (result, diag) = generate_images(&state.client, &token, &single, deadline)
+                    let client = state.client_for(&proxy).map_err(|error| {
+                        GenerateError::new(FailureKind::Network, format!("代理客户端构建失败：{error}"))
+                    })?;
+                    let (result, diag) = generate_images(&client, &token, &single, deadline)
                         .await?;
                     if result.images.is_empty() {
                         return Err(GenerateError::new(
@@ -192,16 +199,92 @@ pub async fn run_generation(
     collect(set, total).await
 }
 
+/// 生成前的磁盘空间预检。
+///
+/// 空间不足时直接拒绝：否则上游已经出图、配额已经扣掉，本地却存不下。
+/// 读不到剩余空间不算错误（按放行处理），只记一条 WARN。
+pub fn ensure_disk_space() -> Result<(), ApiError> {
+    const MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
+    let root = match gpt2apirs_core::paths::data_dir() {
+        Ok(root) => root,
+        Err(error) => {
+            tracing::warn!(%error, "定位数据目录失败，跳过磁盘预检");
+            return Ok(());
+        }
+    };
+    match gpt2apirs_core::disk::available_bytes(&root) {
+        Ok(free) if free >= MIN_FREE_BYTES => Ok(()),
+        Ok(free) => Err(ApiError::openai(AppError::ServiceUnavailable {
+            message: format!(
+                "磁盘剩余空间不足（{} MB），拒绝生成以免丢图",
+                free / (1024 * 1024)
+            ),
+            code: "disk_full".to_string(),
+        })),
+        Err(error) => {
+            tracing::warn!(%error, "读取磁盘剩余空间失败，按放行处理");
+            Ok(())
+        }
+    }
+}
+
+/// 把生成结果写进 `image_assets`，供后台按账号/时间查询。
+///
+/// 失败只记日志：元数据写不进去不该让用户拿不到图。
+pub async fn record_assets(
+    state: &Arc<AppState>,
+    slots: &[SlotOutcome],
+    prompt: &str,
+    references: &[crate::references::PersistedReference],
+    key: Option<&crate::auth::ApiKeyIdentity>,
+) {
+    let repo = gpt2apirs_storage::repo::ImageAssetRepo::new(state.db.clone());
+    let reference_repo = gpt2apirs_storage::repo::ImageReferenceRepo::new(state.db.clone());
+    for slot in slots {
+        for image in &slot.images {
+            if image.rel_path.is_empty() {
+                continue;
+            }
+            let asset = gpt2apirs_storage::repo::NewImageAsset {
+                rel_path: image.rel_path.clone(),
+                mime: image.mime.to_string(),
+                bytes: image.size as i64,
+                width: image.width as i32,
+                height: image.height as i32,
+                account_id: if slot.account_id.is_nil() { None } else { Some(slot.account_id) },
+                prompt: Some(prompt.to_string()),
+                api_key_id: key.map(|item| item.id),
+                api_key_prefix: key.map(|item| item.prefix.clone()),
+            };
+            match repo.insert(&asset).await {
+                Ok(image_id) => {
+                    if references.is_empty() {
+                        continue;
+                    }
+                    let items = crate::references::link(image_id, references);
+                    if let Err(error) = reference_repo.insert_many(&items).await {
+                        tracing::warn!(%error, image = %image_id, "写参考图清单失败");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, path = %image.rel_path, "写图片元数据失败");
+                }
+            }
+        }
+    }
+}
+
 /// 图生图：上传参考图后并行 + 换号重试。
 ///
 /// 参考图的上传与账号绑定，所以**每次换号都要重新上传**。
 pub async fn run_edit(
     state: &Arc<AppState>,
-    request: ImageRequest,
+    mut request: ImageRequest,
     prepared: Vec<(Vec<u8>, String)>,
     deadline: Deadline,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
-    let total = request.n.clamp(1, 4) as usize;
+    request.poll = PollPolicy::from_settings(&state.settings);
+    let total = request.n.clamp(1, 32) as usize;
     let mut set: JoinSet<SlotResult> = JoinSet::new();
 
     for _ in 0..total {
@@ -211,16 +294,19 @@ pub async fn run_edit(
         single.n = 1;
         set.spawn(async move {
             let inner = outer.clone();
-            with_retry(&outer, deadline, move |token| {
+            with_retry(&outer, deadline, move |token, proxy| {
                 let state = inner.clone();
                 let single = single.clone();
                 let prepared = prepared.clone();
                 async move {
+                    let client = state.client_for(&proxy).map_err(|error| {
+                        GenerateError::new(FailureKind::Network, format!("代理客户端构建失败：{error}"))
+                    })?;
                     let mut references: Vec<gpt2apirs_protocol::conversation::ImageReference> =
                         Vec::with_capacity(prepared.len());
                     for (bytes, filename) in &prepared {
                         let uploaded: UploadedFile = gpt2apirs_generate::upload::upload_image(
-                            &state.client,
+                            &client,
                             &token,
                             gpt2apirs_http::DEFAULT_USER_AGENT,
                             bytes,
@@ -237,7 +323,7 @@ pub async fn run_edit(
                         references.push(uploaded.as_reference());
                     }
                     let single = single.with_images(references);
-                    let (result, diag) = generate_images(&state.client, &token, &single, deadline)
+                    let (result, diag) = generate_images(&client, &token, &single, deadline)
                         .await?;
                     if result.images.is_empty() {
                         return Err(GenerateError::new(

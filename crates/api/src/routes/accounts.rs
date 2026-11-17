@@ -25,16 +25,16 @@ use crate::state::AppState;
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
 fn internal(error: impl std::fmt::Display) -> ApiError {
-    ApiError::openai(AppError::Internal(anyhow::anyhow!("{error}")))
+    ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}")))
 }
 
 fn pool_error(error: PoolError) -> ApiError {
     match error {
-        PoolError::NoCandidate { reason } => ApiError::openai(AppError::ServiceUnavailable {
+        PoolError::NoCandidate { reason } => ApiError::admin(AppError::ServiceUnavailable {
             message: format!("无可用账号（{reason}），请先通过 POST /api/accounts 导入"),
             code: "no_available_account".to_string(),
         }),
-        PoolError::DeadlineExceeded => ApiError::openai(AppError::ServiceUnavailable {
+        PoolError::DeadlineExceeded => ApiError::admin(AppError::ServiceUnavailable {
             message: "等待账号槽位超时，请稍后重试".to_string(),
             code: "account_pool_timeout".to_string(),
         }),
@@ -213,6 +213,8 @@ pub struct ListQuery {
     pub source: Option<String>,
     /// 关键词。
     pub keyword: Option<String>,
+    /// 代理分组过滤。
+    pub group: Option<Uuid>,
     /// 页码（从 1 开始）。
     pub page: Option<i64>,
     /// 每页数量。
@@ -239,14 +241,22 @@ pub async fn list_accounts(
 ) -> ApiResult<AccountListResponse> {
     let page = query.page.unwrap_or(1).max(1);
     let page_size = query.page_size.unwrap_or(50).clamp(1, 500);
+    let status = match query.status.as_deref() {
+        None => None,
+        Some(raw) => Some(AccountStatus::parse(raw).ok_or_else(|| {
+            ApiError::admin(AppError::invalid(format!("status 取值非法：{raw}")))
+        })?),
+    };
+    let source = match query.source.as_deref() {
+        None => None,
+        Some(raw) => Some(Source::parse(raw).ok_or_else(|| {
+            ApiError::admin(AppError::invalid(format!("source 取值非法：{raw}")))
+        })?),
+    };
     let filter = AccountFilter {
-        status: query
-            .status
-            .as_deref()
-            .map(AccountStatus::parse)
-            .filter(|value| *value != AccountStatus::Normal || query.status.is_some()),
+        status,
         plan: query.plan.as_deref().map(Plan::parse),
-        source: query.source.as_deref().map(Source::parse),
+        source,
         keyword: query.keyword.clone(),
         offset: (page - 1) * page_size,
         limit: page_size,
@@ -260,6 +270,23 @@ pub async fn list_accounts(
         page,
         page_size,
     }))
+}
+
+/// `GET /api/accounts/{id}` —— 单个账号详情。
+///
+/// 与列表共用 [`AccountView`]，所以字段口径不会分叉；不存在时 404 而不是空对象。
+pub async fn get_account(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<AccountView> {
+    let account = state.pool.repo().get_by_id(id).await.map_err(internal)?;
+    match account {
+        Some(account) => Ok(Json(AccountView::from_account(account))),
+        None => Err(ApiError::admin(AppError::not_found_coded(
+            format!("账号不存在: {id}"),
+            "account_not_found",
+        ))),
+    }
 }
 
 // 统计
@@ -318,7 +345,7 @@ pub async fn create_accounts(
 
     let new_accounts = parse_import_body(&bytes)?;
     if new_accounts.is_empty() {
-        return Err(ApiError::openai(AppError::invalid(
+        return Err(ApiError::admin(AppError::invalid(
             "没有解析出任何账号，请检查 access_token 字段",
         )));
     }
@@ -362,7 +389,7 @@ fn parse_import_body(bytes: &[u8]) -> Result<Vec<gpt2apirs_account::NewAccount>,
     let Ok(value) = serde_json::from_str::<Value>(&text) else {
         // 不是 JSON：按纯文本处理
         return parse_any(&text).map_err(|error| {
-            ApiError::openai(AppError::invalid(format!("导入内容无法解析: {error}")))
+            ApiError::admin(AppError::invalid(format!("导入内容无法解析: {error}")))
         });
     };
     match &value {
@@ -380,7 +407,7 @@ fn parse_import_body(bytes: &[u8]) -> Result<Vec<gpt2apirs_account::NewAccount>,
         _ => Err(gpt2apirs_account::ImportParseError::NoAccounts),
     }
     .map_err(|error| {
-        ApiError::openai(AppError::invalid(format!("导入内容无法解析: {error}")))
+        ApiError::admin(AppError::invalid(format!("导入内容无法解析: {error}")))
     })
 }
 
@@ -421,7 +448,7 @@ pub async fn update_account(
             "abnormal" | "error" => AccountStatus::Abnormal,
             "disabled" | "disable" => AccountStatus::Disabled,
             other => {
-                return Err(ApiError::openai(AppError::invalid_param(
+                return Err(ApiError::admin(AppError::invalid_param(
                     format!("未知状态 {other:?}，可选 normal/limited/abnormal/disabled"),
                     "status",
                 )));
@@ -441,9 +468,9 @@ pub async fn update_account(
         .patch(body.id, &patch)
         .await
         .map_err(|error| match error {
-            gpt2apirs_account::AccountError::NotFound(id) => ApiError::openai(AppError::NotFound {
-                message: format!("账号不存在: {id}"),
-            }),
+            gpt2apirs_account::AccountError::NotFound(id) => {
+                ApiError::admin(AppError::not_found(format!("账号不存在: {id}")))
+            }
             other => internal(other),
         })?;
     let _ = state.pool.reload().await;
@@ -457,13 +484,15 @@ pub struct DeleteAccountsRequest {
     pub ids: Vec<Uuid>,
 }
 
-/// `DELETE /api/accounts`
+/// `DELETE /api/accounts` —— 批量，只认请求体里的 ids。
+///
+/// 没有 body 时**不要**退化成「删光」：那是数据丢失，不是便利。
 pub async fn delete_accounts(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DeleteAccountsRequest>,
 ) -> ApiResult<Value> {
     if body.ids.is_empty() {
-        return Err(ApiError::openai(AppError::invalid_param(
+        return Err(ApiError::admin(AppError::invalid_param(
             "ids 不能为空",
             "ids",
         )));
@@ -476,6 +505,30 @@ pub async fn delete_accounts(
         .map_err(internal)?;
     let _ = state.pool.reload().await;
     Ok(Json(serde_json::json!({ "removed": removed })))
+}
+
+/// `DELETE /api/accounts/{id}` —— 单个，只认路径里的 id。
+///
+/// 与批量版本分开：曾经两者共用一个 handler，路径 id 被忽略，
+/// 于是不带 body 的 `DELETE /api/accounts/{id}` 直接 415。
+pub async fn delete_account(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Value> {
+    let removed = state
+        .pool
+        .repo()
+        .delete_many(&[id])
+        .await
+        .map_err(internal)?;
+    if removed == 0 {
+        return Err(ApiError::admin(AppError::not_found_coded(
+            format!("账号不存在: {id}"),
+            "account_not_found",
+        )));
+    }
+    let _ = state.pool.reload().await;
+    Ok(Json(serde_json::json!({ "removed": removed, "id": id })))
 }
 
 // 批量维护
@@ -573,9 +626,7 @@ pub async fn get_operation(
         .get(id)
         .map(Json)
         .ok_or_else(|| {
-            ApiError::openai(AppError::NotFound {
-                message: format!("操作 {id} 不存在或已过期"),
-            })
+            ApiError::admin(AppError::not_found(format!("操作 {id} 不存在或已过期")))
         })
 }
 
@@ -629,9 +680,9 @@ pub async fn test_account(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| gpt2apirs_generate::models::default_model().to_string());
-    if !gpt2apirs_generate::models::is_supported(&model) {
-        return Err(ApiError::openai(AppError::invalid_param(
+        .unwrap_or_else(|| gpt2apirs_generate::models::default_image_model().to_string());
+    if !gpt2apirs_generate::models::is_supported_image(&model) {
+        return Err(ApiError::admin(AppError::invalid_param(
             format!("不支持的模型 {model:?}"),
             "model",
         )));
@@ -644,7 +695,7 @@ pub async fn test_account(
         ..Default::default()
     };
     let lease = state.pool.acquire(&filter, deadline).await.map_err(|error| match error {
-        PoolError::NoCandidate { .. } => ApiError::openai(AppError::ServiceUnavailable {
+        PoolError::NoCandidate { .. } => ApiError::admin(AppError::ServiceUnavailable {
             message: "该账号当前不可用（状态非正常或配额为 0）".to_string(),
             code: "account_not_available".to_string(),
         }),
@@ -656,7 +707,8 @@ pub async fn test_account(
     image_request.upstream_model = gpt2apirs_generate::models::upstream_model_for(&model).to_string();
 
     let started = std::time::Instant::now();
-    let outcome = generate_images(&state.client, lease.access_token(), &image_request, deadline).await;
+    let client = state.client_for(&lease.account().proxy).map_err(internal)?;
+    let outcome = generate_images(&client, lease.access_token(), &image_request, deadline).await;
     let elapsed_ms = started.elapsed().as_millis() as i64;
     // 空图视为失败：见 v1_images 的同名注释
     let success = outcome
@@ -673,7 +725,7 @@ pub async fn test_account(
             Ok(Json(TestResponse {
                 status: "success",
                 elapsed_ms,
-                bytes: first.map(|image| image.bytes.len()),
+                bytes: first.map(|image| image.size),
                 size: first.map(|image| format!("{}x{}", image.width, image.height)),
                 message: None,
             }))
@@ -722,11 +774,13 @@ pub async fn oauth_finish(
     Json(body): Json<OAuthFinishRequest>,
 ) -> ApiResult<ImportResponse> {
     let deadline = Deadline::in_secs(60.0);
+    // OAuth 回调要访问上游，同样走统一出口。
+    let client = state.client_for("").map_err(internal)?;
     let new_account =
-        gpt2apirs_account::oauth::finish(&state.client, &state.oauth, body.session_id, &body.callback, deadline)
+        gpt2apirs_account::oauth::finish(&client, &state.oauth, body.session_id, &body.callback, deadline)
             .await
             .map_err(|error| {
-                ApiError::openai(AppError::invalid_param(
+                ApiError::admin(AppError::invalid_param(
                     error.to_string(),
                     "callback",
                 ))
@@ -828,7 +882,7 @@ pub async fn export_accounts(
                 "skipped": report.skipped,
             })))
         }
-        other => Err(ApiError::openai(AppError::invalid_param(
+        other => Err(ApiError::admin(AppError::invalid_param(
             format!("未知导出格式 {other:?}，可选 json/txt"),
             "format",
         ))),

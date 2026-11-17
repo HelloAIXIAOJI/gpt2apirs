@@ -26,8 +26,8 @@ pub fn channel_handle() -> (mpsc::Sender<DeltaItem>, StreamHandle) {
     let handle = StreamHandle {
         deltas,
         snapshot: Arc::new(Mutex::new(StreamSnapshot::default())),
-        model: "gpt-5-5".to_string(),
-        messages: vec![("user".to_string(), "你好".to_string())],
+        model: gpt2apirs_generate::models::DEFAULT_TEXT_MODEL.to_string(),
+        billing_messages: vec![("user".to_string(), "你好".to_string())],
         account_id: Uuid::nil(),
     };
     (sender, handle)

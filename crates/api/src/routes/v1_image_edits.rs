@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use axum::Json;
 use axum::extract::{Multipart, State};
 use axum::http::Request;
 use gpt2apirs_core::AppError;
@@ -13,7 +12,7 @@ use serde_json::Value;
 
 use crate::error::ApiError;
 use crate::routes::image_flow::run_edit;
-use crate::routes::v1_images::{ImageDatum, ImageGenerationResponse};
+use axum::response::IntoResponse;
 use crate::state::AppState;
 
 /// 图片字段名（multipart）。
@@ -47,6 +46,7 @@ struct EditRequest {
     prompt: String,
     model: Option<String>,
     n: Option<u32>,
+    size: Option<String>,
     quality: Option<String>,
     response_format: Option<String>,
     output_format: Option<String>,
@@ -57,11 +57,29 @@ struct EditRequest {
     masks: Vec<ImageSource>,
 }
 
-/// `POST /v1/images/edits`
-pub async fn edit_images(
-    State(state): State<Arc<AppState>>,
+/// 解析并准备好一次图生图请求（同步接口与异步任务共用同一套规则）。
+pub struct PreparedEdit {
+    /// 提示词。
+    pub prompt: String,
+    /// 发给上游的请求。
+    pub request: ImageRequest,
+    /// 参考图字节（已合成 mask）。
+    pub prepared: Vec<(Vec<u8>, String)>,
+    /// 响应格式：`url` 或 `b64_json`。
+    pub response_format: String,
+    /// 对外基础地址。
+    pub base_url: String,
+    /// 参考图折算的输入 token。
+    pub input_image_tokens: i64,
+    /// 质量档位（算输出 token 用）。
+    pub quality: String,
+}
+
+/// 解析请求、解析参考图并构建上游请求。
+pub async fn prepare_edit(
+    state: &Arc<AppState>,
     request: Request<axum::body::Body>,
-) -> Result<Json<ImageGenerationResponse>, ApiError> {
+) -> Result<PreparedEdit, ApiError> {
     let host = request
         .headers()
         .get(axum::http::header::HOST)
@@ -74,6 +92,7 @@ pub async fn edit_images(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("http")
         .to_string();
+    let input_limit = limit_from_mb(state.settings.get_i64("image_input_max_mb"));
     let content_type = request
         .headers()
         .get(axum::http::header::CONTENT_TYPE)
@@ -96,7 +115,7 @@ pub async fn edit_images(
         .trim()
         .eq_ignore_ascii_case("multipart/form-data")
     {
-        parse_multipart(request).await?
+        parse_multipart(request, input_limit).await?
     } else {
         return Err(ApiError::openai(AppError::invalid_param(
             format!(
@@ -106,10 +125,13 @@ pub async fn edit_images(
         )));
     };
 
-    validate(&parsed)?;
+    validate(&parsed, &state.settings)?;
 
     let prompt = parsed.prompt.trim().to_string();
-    let n = parsed.n.unwrap_or(1).clamp(1, 4);
+    let n = parsed
+        .n
+        .unwrap_or(1)
+        .clamp(1, crate::routes::image_common::max_n(&state.settings));
     let response_format = parsed
         .response_format
         .as_deref()
@@ -131,22 +153,27 @@ pub async fn edit_images(
     };
     let frame_count = parsed.frame_count;
     let frame_duration_ms = parsed.frame_duration_ms;
-    let quality = parsed.quality.as_deref().unwrap_or("auto").to_string();
+    let size = crate::routes::image_common::checked_size(parsed.size.as_deref())?;
+    let quality_option = crate::routes::image_common::checked_quality(parsed.quality.as_deref())?;
+    let quality = quality_option.clone().unwrap_or_else(|| "auto".to_string());
     let requested_model = parsed
         .model
         .clone()
-        .unwrap_or_else(|| gpt2apirs_generate::models::default_model().to_string());
+        .unwrap_or_else(|| gpt2apirs_generate::models::default_image_model().to_string());
     let base_url = state.public_base_url(&scheme, &host);
     let deadline = default_request_deadline(&state.settings);
 
     // ---- 准备参考图（mask 合成）----
-    let resolved_images = inputs::resolve_sources(&state.client, &parsed.images, deadline)
+    let outbound = state
+        .client_for("")
+        .map_err(|error| ApiError::openai(AppError::Internal(anyhow::anyhow!("{error}"))))?;
+    let resolved_images = inputs::resolve_sources(&outbound, &parsed.images, deadline)
         .await
         .map_err(input_error)?;
     let resolved_masks = if parsed.masks.is_empty() {
         Vec::new()
     } else {
-        inputs::resolve_sources(&state.client, &parsed.masks, deadline)
+        inputs::resolve_sources(&outbound, &parsed.masks, deadline)
             .await
             .map_err(input_error)?
     };
@@ -179,14 +206,50 @@ pub async fn edit_images(
 
     // ---- 并行 n 张 + 换号重试（内部会重新上传参考图）----
     let mut image_request = ImageRequest::new(prompt.clone()).with_n(n);
+    image_request.keep_bytes = response_format != "url";
     image_request.model = requested_model.clone();
     image_request.upstream_model =
         gpt2apirs_generate::models::upstream_model_for(&requested_model).to_string();
     image_request.output_format = output_format;
     image_request.frame_count = frame_count;
     image_request.frame_duration_ms = frame_duration_ms;
+    image_request.size = size;
+    image_request.quality = quality_option;
 
-    let slots = run_edit(&state, image_request, prepared.clone(), deadline).await?;
+    Ok(PreparedEdit {
+        prompt,
+        request: image_request,
+        prepared,
+        response_format,
+        base_url,
+        input_image_tokens,
+        quality,
+    })
+}
+
+/// `POST /v1/images/edits`
+pub async fn edit_images(
+    identity: Option<axum::Extension<crate::auth::ApiKeyIdentity>>,
+    State(state): State<Arc<AppState>>,
+    request: Request<axum::body::Body>,
+) -> Result<axum::response::Response, ApiError> {
+    let prepared_edit = prepare_edit(&state, request).await?;
+    let prompt = prepared_edit.prompt.clone();
+    let response_format = prepared_edit.response_format.clone();
+    let base_url = prepared_edit.base_url.clone();
+    let quality = prepared_edit.quality.clone();
+    let input_image_tokens = prepared_edit.input_image_tokens;
+
+    crate::routes::image_flow::ensure_disk_space()?;
+    let deadline = default_request_deadline(&state.settings);
+    let requested_n = prepared_edit.request.n;
+    let mut slots = run_edit(
+        &state,
+        prepared_edit.request,
+        prepared_edit.prepared.clone(),
+        deadline,
+    )
+    .await?;
 
     let mut images: Vec<&gpt2apirs_generate::GeneratedImage> = Vec::new();
     for slot in &slots {
@@ -194,14 +257,25 @@ pub async fn edit_images(
             images.push(image);
         }
     }
+    if images.len() > requested_n as usize {
+        tracing::info!(
+            requested = requested_n,
+            got = images.len(),
+            "上游多返回了图片"
+        );
+    }
+    // 生成成功才落盘参考图：失败时不在磁盘上留孤儿。
+    let references = crate::references::persist_all(&prepared_edit.prepared);
+    let key = identity.map(|axum::Extension(value)| value);
+    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &references, key.as_ref()).await;
+
     tracing::info!(
         slots = slots.len(),
         images = images.len(),
-        references = prepared.len(),
+        references = prepared_edit.prepared.len(),
         "图生图完成"
     );
 
-    let mut data = Vec::with_capacity(images.len());
     let mut output_tokens = 0i64;
     for image in &images {
         output_tokens += gpt2apirs_core::tokens::count_generated_image_tokens(
@@ -209,30 +283,41 @@ pub async fn edit_images(
             image.height,
             &quality,
         );
-        if response_format == "url" {
-            data.push(ImageDatum {
-                b64_json: None,
-                url: Some(format!("{base_url}/{}", image.rel_path)),
-                revised_prompt: Some(prompt.clone()),
-            });
-        } else {
-            data.push(ImageDatum {
-                b64_json: Some(image.to_base64()),
-                url: None,
-                revised_prompt: Some(prompt.clone()),
+    }
+    let want_b64 = response_format != "url";
+    // 借用到此为止：字节直接搬进流式响应。
+    drop(images);
+    let mut items = Vec::with_capacity(slots.iter().map(|slot| slot.images.len()).sum());
+    for slot in &mut slots {
+        for image in std::mem::take(&mut slot.images) {
+            items.push(crate::image_response::StreamItem {
+                source: if want_b64 {
+                    crate::image_response::ItemSource::Bytes(image.bytes)
+                } else {
+                    crate::image_response::ItemSource::Url(if image.rel_path.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{base_url}/{}", image.rel_path)
+                    })
+                },
+                prompt: Some(prompt.clone()),
             });
         }
     }
 
-    Ok(Json(ImageGenerationResponse {
+    Ok(crate::image_response::ImageResponse {
         created: chrono::Utc::now().timestamp(),
         usage: gpt2apirs_core::tokens::image_usage(0, input_image_tokens, output_tokens),
-        data,
+        items,
         message: None,
-    }))
+    }
+    .into_response())
 }
 
-fn validate(parsed: &EditRequest) -> Result<(), ApiError> {
+fn validate(
+    parsed: &EditRequest,
+    settings: &gpt2apirs_core::settings::RuntimeSettings,
+) -> Result<(), ApiError> {
     if parsed.prompt.trim().is_empty() {
         return Err(ApiError::openai(AppError::invalid_param(
             "prompt 不能为空",
@@ -240,9 +325,10 @@ fn validate(parsed: &EditRequest) -> Result<(), ApiError> {
         )));
     }
     if let Some(n) = parsed.n {
-        if n == 0 || n > 4 {
+        let limit = crate::routes::image_common::max_n(settings);
+        if n == 0 || n > limit {
             return Err(ApiError::openai(AppError::invalid_param(
-                "n 必须在 1..=4",
+                format!("n 必须在 1..={limit}"),
                 "n",
             )));
         }
@@ -257,7 +343,7 @@ fn validate(parsed: &EditRequest) -> Result<(), ApiError> {
     }
     if parsed.stream == Some(true) {
         return Err(ApiError::openai(AppError::invalid_param(
-            "stream 暂不支持",
+            "上游不提供逐块图片流（SSE 只回 sediment:// 指针，字节要等生成完成后另行下载）；要边等边查进度请用 POST /api/image-tasks 提交，再用 GET /api/image-tasks/{id} 轮询",
             "stream",
         )));
     }
@@ -284,6 +370,7 @@ fn scalar_into(parsed: &mut EditRequest, key: &str, value: &str) {
         "prompt" => parsed.prompt = value.to_string(),
         "model" => parsed.model = Some(value.to_string()),
         "n" => parsed.n = value.trim().parse().ok(),
+        "size" => parsed.size = Some(value.to_string()),
         "quality" => parsed.quality = Some(value.to_string()),
         "response_format" => parsed.response_format = Some(value.to_string()),
         "output_format" => parsed.output_format = Some(value.to_string()),
@@ -312,6 +399,7 @@ fn source_from_text_field(value: &str) -> Result<Vec<ImageSource>, ApiError> {
 
 async fn parse_multipart(
     request: Request<axum::body::Body>,
+    input_limit: usize,
 ) -> Result<EditRequest, ApiError> {
     let mut multipart = Multipart::from_request(request, &())
         .await
@@ -331,12 +419,9 @@ async fn parse_multipart(
         let name = field.name().unwrap_or_default().to_string();
         let filename = field.file_name().map(|value| value.to_string());
         if IMAGE_FIELDS.contains(&name.as_str()) || MASK_FIELDS.contains(&name.as_str()) {
-            let bytes = field.bytes().await.map_err(|error| {
-                ApiError::openai(AppError::invalid_param(
-                    format!("读取字段 {name} 失败：{error}"),
-                    "image",
-                ))
-            })?;
+            // 边读边计长度：超限立即断开，不把整张图读进内存再报错。
+            let mut stream = field;
+            let bytes = read_limited(&mut stream, &name, input_limit).await?;
             // 有 filename 视为上传文件；否则当作文本（可能是 base64 或 URL）
             let sources = match filename {
                 Some(name_on_disk) if !name_on_disk.trim().is_empty() => {
@@ -371,6 +456,40 @@ async fn parse_multipart(
         // 其余字段忽略：OpenAI 客户端会塞 user 等字段
     }
     Ok(parsed)
+}
+
+/// 运行设置里的 MB 值换成字节，并夹到 1..=50。
+fn limit_from_mb(mb: i64) -> usize {
+    mb.clamp(1, 50) as usize * 1024 * 1024
+}
+
+/// 读取一个图片字段，超过 `limit` 字节立即拒绝。
+async fn read_limited(
+    field: &mut axum::extract::multipart::Field<'_>,
+    name: &str,
+    limit: usize,
+) -> Result<axum::body::Bytes, ApiError> {
+    let mut data = Vec::new();
+    loop {
+        let chunk = field.chunk().await.map_err(|error| {
+            ApiError::openai(AppError::invalid_param(
+                format!("读取字段 {name} 失败：{error}"),
+                name,
+            ))
+        })?;
+        let Some(chunk) = chunk else { break };
+        if data.len() + chunk.len() > limit {
+            return Err(ApiError::openai(AppError::PayloadTooLarge {
+                message: format!(
+                    "字段 {name} 超过上限 {} MB，请压缩后再上传",
+                    limit / (1024 * 1024)
+                ),
+                param: Some(name.to_string()),
+            }));
+        }
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data.into())
 }
 
 async fn parse_json_body(
@@ -411,3 +530,15 @@ async fn parse_json_body(
 
 // 让 Multipart 的 FromRequest 在本模块可用
 use axum::extract::FromRequest;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limit_from_mb_clamps() {
+        assert_eq!(limit_from_mb(10), 10 * 1024 * 1024);
+        assert_eq!(limit_from_mb(0), 1024 * 1024, "0 夹到 1 MB");
+        assert_eq!(limit_from_mb(999), 50 * 1024 * 1024, "超过上限夹到 50 MB");
+    }
+}

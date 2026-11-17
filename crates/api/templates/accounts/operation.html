@@ -1,0 +1,10 @@
+<div id="operation"{% if !done %} hx-get="/accounts/operations/{{ id }}" hx-trigger="every 2s" hx-swap="outerHTML"{% endif %} class="operation">
+  <p class="operation-head">{{ label }}：{{ processed }} / {{ total }} · 成功 {{ succeeded }} · 失败 {{ failed }}</p>
+  <div class="progress"><span style="width: {{ percent }}%"></span></div>
+  {% if done %}
+  <p class="muted">已完成。<a href="/accounts">刷新列表</a></p>
+  {% for error in errors %}<p class="stat-error">{{ error }}</p>{% endfor %}
+  {% else %}
+  <p class="muted">进行中，页面会自动更新。</p>
+  {% endif %}
+</div>

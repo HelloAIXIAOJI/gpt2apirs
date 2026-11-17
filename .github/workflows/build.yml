@@ -1,0 +1,28 @@
+name: 编译（默认特性）
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # 内嵌代理核 + BoringSSL 的调试信息会让链接阶段吃爆 runner 内存（实测 ld 被 SIGBUS 杀掉），
+  # 这两个任务只验证「能编译出二进制」，不需要符号，关掉调试信息。
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --all-targets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpt2apirs-linux-x86_64
+          path: target/debug/gpt2apirs
+          if-no-files-found: error

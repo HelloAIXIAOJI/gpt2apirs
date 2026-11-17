@@ -5,13 +5,13 @@
 //! 与生图的差异：不做 `conversation/prepare`；`system_hints` 传空；输出靠增量补丁而不是 sediment id。
 //! bootstrap 与 sentinel 两条链路共用同一个 `handshake`。
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use gpt2apirs_core::Deadline;
 use gpt2apirs_http::Client;
 use gpt2apirs_protocol::conversation::{
-    build_text_conversation_payload, build_text_conversation_payload_messages,
+    build_text_conversation_payload, build_text_conversation_payload_with_images,
 };
-use gpt2apirs_protocol::endpoints::{BASE_URL, CONVERSATION};
+use gpt2apirs_protocol::endpoints::{CONVERSATION, url as upstream_url};
 use gpt2apirs_protocol::text_stream::{TextAccumulator, collect_text};
 
 use crate::error::{FailureKind, GenerateError, classify_http};
@@ -35,6 +35,8 @@ pub struct TextRequest {
     pub history: String,
     /// 多轮消息（非空时优先于 `prompt`）。
     pub messages: Vec<(String, String)>,
+    /// 已上传到上游的参考图（挂在最后一条 user 消息上）。
+    pub images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
 }
 
 impl TextRequest {
@@ -47,12 +49,22 @@ impl TextRequest {
             user_agent: DEFAULT_USER_AGENT.to_string(),
             history: String::new(),
             messages: Vec::new(),
+            images: Vec::new(),
         }
     }
 
     /// 带上多轮消息（chat/completions 用）。
     pub fn with_messages(mut self, messages: Vec<(String, String)>) -> Self {
         self.messages = messages;
+        self
+    }
+
+    /// 带上参考图（图文对话用）。
+    pub fn with_images(
+        mut self,
+        images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
+    ) -> Self {
+        self.images = images;
         self
     }
 }
@@ -83,13 +95,13 @@ pub async fn generate_text(
     let Handshake {
         requirements_token,
         proof_token,
-        diag,
+        mut diag,
     } = handshake(client, token, &request.user_agent, deadline).await?;
 
     let budget = stage_budget(deadline, "sse", stage_caps::SSE)?;
     let sse = client
         .post_sse(
-            &format!("{BASE_URL}{CONVERSATION}"),
+            &upstream_url(CONVERSATION),
             // 文本链路**不带** conduit_token（那是图片链路才有的）
             &image_headers(
                 &request.user_agent,
@@ -103,30 +115,42 @@ pub async fn generate_text(
             &if request.messages.is_empty() {
                 build_text_conversation_payload(&request.prompt, &request.upstream_model)
             } else {
-                build_text_conversation_payload_messages(
+                build_text_conversation_payload_with_images(
                     &request.messages,
+                    &request.images,
                     &request.upstream_model,
                 )
             },
             Some(budget),
         )
         .await?;
+    diag.sse_status = sse.status;
+    diag.sse_bytes = sse.body.len();
     if sse.status != 200 {
-        bail!(
-            "文本 SSE 请求失败，状态 {}: {}",
-            sse.status,
-            clip(&sse.body)
-        );
+        // 必须带分类：上层靠 kind 决定换号 / 标异常，裸字符串会让这些判断失效
+        return Err(GenerateError::new(
+            classify_http(sse.status, &sse.body),
+            format!(
+                "文本 SSE 请求失败，状态 {}: {}",
+                sse.status,
+                clip(&sse.body)
+            ),
+        )
+        .into());
     }
 
     let (text, conversation_id, deltas) = collect_text(&sse.body, &request.history);
     if text.trim().is_empty() {
         // 空回复要能诊断：把 SSE 的头尾留下来
-        bail!(
-            "上游没有返回文本（SSE {} 字节）：{}",
-            sse.body.len(),
-            clip(&sse.body)
-        );
+        return Err(GenerateError::new(
+            FailureKind::EmptyReply,
+            format!(
+                "上游没有返回文本（SSE {} 字节）：{}",
+                sse.body.len(),
+                clip(&sse.body)
+            ),
+        )
+        .into());
     }
 
     Ok((
@@ -270,11 +294,15 @@ pub async fn generate_text_stream(
     } else {
         request.messages.clone()
     };
-    let payload = build_text_conversation_payload_messages(&messages, &request.upstream_model);
+    let payload = build_text_conversation_payload_with_images(
+        &messages,
+        &request.images,
+        &request.upstream_model,
+    );
 
     let started = client
         .post_sse_stream(
-            &format!("{BASE_URL}{CONVERSATION}"),
+            &upstream_url(CONVERSATION),
             &image_headers(
                 &request.user_agent,
                 token,

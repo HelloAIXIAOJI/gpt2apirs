@@ -29,7 +29,8 @@ use gpt2apirs_protocol::download::{
     plan_download_targets,
 };
 use gpt2apirs_protocol::endpoints::{
-    BASE_URL, CONVERSATION, CONVERSATION_PREPARE, HOME, SENTINEL_FINALIZE, SENTINEL_PREPARE,
+    CONVERSATION, CONVERSATION_PREPARE, HOME, SENTINEL_FINALIZE, SENTINEL_PREPARE, base_url,
+    url as upstream_url,
 };
 use gpt2apirs_protocol::pow::{build_legacy_requirements_token, build_proof_token};
 use gpt2apirs_protocol::pow_config::build_pow_config;
@@ -37,7 +38,7 @@ use gpt2apirs_protocol::pow_config::parse_pow_resources;
 use gpt2apirs_protocol::sentinel::{
     build_finalize_payload, build_prepare_payload, parse_finalize, parse_prepare,
 };
-use gpt2apirs_protocol::sse::parse_conversation_stream;
+use gpt2apirs_protocol::sse::{extract_conversation_ids, parse_conversation_stream};
 use serde_json::Value;
 
 /// 各阶段的**上限**（实际取 min(上限, 剩余总时间)）。
@@ -67,6 +68,52 @@ pub fn default_request_deadline(settings: &gpt2apirs_core::RuntimeSettings) -> D
 /// 默认 User-Agent（指纹与 PoW 配置构造都依赖它，不要随意改）。
 pub use gpt2apirs_http::DEFAULT_USER_AGENT;
 
+/// 结果轮询策略。
+///
+/// 上游有时 SSE 已经结束、图片 id 却还没进会话文档：这时立刻去查会拿到空结果，
+/// 甚至在流关闭后的一两百毫秒内吃到 429。所以先等一轮，再按间隔查，总预算封顶。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PollPolicy {
+    /// 首次查询前的等待（秒）。
+    pub initial_wait_secs: f64,
+    /// 两次查询的间隔（秒）。
+    pub interval_secs: f64,
+    /// 轮询总预算（秒）。
+    pub timeout_secs: f64,
+}
+
+impl Default for PollPolicy {
+    fn default() -> Self {
+        Self {
+            initial_wait_secs: 5.0,
+            interval_secs: 5.0,
+            timeout_secs: 60.0,
+        }
+    }
+}
+
+impl PollPolicy {
+    /// 从运行层设置读。
+    ///
+    /// 间隔下限 0.5s：再小只是把上游打爆，不会更快拿到图。
+    pub fn from_settings(settings: &gpt2apirs_core::RuntimeSettings) -> Self {
+        Self {
+            initial_wait_secs: settings
+                .get_f64("image_poll_initial_wait_secs")
+                .clamp(0.0, 60.0),
+            interval_secs: settings
+                .get_f64("image_poll_interval_secs")
+                .clamp(0.5, 60.0),
+            timeout_secs: settings.get_i64("image_poll_timeout_secs").max(1) as f64,
+        }
+    }
+
+    /// 预算比一个间隔还短就没有轮询的意义。
+    pub fn is_enabled(&self) -> bool {
+        self.timeout_secs > 0.0 && self.timeout_secs >= self.interval_secs
+    }
+}
+
 /// 生成请求。
 #[derive(Debug, Clone)]
 pub struct ImageRequest {
@@ -86,11 +133,26 @@ pub struct ImageRequest {
     pub frame_count: Option<u32>,
     /// 动图每帧时长（毫秒，仅 GIF 有意义）。
     pub frame_duration_ms: Option<u32>,
+    /// 目标质量（`low`/`medium`/`high`，已校验）。`None` 表示不干预。
+    ///
+    /// **上游没有质量参数**：只拼进提示词当倾向；token 估算另按此值算。
+    pub quality: Option<String>,
+    /// 目标尺寸（`宽x高`，已校验）。`None` 表示不干预。
+    ///
+    /// **上游没有尺寸参数**：这里只拼进提示词当倾向，不保证精确。
+    pub size: Option<String>,
     /// 参考图（**已上传到上游**）。非空即图生图。
     ///
     /// 上传必须在拿到账号 token 之后做，所以由调用方先上传再填这里 ——
     /// generate 不负责上传，它只管「怎么用」。
     pub images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
+    /// 结果轮询策略（SSE 没带回图片时的兜底）。
+    pub poll: PollPolicy,
+    /// 是否在结果里保留图片字节。
+    ///
+    /// `response_format=url` 时不需要：图已落盘，字节留着纯属白占内存
+    /// （一张 2 MB 的图，n=4 就白占 8 MB）。只有要回 b64 时才置 true。
+    pub keep_bytes: bool,
 }
 
 impl ImageRequest {
@@ -102,10 +164,14 @@ impl ImageRequest {
             upstream_model: DEFAULT_MODEL.to_string(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
             n: 1,
+            quality: None,
+            size: None,
             output_format: None,
             frame_count: None,
             frame_duration_ms: None,
             images: Vec::new(),
+            poll: PollPolicy::default(),
+            keep_bytes: false,
         }
     }
 
@@ -118,24 +184,30 @@ impl ImageRequest {
         self
     }
 
-    /// 真正发给上游的提示词：原文 + 格式/帧指令。
+    /// 真正发给上游的提示词：原文 + 格式/帧/尺寸指令。
+    ///
+    /// 这是提示词的**唯一装配点**：新增参数要影响上游，就加在这里，别在调用方另拼。
     pub fn effective_prompt(&self) -> String {
-        let Some(format) = self.output_format else {
-            // 没指定格式就不该改动提示词；帧参数单独给也只追加帧行。
-            if self.frame_count.is_none() && self.frame_duration_ms.is_none() {
-                return self.prompt.clone();
-            }
-            let mut lines = Vec::new();
-            if let Some(count) = self.frame_count {
-                lines.push(format!("frame_count: {count}"));
-            }
-            if let Some(duration) = self.frame_duration_ms {
-                lines.push(format!("frame_duration_ms: {duration}"));
-            }
-            return crate::format::with_prompt_hints(&self.prompt, &lines.join("\n"));
-        };
-        let hints = crate::format::prompt_hints(format, self.frame_count, self.frame_duration_ms);
+        let hints = crate::format::prompt_hints(
+            self.output_format,
+            self.frame_count,
+            self.frame_duration_ms,
+            self.size.as_deref(),
+            self.quality.as_deref(),
+        );
         crate::format::with_prompt_hints(&self.prompt, &hints)
+    }
+
+    /// 带上目标质量（调用方保证已校验）。
+    pub fn with_quality(mut self, quality: Option<String>) -> Self {
+        self.quality = quality;
+        self
+    }
+
+    /// 带上目标尺寸（调用方保证已校验成 `宽x高`）。
+    pub fn with_size(mut self, size: Option<String>) -> Self {
+        self.size = size;
+        self
     }
 
     /// 指定输出格式。
@@ -151,7 +223,7 @@ impl ImageRequest {
 
     /// 设置张数（自动钳到 1..=4）。
     pub fn with_n(mut self, n: u32) -> Self {
-        self.n = n.clamp(1, 4);
+        self.n = n.clamp(1, 32);
         self
     }
 }
@@ -159,8 +231,10 @@ impl ImageRequest {
 /// 已落盘的一张图片。
 #[derive(Debug, Clone)]
 pub struct GeneratedImage {
-    /// 图片字节。
+    /// 图片字节；`keep_bytes=false` 时为空（已落盘，不再需要）。
     pub bytes: Vec<u8>,
+    /// 字节数（无论是否保留字节都准确）。
+    pub size: usize,
     /// 相对 `DATA_DIR` 的路径，例如 `images/2026/11/11/<uuid>.png`。
     pub rel_path: String,
     /// MIME 类型，例如 `image/png`。
@@ -172,10 +246,13 @@ pub struct GeneratedImage {
 }
 
 impl GeneratedImage {
-    /// base64 内容（`response_format=b64_json` 用）。
-    pub fn to_base64(&self) -> String {
+    /// base64 内容（`response_format=b64_json` 用）；没留字节时返回 `None`。
+    pub fn to_base64(&self) -> Option<String> {
+        if self.bytes.is_empty() {
+            return None;
+        }
         use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD.encode(&self.bytes)
+        Some(base64::engine::general_purpose::STANDARD.encode(&self.bytes))
     }
 }
 
@@ -213,6 +290,10 @@ pub struct FlowDiagnostics {
     pub pow_difficulty: String,
     /// Turnstile 是否被要求。
     pub turnstile_required: bool,
+    /// 上游给的 Turnstile 字节码长度（0 表示没给）。
+    pub turnstile_dx_len: usize,
+    /// 本次送进 finalize 的 Turnstile token 长度（0 表示空串）。
+    pub turnstile_token_len: usize,
     /// finalize 状态码。
     pub finalize_status: u16,
     /// conversation/prepare 状态码。
@@ -221,6 +302,10 @@ pub struct FlowDiagnostics {
     pub sse_status: u16,
     /// SSE 字节数。
     pub sse_bytes: usize,
+    /// 轮询会话详情的次数（0 表示没进入兜底）。
+    pub poll_attempts: u32,
+    /// 轮询花了多少秒。
+    pub poll_seconds: f64,
 }
 
 /// 执行完整生图流水线（`n` 张）。
@@ -239,7 +324,7 @@ pub async fn generate_images(
     let mut combined = ImageResult::default();
     let mut diagnostics = FlowDiagnostics::default();
 
-    for index in 0..request.n.clamp(1, 4) {
+    for index in 0..request.n.clamp(1, 32) {
         let (result, diag) = generate_one(client, token, request, deadline).await?;
         if index == 0 {
             diagnostics = diag;
@@ -284,7 +369,7 @@ pub async fn handshake(
     // ---- 1. bootstrap ----
     let budget = stage_budget(deadline, "bootstrap", stage_caps::BOOTSTRAP)?;
     let home = client
-        .get_text(&format!("{BASE_URL}{HOME}"), &headers, Some(budget))
+        .get_text(&upstream_url(HOME), &headers, Some(budget))
         .await?;
     diag.bootstrap_status = home.status;
     diag.html_len = home.body.len();
@@ -305,7 +390,7 @@ pub async fn handshake(
     let budget = stage_budget(deadline, "sentinel_prepare", stage_caps::SENTINEL)?;
     let prepare = client
         .post_json(
-            &format!("{BASE_URL}{SENTINEL_PREPARE}"),
+            &upstream_url(SENTINEL_PREPARE),
             &gpt2apirs_http::api_headers(user_agent, token, SENTINEL_PREPARE),
             &build_prepare_payload(&p_token),
             Some(budget),
@@ -330,6 +415,40 @@ pub async fn handshake(
     }
     diag.pow_required = prepared.pow.is_some();
     diag.turnstile_required = prepared.turnstile_required;
+    diag.turnstile_dx_len = prepared
+        .turnstile_dx
+        .as_deref()
+        .map(str::len)
+        .unwrap_or(0);
+
+    // Turnstile 求解：拿到 dx 才算得出来，算不出来就发空串（与旧行为一致）
+    let turnstile_token = match (prepared.turnstile_required, prepared.turnstile_dx.as_deref()) {
+        (true, Some(dx)) => {
+            // 排错/写 fixture 用：只有显式设了目录才落盘，平时不在磁盘留上游挑战
+            if let Ok(dir) = std::env::var("GPT2APIRS_CAPTURE_TURNSTILE") {
+                if !dir.trim().is_empty() {
+                    match gpt2apirs_protocol::turnstile::capture(
+                        std::path::Path::new(dir.trim()),
+                        dx,
+                        &p_token,
+                    ) {
+                        Ok(path) => tracing::info!(target = %path.display(), "已落盘 Turnstile 挑战"),
+                        Err(error) => tracing::warn!(%error, "落盘 Turnstile 挑战失败"),
+                    }
+                }
+            }
+            let solved = gpt2apirs_protocol::turnstile::solve_challenge(dx, &p_token);
+            if solved.is_none() {
+                tracing::warn!(
+                    dx_len = dx.len(),
+                    "Turnstile 求解失败，按空 token 继续（上游当前不强制校验）"
+                );
+            }
+            solved.unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    diag.turnstile_token_len = turnstile_token.len();
 
     let proof_token = match &prepared.pow {
         Some(challenge) if challenge.is_usable() => {
@@ -344,9 +463,9 @@ pub async fn handshake(
     let budget = stage_budget(deadline, "sentinel_finalize", stage_caps::SENTINEL)?;
     let finalize = client
         .post_json(
-            &format!("{BASE_URL}{SENTINEL_FINALIZE}"),
+            &upstream_url(SENTINEL_FINALIZE),
             &gpt2apirs_http::api_headers(user_agent, token, SENTINEL_FINALIZE),
-            &build_finalize_payload(&prepared.prepare_token, &proof_token, ""),
+            &build_finalize_payload(&prepared.prepare_token, &proof_token, &turnstile_token),
             Some(budget),
         )
         .await?;
@@ -386,7 +505,7 @@ async fn generate_one(
     let budget = stage_budget(deadline, "conversation_prepare", stage_caps::CONVERSATION_PREPARE)?;
     let prep = client
         .post_json(
-            &format!("{BASE_URL}{CONVERSATION_PREPARE}"),
+            &upstream_url(CONVERSATION_PREPARE),
             &image_headers(
                 &request.user_agent,
                 token,
@@ -425,7 +544,7 @@ async fn generate_one(
     let budget = stage_budget(deadline, "sse", stage_caps::SSE)?;
     let sse = client
         .post_sse(
-            &format!("{BASE_URL}{CONVERSATION}"),
+            &upstream_url(CONVERSATION),
             &image_headers(
                 &request.user_agent,
                 token,
@@ -463,13 +582,54 @@ async fn generate_one(
     };
 
     // ---- 6/7. 解析下载地址 + 下载 + 落盘 ----
-    let (attachments, files) =
-        plan_download_targets(&state.conversation_id, &state.file_ids, &state.sediment_ids);
+    let target_format = request.output_format.unwrap_or_default();
+    fetch_images(
+        client,
+        &auth,
+        request,
+        &state.conversation_id,
+        &state.file_ids,
+        &state.sediment_ids,
+        target_format,
+        deadline,
+        &mut result.images,
+    )
+    .await?;
+
+    // ---- 8. 兜底：SSE 结束却没图时轮询会话详情，等后到的图片 id ----
+    if result.images.is_empty() && request.poll.is_enabled() {
+        let started = std::time::Instant::now();
+        poll_for_images(
+            client, token, &auth, request, target_format, deadline, &mut result, &mut diag,
+        )
+        .await?;
+        diag.poll_seconds = started.elapsed().as_secs_f64();
+    }
+
+    Ok((result, diag))
+}
+
+/// 解析下载地址并下载，成功的图片追加到 `images`。
+///
+/// 同一 URL 只下一次：sediment 与 file 两条路径可能指向同一份内容。
+#[allow(clippy::too_many_arguments)]
+async fn fetch_images(
+    client: &Client,
+    auth: &str,
+    request: &ImageRequest,
+    conversation_id: &str,
+    file_ids: &[String],
+    sediment_ids: &[String],
+    target_format: crate::format::OutputFormat,
+    deadline: Deadline,
+    images: &mut Vec<GeneratedImage>,
+) -> std::result::Result<(), GenerateError> {
+    let (attachments, files) = plan_download_targets(conversation_id, file_ids, sediment_ids);
 
     let mut urls: Vec<String> = Vec::new();
-    for (conversation_id, sediment_id) in &attachments {
-        let path = attachment_download_path(conversation_id, sediment_id);
-        if let Ok(Some(url)) = resolve_url(client, &auth, &request.user_agent, &path, deadline).await {
+    for (conv_id, sediment_id) in &attachments {
+        let path = attachment_download_path(conv_id, sediment_id);
+        if let Ok(Some(url)) = resolve_url(client, auth, &request.user_agent, &path, deadline).await {
             if !urls.contains(&url) {
                 urls.push(url);
             }
@@ -477,17 +637,44 @@ async fn generate_one(
     }
     for file_id in &files {
         let path = file_download_path(file_id);
-        if let Ok(Some(url)) = resolve_url(client, &auth, &request.user_agent, &path, deadline).await {
+        if let Ok(Some(url)) = resolve_url(client, auth, &request.user_agent, &path, deadline).await {
             if !urls.contains(&url) {
                 urls.push(url);
             }
         }
     }
 
-    for url in &urls {
-        let mut headers = vec![("User-Agent", request.user_agent.clone())];
-        if is_same_origin(BASE_URL, url) {
-            headers.push(("Authorization", auth.clone()));
+    download_urls(
+        client,
+        auth,
+        &request.user_agent,
+        &urls,
+        target_format,
+        request.keep_bytes,
+        deadline,
+        images,
+    )
+    .await
+}
+
+/// 逐个下载 URL，成功的落盘后追加到 `images`。
+///
+/// 单张下载失败只跳过，不影响其它张（与旧行为一致）。
+#[allow(clippy::too_many_arguments)]
+async fn download_urls(
+    client: &Client,
+    auth: &str,
+    user_agent: &str,
+    urls: &[String],
+    target_format: crate::format::OutputFormat,
+    keep_bytes: bool,
+    deadline: Deadline,
+    images: &mut Vec<GeneratedImage>,
+) -> std::result::Result<(), GenerateError> {
+    for url in urls {
+        let mut headers = vec![("User-Agent", user_agent.to_string())];
+        if is_same_origin(base_url(), url) {
+            headers.push(("Authorization", auth.to_string()));
         }
         let Ok(budget) = stage_budget(deadline, "download", stage_caps::DOWNLOAD) else {
             continue;
@@ -498,13 +685,115 @@ async fn generate_one(
         if response.status != 200 {
             continue;
         }
-        let target = request.output_format.unwrap_or_default();
-        if let Some(saved) = save_image_as(&response.body, target)? {
-            result.images.push(saved);
+        match save_image_as(&response.body, target_format, keep_bytes) {
+            Ok(Some(saved)) => images.push(saved),
+            Ok(None) => {}
+            Err(error) => {
+                // 图已经生成、配额已经花了：落盘失败不能把它丢掉，
+                // 也不能让整个请求失败。记一条 WARN，返回一份「未落盘」的图片，
+                // 由调用方决定只回 b64、不给 URL。
+                tracing::warn!(%error, "图片落盘失败，本次只返回字节");
+                if let Some(unpersisted) = unpersisted_image(&response.body, target_format) {
+                    images.push(unpersisted);
+                }
+            }
         }
     }
+    Ok(())
+}
 
-    Ok((result, diag))
+/// 轮询会话详情补齐后到的图片 id。
+///
+/// SSE 结束时图可能还没写进会话文档：先按 `initial_wait` 等一轮，再按 `interval` 重查，
+/// 遇到暂时性错误就翻倍退避（封顶 16s）。总时长同时受轮询预算与请求总时限约束，
+/// 一旦下到图或出现新 id 就重试下载，拿到图立即返回。
+#[allow(clippy::too_many_arguments)]
+async fn poll_for_images(
+    client: &Client,
+    token: &str,
+    auth: &str,
+    request: &ImageRequest,
+    target_format: crate::format::OutputFormat,
+    deadline: Deadline,
+    result: &mut ImageResult,
+    diag: &mut FlowDiagnostics,
+) -> std::result::Result<(), GenerateError> {
+    let policy = request.poll;
+    let conversation_id = result.conversation_id.clone();
+    if conversation_id.is_empty() {
+        return Ok(());
+    }
+    let started = std::time::Instant::now();
+    let cap = policy.interval_secs.max(16.0);
+    let mut wait = if result.file_ids.is_empty() && result.sediment_ids.is_empty() {
+        policy.initial_wait_secs
+    } else {
+        policy.interval_secs
+    };
+
+    loop {
+        if started.elapsed().as_secs_f64() >= policy.timeout_secs || deadline.is_expired() {
+            break;
+        }
+        let budget_left = policy.timeout_secs - started.elapsed().as_secs_f64();
+        let deadline_left = deadline.remaining().map(|d| d.as_secs_f64()).unwrap_or(budget_left);
+        let sleep = wait.min(budget_left).min(deadline_left);
+        if sleep < 0.0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs_f64(sleep)).await;
+
+        diag.poll_attempts += 1;
+        let payload = match conversation::fetch_conversation_payload(
+            client,
+            token,
+            &request.user_agent,
+            &conversation_id,
+            deadline,
+        )
+        .await
+        {
+            Ok(payload) => payload,
+            Err(_) => {
+                wait = (wait.max(0.5) * 2.0).min(cap);
+                continue;
+            }
+        };
+        let (_, file_ids, sediment_ids) = extract_conversation_ids(&payload.to_string());
+        let grew = merge_ids(&mut result.file_ids, file_ids)
+            | merge_ids(&mut result.sediment_ids, sediment_ids);
+        if grew {
+            fetch_images(
+                client,
+                auth,
+                request,
+                &conversation_id,
+                &result.file_ids,
+                &result.sediment_ids,
+                target_format,
+                deadline,
+                &mut result.images,
+            )
+            .await?;
+            if !result.images.is_empty() {
+                break;
+            }
+        }
+        wait = (wait.max(0.5) * 2.0).min(cap);
+    }
+    Ok(())
+}
+
+/// 把 `incoming` 合并进 `existing`，返回是否有新增。
+fn merge_ids(existing: &mut Vec<String>, incoming: Vec<String>) -> bool {
+    let mut grew = false;
+    for id in incoming {
+        if !existing.contains(&id) {
+            existing.push(id);
+            grew = true;
+        }
+    }
+    grew
 }
 
 /// 把图片字节落盘，返回落盘后的元信息。
@@ -513,7 +802,7 @@ async fn generate_one(
 ///
 /// 无法识别的格式返回 `Ok(None)`。
 pub fn save_image(bytes: &[u8]) -> Result<Option<GeneratedImage>> {
-    save_image_as(bytes, crate::format::OutputFormat::Png)
+    save_image_as(bytes, crate::format::OutputFormat::Png, true)
 }
 
 /// 按目标格式落盘：先转码，再用目标格式的扩展名与 MIME。
@@ -522,6 +811,7 @@ pub fn save_image(bytes: &[u8]) -> Result<Option<GeneratedImage>> {
 pub fn save_image_as(
     bytes: &[u8],
     format: crate::format::OutputFormat,
+    keep_bytes: bool,
 ) -> Result<Option<GeneratedImage>> {
     if image::guess_format(bytes).is_err() {
         return Ok(None);
@@ -550,13 +840,35 @@ pub fn save_image_as(
     std::fs::rename(&temp, &absolute)
         .with_context(|| format!("重命名图片失败: {}", absolute.display()))?;
 
+    let size = converted.len();
     Ok(Some(GeneratedImage {
-        bytes: converted,
+        bytes: if keep_bytes { converted } else { Vec::new() },
+        size,
         rel_path,
         mime,
         width,
         height,
     }))
+}
+
+/// 落盘失败时的兜底：拿到格式与尺寸，但 `rel_path` 留空表示没有落地文件。
+fn unpersisted_image(
+    bytes: &[u8],
+    format: crate::format::OutputFormat,
+) -> Option<GeneratedImage> {
+    let converted = crate::format::convert(bytes, format).ok()?;
+    let (mime, _) = sniff_mime(&converted)?;
+    let (width, height) =
+        gpt2apirs_core::tokens::image_size_from_bytes(&converted).unwrap_or((0, 0));
+    let size = converted.len();
+    Some(GeneratedImage {
+        bytes: converted,
+        size,
+        rel_path: String::new(),
+        mime,
+        width,
+        height,
+    })
 }
 
 /// 识别图片格式，返回 `(mime, 扩展名)`。
@@ -576,10 +888,6 @@ pub fn sniff_mime(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     None
 }
 
-/// 兼容旧接口：只判断是不是图片。
-pub fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
-    sniff_mime(bytes).map(|(_, ext)| ext)
-}
 
 /// 图片元信息：MIME、扩展名、宽高。
 ///
@@ -622,13 +930,13 @@ async fn resolve_url(
         ("User-Agent", user_agent.to_string()),
         ("Accept", "application/json".to_string()),
         ("Authorization", auth.to_string()),
-        ("Origin", BASE_URL.to_string()),
-        ("Referer", format!("{BASE_URL}/")),
+        ("Origin", base_url().to_string()),
+        ("Referer", format!("{}/", base_url())),
         ("X-OpenAI-Target-Path", path.to_string()),
         ("X-OpenAI-Target-Route", path.to_string()),
     ];
     let response = client
-        .get_text(&format!("{BASE_URL}{path}"), &headers, Some(budget))
+        .get_text(&upstream_url(path), &headers, Some(budget))
         .await?;
     if response.status != 200 {
         return Ok(None);
@@ -705,15 +1013,76 @@ mod tests {
     }
 
     #[test]
+    fn unpersisted_image_keeps_bytes_without_path() {
+        // 落盘失败时仍要保留图片：rel_path 为空即「没落地」。
+        let mut buffer = Vec::new();
+        let pixel = image::RgbaImage::from_pixel(2, 3, image::Rgba([200, 40, 40, 255]));
+        image::DynamicImage::ImageRgba8(pixel)
+            .write_to(
+                &mut std::io::Cursor::new(&mut buffer),
+                image::ImageFormat::Png,
+            )
+            .expect("编码 PNG");
+        let image = unpersisted_image(&buffer, crate::format::OutputFormat::Png)
+            .expect("应能构造未落盘对象");
+        assert!(image.rel_path.is_empty(), "未落盘不应有路径");
+        assert_eq!(image.width, 2);
+        assert_eq!(image.height, 3);
+        assert!(!image.bytes.is_empty());
+    }
+
+    #[test]
     fn save_image_rejects_non_image() {
         let saved = save_image(b"hello").expect("不应报错");
         assert!(saved.is_none(), "非图片应返回 None");
     }
 
     #[test]
+    fn save_image_can_skip_bytes() {
+        // url 模式下不需要字节：落盘后不保留，size 仍然准确。
+        let mut buffer = Vec::new();
+        let pixel = image::RgbaImage::from_pixel(3, 5, image::Rgba([10, 20, 30, 255]));
+        image::DynamicImage::ImageRgba8(pixel)
+            .write_to(
+                &mut std::io::Cursor::new(&mut buffer),
+                image::ImageFormat::Png,
+            )
+            .expect("编码 PNG");
+
+        let dropped = save_image_as(&buffer, crate::format::OutputFormat::Png, false)
+            .expect("落盘")
+            .expect("应有图片");
+        assert!(dropped.bytes.is_empty(), "不保留字节时 bytes 应为空");
+        assert!(dropped.size > 0, "size 必须准确");
+        assert!(dropped.to_base64().is_none(), "没字节就不能出 b64");
+        let absolute = gpt2apirs_core::paths::data_dir()
+            .expect("数据目录")
+            .join(dropped.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        assert_eq!(
+            std::fs::metadata(&absolute).expect("文件应存在").len() as usize,
+            dropped.size
+        );
+        let _ = std::fs::remove_file(&absolute);
+
+        let kept = save_image_as(&buffer, crate::format::OutputFormat::Png, true)
+            .expect("落盘")
+            .expect("应有图片");
+        assert_eq!(kept.bytes.len(), kept.size, "保留字节时长度应与 size 一致");
+        assert!(kept.to_base64().is_some());
+        let _ = std::fs::remove_file(
+            gpt2apirs_core::paths::data_dir()
+                .expect("数据目录")
+                .join(kept.rel_path.replace('/', std::path::MAIN_SEPARATOR_STR)),
+        );
+    }
+
+    #[test]
     fn request_n_is_clamped() {
+        // 真实上限由 API 层按设置项 `image_max_n` 校验（≤32）；
+        // 这里只是执行层的安全网，防止调用方绕过校验塞进天文数字。
         assert_eq!(ImageRequest::new("x").with_n(0).n, 1);
-        assert_eq!(ImageRequest::new("x").with_n(99).n, 4);
+        assert_eq!(ImageRequest::new("x").with_n(99).n, 32);
+        assert_eq!(ImageRequest::new("x").with_n(8).n, 8);
         assert_eq!(ImageRequest::new("x").with_n(3).n, 3);
     }
 
@@ -743,5 +1112,46 @@ mod tests {
         assert!(prompt.contains("生成格式为 gif。"));
         assert!(prompt.contains("frame_count: 20"));
         assert!(prompt.contains("frame_duration_ms: 120"));
+    }
+
+    #[test]
+    fn poll_policy_default_is_enabled() {
+        let policy = PollPolicy::default();
+        assert!(policy.is_enabled());
+        assert_eq!(policy.initial_wait_secs, 5.0);
+        assert_eq!(policy.interval_secs, 5.0);
+    }
+
+    #[test]
+    fn poll_policy_reads_settings_and_clamps() {
+        use serde_json::json;
+        let mut values = std::collections::HashMap::new();
+        values.insert("image_poll_initial_wait_secs".to_string(), json!(0));
+        values.insert("image_poll_interval_secs".to_string(), json!(0.1));
+        values.insert("image_poll_timeout_secs".to_string(), json!(30));
+        let settings = gpt2apirs_core::RuntimeSettings::new(values);
+        let policy = PollPolicy::from_settings(&settings);
+        assert_eq!(policy.initial_wait_secs, 0.0);
+        // 间隔下限 0.5s
+        assert_eq!(policy.interval_secs, 0.5);
+        assert_eq!(policy.timeout_secs, 30.0);
+        assert!(policy.is_enabled());
+    }
+
+    #[test]
+    fn poll_policy_disabled_when_budget_below_interval() {
+        let policy = PollPolicy { initial_wait_secs: 5.0, interval_secs: 10.0, timeout_secs: 5.0 };
+        assert!(!policy.is_enabled());
+    }
+
+    #[test]
+    fn merge_ids_appends_only_new() {
+        let mut existing = vec!["a".to_string(), "b".to_string()];
+        let grew = merge_ids(&mut existing, vec!["b".to_string(), "c".to_string()]);
+        assert!(grew);
+        assert_eq!(existing, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        let grew_again = merge_ids(&mut existing, vec!["a".to_string()]);
+        assert!(!grew_again);
+        assert_eq!(existing.len(), 3);
     }
 }

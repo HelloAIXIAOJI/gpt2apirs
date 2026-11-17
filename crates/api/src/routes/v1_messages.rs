@@ -48,16 +48,40 @@ pub struct MessagesRequest {
     pub tools: Option<Value>,
 }
 
+/// `POST /v1/messages/count_tokens` 的请求体。
+///
+/// 与 [`MessagesRequest`] 的区别：`max_tokens` 不必填（Anthropic 规范如此），
+/// 其余字段含义一致。
+#[derive(Debug, Deserialize)]
+pub struct CountTokensRequest {
+    /// 模型名。
+    #[serde(default)]
+    pub model: Option<String>,
+    /// 系统提示：字符串，或 `[{type:"text",text}]`。
+    #[serde(default)]
+    pub system: Option<Value>,
+    /// 消息列表。
+    #[serde(default)]
+    pub messages: Vec<AnthropicMessage>,
+    /// 工具（**不支持**，与 `/v1/messages` 一致）。
+    #[serde(default)]
+    pub tools: Option<Value>,
+}
+
 fn anthropic_error(error: impl Into<gpt2apirs_core::AppError>) -> ApiError {
     ApiError::anthropic(error)
 }
 
-fn blocks_text(value: &Value, param: &str) -> Result<String, ApiError> {
+fn block_content(
+    value: &Value,
+    param: &str,
+) -> Result<(String, Vec<gpt2apirs_generate::inputs::ImageSource>), ApiError> {
     match value {
-        Value::Null => Ok(String::new()),
-        Value::String(text) => Ok(text.clone()),
+        Value::Null => Ok((String::new(), Vec::new())),
+        Value::String(text) => Ok((text.clone(), Vec::new())),
         Value::Array(parts) => {
             let mut out = String::new();
+            let mut images = Vec::new();
             for part in parts {
                 let kind = part.get("type").and_then(Value::as_str).unwrap_or("text");
                 match kind {
@@ -66,18 +90,16 @@ fn blocks_text(value: &Value, param: &str) -> Result<String, ApiError> {
                             out.push_str(text);
                         }
                     }
-                    "image" | "image_url" => {
-                        return Err(anthropic_error(
-                            gpt2apirs_core::AppError::invalid_param(
-                                "文本端点不支持图片输入；请用 /v1/images/edits",
-                                param,
-                            ),
-                        ));
+                    "image" => {
+                        images.push(anthropic_image_source(part, param)?);
+                    }
+                    "image_url" => {
+                        images.push(anthropic_image_source(part, param)?);
                     }
                     _ => {}
                 }
             }
-            Ok(out)
+            Ok((out, images))
         }
         other => Err(anthropic_error(gpt2apirs_core::AppError::invalid_param(
             format!("content 类型不支持：{other}"),
@@ -86,17 +108,85 @@ fn blocks_text(value: &Value, param: &str) -> Result<String, ApiError> {
     }
 }
 
-fn normalize_messages(
-    request: &MessagesRequest,
-) -> Result<Vec<(String, String)>, ApiError> {
-    let mut messages: Vec<(String, String)> = Vec::new();
-    if let Some(system) = &request.system {
-        let text = blocks_text(system, "system")?;
-        if !text.trim().is_empty() {
-            messages.push(("system".to_string(), text));
+/// 从一个 Anthropic 图片块里取出图片来源。
+///
+/// 官方两种写法：`source.type = base64`（带 media_type 与 data）与 `source.type = url`。
+fn anthropic_image_source(
+    part: &Value,
+    param: &str,
+) -> Result<gpt2apirs_generate::inputs::ImageSource, ApiError> {
+    use base64::Engine as _;
+    use gpt2apirs_generate::inputs::ImageSource;
+
+    let source = part.get("source");
+    let kind = source
+        .and_then(|value| value.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("base64");
+    match kind {
+        "url" => {
+            let url = source
+                .and_then(|value| value.get("url"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    anthropic_error(gpt2apirs_core::AppError::invalid_param(
+                        "图片 url 为空",
+                        param,
+                    ))
+                })?;
+            Ok(ImageSource::RemoteUrl(url.to_string()))
+        }
+        _ => {
+            let data = source
+                .and_then(|value| value.get("data"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anthropic_error(gpt2apirs_core::AppError::invalid_param(
+                        "图片缺少 data",
+                        param,
+                    ))
+                })?;
+            let mime = source
+                .and_then(|value| value.get("media_type"))
+                .and_then(Value::as_str)
+                .unwrap_or("image/png")
+                .to_string();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data.trim())
+                .map_err(|_| {
+                    anthropic_error(gpt2apirs_core::AppError::invalid_param(
+                        "图片 data 不是合法 base64",
+                        param,
+                    ))
+                })?;
+            Ok(ImageSource::Inline {
+                data: bytes,
+                filename: String::new(),
+                mime,
+            })
         }
     }
-    for message in &request.messages {
+}
+
+/// 把顶层 `system` 与消息列表归一成 `(role, text)`。
+///
+/// `/v1/messages` 与 `/v1/messages/count_tokens` 共用：两边的 token 口径必须一致，
+/// 否则「预估能放下、实际被截断」。
+fn normalize_parts(
+    system: Option<&Value>,
+    messages: &[AnthropicMessage],
+) -> Result<(Vec<(String, String)>, Vec<gpt2apirs_generate::inputs::ImageSource>), ApiError> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut images = Vec::new();
+    if let Some(system) = system {
+        let (text, _) = block_content(system, "system")?;
+        if !text.trim().is_empty() {
+            out.push(("system".to_string(), text));
+        }
+    }
+    for message in messages {
         let role = message.role.trim().to_ascii_lowercase();
         match role.as_str() {
             "user" | "assistant" => {}
@@ -107,12 +197,13 @@ fn normalize_messages(
                 )));
             }
         }
-        let text = blocks_text(&message.content, "messages")?;
+        let (text, mut found) = block_content(&message.content, "messages")?;
+        images.append(&mut found);
         if !text.trim().is_empty() {
-            messages.push((role, text));
+            out.push((role, text));
         }
     }
-    Ok(messages)
+    Ok((out, images))
 }
 
 /// `POST /v1/messages`
@@ -138,8 +229,8 @@ pub async fn create_message(
         )));
     }
 
-    let messages = normalize_messages(&request)?;
-    if messages.iter().all(|(_, text)| text.trim().is_empty()) {
+    let (messages, images) = normalize_parts(request.system.as_ref(), &request.messages)?;
+    if messages.iter().all(|(_, text)| text.trim().is_empty()) && images.is_empty() {
         return Err(anthropic_error(gpt2apirs_core::AppError::invalid_param(
             "messages 里没有非空文本",
             "messages",
@@ -151,11 +242,11 @@ pub async fn create_message(
 
     // 真流式：命中时直接返回 SSE，不走「先跑完再切块」
     if request.stream.unwrap_or(false) {
-        let handle = start_text_stream(&state, messages.clone(), &model, deadline).await?;
+        let handle = start_text_stream(&state, messages.clone(), images.clone(), &model, deadline).await?;
         return Ok(build_live_stream(handle, &model).into_response());
     }
 
-    let outcome = run_text(&state, &messages, &model, deadline).await?;
+    let outcome = run_text(&state, &messages, &images, &model, deadline).await?;
 
     let input_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
     let output_tokens = gpt2apirs_core::tokens::count_text_tokens(&outcome.result.text, &model);
@@ -184,6 +275,33 @@ pub async fn create_message(
     .into_response())
 }
 
+/// `POST /v1/messages/count_tokens`
+///
+/// 只算不取号：不查账号池、不写调用日志的账号字段、不消耗配额。
+/// 口径与 `/v1/messages` 的 `usage.input_tokens` 完全一致（同一个函数）。
+pub async fn count_tokens(
+    Json(request): Json<CountTokensRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if crate::routes::text_common::has_tools(&request.tools) {
+        return Err(ApiError::anthropic(
+            crate::routes::text_common::tools_not_supported("anthropic.tools"),
+        ));
+    }
+    if request.messages.is_empty() {
+        return Err(anthropic_error(gpt2apirs_core::AppError::invalid_param(
+            "messages 不能为空",
+            "messages",
+        )));
+    }
+
+    let (messages, _images) = normalize_parts(request.system.as_ref(), &request.messages)?;
+    let model = resolve_model(request.model.as_deref());
+    let input_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
+
+    tracing::debug!(model = %model, input_tokens, "anthropic count_tokens");
+    Ok(Json(json!({ "input_tokens": input_tokens })))
+}
+
 /// 把流式 handle 变成 axum SSE 响应（Anthropic 事件格式）。
 ///
 /// 事件顺序：`message_start` → `content_block_start` → 若干
@@ -197,10 +315,10 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     let message_id = format!("msg_{}", Uuid::new_v4().simple());
     let model = model.to_string();
     let snapshot = handle.snapshot.clone();
-    let messages = handle.messages.clone();
+    let messages = handle.billing_messages.clone();
     let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let input_tokens =
-        gpt2apirs_core::tokens::count_message_text_tokens(&handle.messages, &model);
+        gpt2apirs_core::tokens::count_message_text_tokens(&handle.billing_messages, &model);
 
     // 1) 开头两件
     let head = futures_util::stream::iter(vec![
@@ -312,7 +430,7 @@ mod live_stream_tests {
     #[tokio::test]
     async fn delta_arrives_before_source_closes() {
         let (sender, handle) = channel_handle();
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
         let mut body = response.into_body().into_data_stream();
 
         sender.send(Ok("第一段".to_string())).await.expect("发送");
@@ -346,7 +464,7 @@ mod live_stream_tests {
                 finished: true,
             };
         }
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
 
         sender.send(Ok("你好".to_string())).await.expect("发送");
         sender.send(Ok("世界".to_string())).await.expect("发送");
@@ -365,7 +483,7 @@ mod live_stream_tests {
     #[tokio::test]
     async fn upstream_error_is_reported_at_tail() {
         let (sender, handle) = channel_handle();
-        let response = build_live_stream(handle, "gpt-5-5");
+        let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
 
         sender.send(Ok("部分".to_string())).await.expect("发送");
         sender

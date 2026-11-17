@@ -37,6 +37,8 @@ pub enum AppError {
     NotFound {
         /// 人类可读消息。
         message: String,
+        /// 覆盖默认错误码（如 `model_not_found`）；`None` 用状态码默认值。
+        code: Option<String>,
     },
 
     /// 冲突（409）。
@@ -53,6 +55,15 @@ pub enum AppError {
         message: String,
         /// 建议重试等待秒数。
         retry_after: Option<u64>,
+    },
+
+    /// 请求体过大（413）。
+    #[error("{message}")]
+    PayloadTooLarge {
+        /// 人类可读消息。
+        message: String,
+        /// 出错的参数名。
+        param: Option<String>,
     },
 
     /// 上游返回错误。
@@ -99,6 +110,7 @@ impl AppError {
             AppError::NotFound { .. } => 404,
             AppError::Conflict { .. } => 409,
             AppError::RateLimited { .. } => 429,
+            AppError::PayloadTooLarge { .. } => 413,
             AppError::Upstream { status, .. } => *status,
             AppError::Timeout { .. } => 504,
             AppError::ServiceUnavailable { .. } => 503,
@@ -136,6 +148,12 @@ impl AppError {
         if let AppError::ServiceUnavailable { code, .. } = self {
             return code.clone();
         }
+        if let AppError::NotFound {
+            code: Some(code), ..
+        } = self
+        {
+            return code.clone();
+        }
         default_error_code(self.status()).to_string()
     }
 
@@ -143,6 +161,7 @@ impl AppError {
     pub fn param(&self) -> Option<&str> {
         match self {
             AppError::InvalidRequest { param, .. } => param.as_deref(),
+            AppError::PayloadTooLarge { param, .. } => param.as_deref(),
             _ => None,
         }
     }
@@ -153,9 +172,10 @@ impl AppError {
             AppError::InvalidRequest { message, .. }
             | AppError::Unauthorized { message }
             | AppError::Forbidden { message }
-            | AppError::NotFound { message }
+            | AppError::NotFound { message, .. }
             | AppError::Conflict { message }
             | AppError::RateLimited { message, .. }
+            | AppError::PayloadTooLarge { message, .. }
             | AppError::Upstream { message, .. }
             | AppError::ServiceUnavailable { message, .. } => message.clone(),
             AppError::Timeout { stage } => format!("timeout at {stage}"),
@@ -193,6 +213,22 @@ impl AppError {
         }
     }
 
+    /// 快捷构造：资源不存在。
+    pub fn not_found(message: impl Into<String>) -> Self {
+        AppError::NotFound {
+            message: message.into(),
+            code: None,
+        }
+    }
+
+    /// 快捷构造：资源不存在，但对外错误码要具体（如 `model_not_found`）。
+    pub fn not_found_coded(message: impl Into<String>, code: impl Into<String>) -> Self {
+        AppError::NotFound {
+            message: message.into(),
+            code: Some(code.into()),
+        }
+    }
+
     /// 快捷构造：未认证。
     pub fn unauthorized(message: impl Into<String>) -> Self {
         AppError::Unauthorized {
@@ -215,6 +251,7 @@ pub fn default_error_type(status: u16) -> &'static str {
 /// 按状态码给默认错误码（具体错误可覆盖）。
 pub fn default_error_code(status: u16) -> &'static str {
     match status {
+        413 => "payload_too_large",
         401 => "invalid_api_key",
         403 => "permission_denied",
         429 => "rate_limit_exceeded",
@@ -347,4 +384,21 @@ pub fn anthropic_error_payload(error: &AppError) -> Value {
             "message": if message.is_empty() { "request failed".to_string() } else { message },
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_too_large_maps_to_413() {
+        let error = AppError::PayloadTooLarge {
+            message: "字段 image 超过上限 10 MB".to_string(),
+            param: Some("image".to_string()),
+        };
+        assert_eq!(error.status(), 413);
+        assert_eq!(error.error_code(), "payload_too_large");
+        assert_eq!(error.error_type(), "invalid_request_error");
+        assert_eq!(error.param(), Some("image"));
+    }
 }
