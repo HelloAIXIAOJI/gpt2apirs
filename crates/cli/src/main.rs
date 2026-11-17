@@ -177,6 +177,9 @@ async fn run() -> Result<()> {
         oauth,
         api_keys,
     ));
+    // 容量阈值自动归档（阈值 0 时后台什么也不做）。
+    gpt2apirs_cli::auto_archive::spawn(state.clone());
+
     // 异步任务：上次进程留下的未完成任务标失败，最近历史灌回内存供页面查看。
     {
         let repo = gpt2apirs_storage::repo::ImageTaskRepo::new(state.db.clone());

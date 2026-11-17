@@ -54,6 +54,16 @@ pub static NUMERIC_SPECS: &[NumericSpec] = &[
         description: "单张参考图（含 mask）的大小上限；超过直接拒绝，不读进内存。",
     },
     NumericSpec {
+        key: "image_archive_threshold_mb",
+        default: 0.0,
+        min: 0.0,
+        max: Some(1_048_576.0),
+        kind: NumericKind::Integer,
+        unit: Some("MB"),
+        restart_required: false,
+        description: "在线图片总量超过该值自动归档最老的一批（0 = 关闭，默认关）。",
+    },
+    NumericSpec {
         key: "image_max_n",
         default: 4.0,
         min: 1.0,
@@ -391,6 +401,7 @@ mod tests {
             "proxy_auto_refresh_minutes",
             "proxy_probe_timeout_ms",
             "image_input_max_mb",
+            "image_archive_threshold_mb",
             "image_max_n",
         ];
         assert_eq!(NUMERIC_SPECS.len(), expected.len());
