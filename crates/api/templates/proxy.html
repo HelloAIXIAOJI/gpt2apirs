@@ -1,77 +1,7 @@
 {% extends "shell.html" %}
-{% block title %}代理 · 管理后台<script>
-  (function () {
-    var button = document.getElementById("probe-all");
-    if (!button) return;
-    var status = document.getElementById("probe-status");
-
-    function cellFor(name) {
-      return document.querySelector("[data-probe=\"" + CSS.escape(name) + "\"]");
-    }
-
-    async function probeOne(name) {
-      var cell = cellFor(name);
-      try {
-        var response = await fetch("/proxy/probe.json", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ names: [name] })
-        });
-        if (!response.ok) throw new Error("HTTP " + response.status);
-        var payload = await response.json();
-        var item = (payload.results || [])[0];
-        if (cell) cell.classList.remove("probing");
-        if (item && item.delay_ms != null) {
-          if (cell) { cell.textContent = item.delay_ms + " ms"; cell.classList.remove("probe-bad"); }
-          return true;
-        }
-        if (cell) {
-          cell.textContent = "失败：" + ((item && item.error) || "未知");
-          cell.classList.add("probe-bad");
-        }
-        return false;
-      } catch (error) {
-        if (cell) {
-          cell.classList.remove("probing");
-          cell.textContent = "失败：" + error.message;
-          cell.classList.add("probe-bad");
-        }
-        return false;
-      }
-    }
-
-    button.addEventListener("click", async function () {
-      var cells = Array.prototype.slice.call(document.querySelectorAll("[data-probe]"));
-      var names = cells.map(function (cell) { return cell.getAttribute("data-probe"); });
-      cells.forEach(function (cell) {
-        cell.textContent = "测速中…";
-        cell.classList.add("probing");
-        cell.classList.remove("probe-bad");
-      });
-      button.disabled = true;
-      var cursor = 0;
-      var ok = 0;
-      var bad = 0;
-      var done = 0;
-      status.textContent = "0 / " + names.length;
-
-      async function worker() {
-        while (cursor < names.length) {
-          var name = names[cursor++];
-          (await probeOne(name)) ? ok++ : bad++;
-          done++;
-          status.textContent = done + " / " + names.length + "（成功 " + ok + "，失败 " + bad + "）";
-        }
-      }
-
-      await Promise.all(Array.from({ length: Math.min(10, names.length) }, worker));
-      status.textContent = "完成：成功 " + ok + "，失败 " + bad;
-      button.disabled = false;
-    });
-  })();
-</script>
-{% endblock %}
+{% block title %}代理 · 管理后台{% endblock %}
 {% block content %}
+
 <header id="topbar"><h1>代理</h1></header>
 
 <section class="panel">
@@ -155,4 +85,76 @@
   </table>
   {% endif %}
 </section>
+
+<script>
+  (function () {
+    var button = document.getElementById("probe-all");
+    if (!button) return;
+    var status = document.getElementById("probe-status");
+
+    function cellFor(name) {
+      return document.querySelector("[data-probe=\"" + CSS.escape(name) + "\"]");
+    }
+
+    async function probeOne(name) {
+      var cell = cellFor(name);
+      try {
+        var response = await fetch("/proxy/probe.json", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ names: [name] })
+        });
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        var payload = await response.json();
+        var item = (payload.results || [])[0];
+        if (cell) cell.classList.remove("probing");
+        if (item && item.delay_ms != null) {
+          if (cell) { cell.textContent = item.delay_ms + " ms"; cell.classList.remove("probe-bad"); }
+          return true;
+        }
+        if (cell) {
+          cell.textContent = "失败：" + ((item && item.error) || "未知");
+          cell.classList.add("probe-bad");
+        }
+        return false;
+      } catch (error) {
+        if (cell) {
+          cell.classList.remove("probing");
+          cell.textContent = "失败：" + error.message;
+          cell.classList.add("probe-bad");
+        }
+        return false;
+      }
+    }
+
+    button.addEventListener("click", async function () {
+      var cells = Array.prototype.slice.call(document.querySelectorAll("[data-probe]"));
+      var names = cells.map(function (cell) { return cell.getAttribute("data-probe"); });
+      cells.forEach(function (cell) {
+        cell.textContent = "测速中…";
+        cell.classList.add("probing");
+        cell.classList.remove("probe-bad");
+      });
+      button.disabled = true;
+      var cursor = 0;
+      var ok = 0;
+      var bad = 0;
+      var done = 0;
+      status.textContent = "0 / " + names.length;
+
+      async function worker() {
+        while (cursor < names.length) {
+          var name = names[cursor++];
+          (await probeOne(name)) ? ok++ : bad++;
+          done++;
+          status.textContent = done + " / " + names.length + "（成功 " + ok + "，失败 " + bad + "）";
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(10, names.length) }, worker));
+      status.textContent = "完成：成功 " + ok + "，失败 " + bad;
+      button.disabled = false;
+    });
+  })();
+</script>
 {% endblock %}
