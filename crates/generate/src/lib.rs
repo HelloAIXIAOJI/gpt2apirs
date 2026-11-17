@@ -1012,8 +1012,11 @@ mod tests {
 
     #[test]
     fn request_n_is_clamped() {
+        // 真实上限由 API 层按设置项 `image_max_n` 校验（≤32）；
+        // 这里只是执行层的安全网，防止调用方绕过校验塞进天文数字。
         assert_eq!(ImageRequest::new("x").with_n(0).n, 1);
-        assert_eq!(ImageRequest::new("x").with_n(99).n, 4);
+        assert_eq!(ImageRequest::new("x").with_n(99).n, 32);
+        assert_eq!(ImageRequest::new("x").with_n(8).n, 8);
         assert_eq!(ImageRequest::new("x").with_n(3).n, 3);
     }
 

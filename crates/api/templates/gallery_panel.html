@@ -10,7 +10,7 @@
 <div class="thumbs">
   {% for image in data.images %}
   <a class="thumb glightbox" href="{{ image.url }}" data-gallery="images" data-title="{{ image.title }}" data-description="{{ image.meta }}">
-    <img src="{{ image.url }}" alt="{{ image.title }}" loading="lazy">
+    <img src="{{ image.thumb }}" alt="{{ image.title }}" loading="lazy">
     <span class="thumb-meta">{{ image.meta }}</span>
   </a>
   {% endfor %}

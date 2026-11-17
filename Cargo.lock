@@ -1826,6 +1826,7 @@ dependencies = [
  "hex",
  "hmac",
  "http-body-util",
+ "image",
  "serde",
  "serde_json",
  "sha2",
