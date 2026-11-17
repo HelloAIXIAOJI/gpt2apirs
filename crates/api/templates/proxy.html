@@ -49,6 +49,9 @@
     <form method="post" action="/proxy/start-cached" class="inline-form">
       <button class="btn" type="submit">用现有节点启动</button>
     </form>
+    <form method="post" action="/proxy/clearance" class="inline-form">
+      <button class="btn btn--ghost" type="submit">测 Cloudflare</button>
+    </form>
     <form method="post" action="/proxy/stop" class="inline-form">
       <button class="btn btn--ghost" type="submit" onclick="return confirm('停止后所有上游请求走直连，确定？')">停止代理</button>
     </form>

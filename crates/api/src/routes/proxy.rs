@@ -245,3 +245,31 @@ pub async fn start_from_settings(state: &Arc<AppState>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// clearance 探测请求。
+#[derive(Debug, Default, Deserialize)]
+pub struct ClearanceRequest {
+    /// 探测目标；空则用 ChatGPT 网页端。
+    #[serde(default)]
+    pub url: Option<String>,
+    /// 超时毫秒。
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+/// `POST /api/proxy/clearance` —— 用当前出口探一次 Cloudflare。
+pub async fn clearance(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ClearanceRequest>,
+) -> Json<Value> {
+    let url = request
+        .url
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| crate::clearance::DEFAULT_CLEARANCE_URL.to_string());
+    let timeout = request.timeout_ms.unwrap_or(15_000);
+    let outcome = crate::clearance::probe(&state, &url, timeout).await;
+    Json(json!({
+        "url": url,
+        "ok": outcome.is_ok(),
+        "result": outcome.as_text(),
+    }))
+}
