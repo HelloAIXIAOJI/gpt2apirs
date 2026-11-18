@@ -60,6 +60,14 @@ pub fn should_record(path: &str) -> bool {
         .any(|prefix| path == *prefix || path.starts_with(prefix))
 }
 
+/// 是否把这次请求记进调用日志。
+///
+/// 跨站预检（OPTIONS）不算业务调用：每个前端请求都可能先来一发，
+/// 记进来只会把日志冲成一片 OPTIONS。
+pub fn should_record_call(method: &str, path: &str) -> bool {
+    method != "OPTIONS" && should_record(path)
+}
+
 /// axum 中间件。
 pub async fn record_call(
     State(state): State<Arc<AppState>>,
@@ -84,7 +92,7 @@ pub async fn record_call(
         response.headers_mut().insert("x-request-id", value);
     }
 
-    if should_record(&path) {
+    if should_record_call(&method, &path) {
         let repo = CallRecordRepo::new(state.db.clone());
         let record = NewCallRecord {
             method,
@@ -123,5 +131,13 @@ mod tests {
         assert!(should_record("/v1/chat/completions"));
         assert!(should_record("/api/accounts"));
         assert!(should_record("/admin/login"));
+    }
+
+    #[test]
+    fn preflight_is_not_a_call() {
+        assert!(should_record_call("GET", "/v1/models"));
+        assert!(should_record_call("POST", "/v1/chat/completions"));
+        assert!(!should_record_call("OPTIONS", "/v1/models"));
+        assert!(!should_record_call("OPTIONS", "/health"));
     }
 }

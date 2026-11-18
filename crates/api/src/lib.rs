@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod call_log;
 pub mod clearance;
+pub mod cors;
 pub mod error;
 pub mod image_archive;
 pub mod image_response;
@@ -37,6 +38,10 @@ pub use system::APP_VERSION;
 
 /// 构建完整路由。
 pub fn build_router(state: Arc<AppState>) -> Router {
+    // 对外接口要能被浏览器前端直接调用：CORS 层必须在鉴权中间件**外面**，
+    // 否则预检（OPTIONS）会先撞上「没有 API key」的 401。
+    let cors_layer = cors::layer(&state.config.cors_allow_origins);
+
     // /v1/* 只认 API key；后台登录口令在这里一定失败。
     let v1 = Router::new()
         .route("/v1/models", get(routes::v1_models::list_models))
@@ -60,7 +65,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,
-        ));
+        ))
+        .layer(cors_layer.clone());
 
     // 后台：登录口令（或会话 cookie）才能进。
     let admin = Router::new()
@@ -170,7 +176,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,
-        ));
+        ))
+        .layer(cors_layer.clone());
 
     // 登录接口本身不能要求已登录。
     let login = Router::new().route(
@@ -239,7 +246,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/version", get(system::version))
         .route("/images/download", get(admin::gallery::download_all))
         .route("/images/{*path}", get(static_files::serve_image))
-        .route("/image-thumbnails/{*path}", get(static_files::serve_thumbnail));
+        .route("/image-thumbnails/{*path}", get(static_files::serve_thumbnail))
+        // 图片是公开资源，前端要 fetch 成 blob / 画进 canvas 就得有 CORS
+        .layer(cors_layer.clone());
 
     public
         .merge(ui)

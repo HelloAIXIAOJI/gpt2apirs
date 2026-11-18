@@ -54,6 +54,11 @@ pub struct BootstrapConfig {
 
     /// 对外可访问的基础地址，用于拼接图片 URL。留空则用请求的 Host。
     pub public_base_url: Option<String>,
+    /// 允许跨站调用 `/v1/*` 的来源白名单（`CORS_ALLOW_ORIGINS`，逗号分隔）。
+    ///
+    /// 为空表示放开任意来源：这些接口只认 `Authorization: Bearer <API key>`，
+    /// 不依赖 cookie，跨站页面拿不到用户的凭据。要收窄就填具体来源。
+    pub cors_allow_origins: Vec<String>,
     /// 加载过程中产生的告警（此时日志可能还没初始化，由调用方负责输出）。
     pub warnings: Vec<String>,
 }
@@ -140,6 +145,11 @@ impl BootstrapConfig {
 
         let public_base_url = lookup("PUBLIC_BASE_URL").map(|value| value.trim_end_matches('/').to_string());
 
+        // ---- 跨站（浏览器前端直接调 /v1/* 时要过预检）----
+        let cors_allow_origins = lookup("CORS_ALLOW_ORIGINS")
+            .map(|raw| split_origins(&raw))
+            .unwrap_or_default();
+
         Ok(Self {
             database_url,
             admin_key,
@@ -153,6 +163,7 @@ impl BootstrapConfig {
             log_levels,
 
             public_base_url,
+            cors_allow_origins,
             warnings,
         })
     }
@@ -166,6 +177,15 @@ impl BootstrapConfig {
     pub fn bind_address(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+}
+
+/// 解析 `CORS_ALLOW_ORIGINS`：逗号分隔；`*` 与空项都表示「不限制」。
+fn split_origins(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && *part != "*")
+        .map(str::to_string)
+        .collect()
 }
 
 fn optional_secs(lookup: &Lookup<'_>, key: &'static str, default: u64) -> Option<Duration> {
@@ -193,6 +213,35 @@ mod tests {
 
     fn base() -> HashMap<&'static str, &'static str> {
         HashMap::from([("DATABASE_URL", GOOD_URL), ("ADMIN_KEY", "an-admin-key-456")])
+    }
+
+    #[test]
+    fn cors_origins_default_to_any() {
+        let cfg = BootstrapConfig::from_lookup(&lookup(base())).expect("应成功");
+        assert!(cfg.cors_allow_origins.is_empty(), "默认放开任意来源");
+
+        // `*` 与空串等价于「不限制」
+        let mut map = base();
+        map.insert("CORS_ALLOW_ORIGINS", " * ");
+        let cfg = BootstrapConfig::from_lookup(&lookup(map)).expect("应成功");
+        assert!(cfg.cors_allow_origins.is_empty());
+    }
+
+    #[test]
+    fn cors_origins_whitelist_is_split_and_trimmed() {
+        let mut map = base();
+        map.insert(
+            "CORS_ALLOW_ORIGINS",
+            " https://canvas.evalfy.com , ,http://localhost:3000 ",
+        );
+        let cfg = BootstrapConfig::from_lookup(&lookup(map)).expect("应成功");
+        assert_eq!(
+            cfg.cors_allow_origins,
+            vec![
+                "https://canvas.evalfy.com".to_string(),
+                "http://localhost:3000".to_string()
+            ]
+        );
     }
 
     #[test]

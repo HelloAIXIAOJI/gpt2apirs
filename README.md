@@ -106,6 +106,7 @@ OpenAI 与 Anthropic 双协议兼容，文本支持流式输出。
 | `ADMIN_KEY` | 是 | 后台登录口令 |
 | `DATA_DIR` | 否 | 图片与归档目录 |
 | `PUBLIC_BASE_URL` | 否 | 对外地址 |
+| `CORS_ALLOW_ORIGINS` | 否 | 允许跨站调 `/v1/*` 的来源，逗号分隔；留空放开任意来源 |
 
 ## 常见问题
 
