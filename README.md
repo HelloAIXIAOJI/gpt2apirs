@@ -123,6 +123,9 @@ cargo test --workspace
 cargo check --workspace --all-targets
 cargo check --workspace --all-features --all-targets
 ```
+## 社区
+
+[Linux.DO](https://linux.do/) 是世界上最大的中文技术社区。
 
 ## 许可证
 
