@@ -62,7 +62,8 @@
   <p class="empty">还没有节点：先启动一次订阅。</p>
   {% else %}
   <div class="batch-bar">
-    <button class="btn btn--ghost" type="button" id="probe-all">全部测速（10 并发）</button>
+        <button class="btn" type="button" id="ping-all">Ping 测试（4 包）</button>
+    <button class="btn btn--ghost" type="button" id="probe-all">精准测试（10 并发）</button>
     <span class="muted" id="probe-status"></span>
   </div>
   <table class="table">
@@ -128,6 +129,50 @@
         }
         return false;
       }
+    }
+
+    var pingButton = document.getElementById("ping-all");
+    if (pingButton) {
+      pingButton.addEventListener("click", async function () {
+        var cells = Array.prototype.slice.call(document.querySelectorAll("[data-probe]"));
+        var names = cells.map(function (cell) { return cell.getAttribute("data-probe"); });
+        cells.forEach(function (cell) {
+          cell.textContent = "Ping 中…";
+          cell.classList.add("probing");
+          cell.classList.remove("probe-bad");
+        });
+        pingButton.disabled = true;
+        status.textContent = "0 / " + names.length;
+        try {
+          var response = await fetch("/proxy/ping.json", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ names: names })
+          });
+          if (!response.ok) throw new Error("HTTP " + response.status);
+          var payload = await response.json();
+          var ok = 0, bad = 0;
+          (payload.results || []).forEach(function (item) {
+            var cell = cellFor(item.name);
+            if (!cell) return;
+            cell.classList.remove("probing");
+            if (item.ok) {
+              ok++;
+              cell.textContent = item.best_ms != null ? item.best_ms + " ms" : "通";
+              cell.classList.remove("probe-bad");
+            } else {
+              bad++;
+              cell.textContent = "不通";
+              cell.classList.add("probe-bad");
+            }
+          });
+          status.textContent = "Ping 完成：通 " + ok + "，不通 " + bad;
+        } catch (error) {
+          status.textContent = "Ping 失败：" + error.message;
+        } finally {
+          pingButton.disabled = false;
+        }
+      });
     }
 
     button.addEventListener("click", async function () {

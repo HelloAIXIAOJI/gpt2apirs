@@ -130,6 +130,21 @@ impl CallRecordRepo {
         Ok(rows)
     }
 
+    /// 同一筛选条件下的总条数（分页用）。
+    pub async fn count(&self, query: &CallRecordQuery) -> Result<i64, StorageError> {
+        let (min_status, max_status) = query.status_range.unwrap_or((0, 999));
+        let total: i64 = sqlx::query_scalar(SQL_COUNT)
+            .bind(min_status)
+            .bind(max_status)
+            .bind(query.path_prefix.as_deref())
+            .bind(query.account_id)
+            .bind(query.since)
+            .bind(query.error_code.clone())
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(total)
+    }
+
     /// 近 N 小时的汇总，给监控页。
     pub async fn summary(&self, hours: i64) -> Result<CallSummary, StorageError> {
         let window = format!("{} hours", hours.clamp(1, 24 * 30));
@@ -163,6 +178,14 @@ impl CallRecordRepo {
         Ok(result.rows_affected())
     }
 }
+
+const SQL_COUNT: &str = r#"select count(*)
+   from call_records
+   where status between $1 and $2
+     and ($3::text is null or path like $3 || '%')
+     and ($4::uuid is null or account_id = $4)
+     and ($5::timestamptz is null or created_at >= $5)
+     and ($6::text is null or error_code = $6)"#;
 
 const SQL_INSERT: &str = "insert into call_records (method, path, status, duration_ms, account_id, request_id, error_code) values ($1, $2, $3, $4, $5, $6, $7)";
 

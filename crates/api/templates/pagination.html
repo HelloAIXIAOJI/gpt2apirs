@@ -1,0 +1,17 @@
+{% if pager.visible %}
+<nav class="pager">
+  <a class="pager__step{% if !pager.has_prev %} is-disabled{% endif %}"
+     {% if pager.has_prev %}href="{{ pager.prev_href }}"{% endif %}>上一页</a>
+  <span class="pager__numbers">
+    {% for item in pager.numbers %}
+      {% if item.gap %}
+      <span class="pager__gap">{{ item.label }}</span>
+      {% else %}
+      <a class="pager__num{% if item.current %} is-current{% endif %}" href="{{ item.href }}">{{ item.label }}</a>
+      {% endif %}
+    {% endfor %}
+  </span>
+  <a class="pager__step{% if !pager.has_next %} is-disabled{% endif %}"
+     {% if pager.has_next %}href="{{ pager.next_href }}"{% endif %}>下一页</a>
+</nav>
+{% endif %}

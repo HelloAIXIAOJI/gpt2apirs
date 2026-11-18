@@ -273,3 +273,20 @@ pub async fn clearance(
         "result": outcome.as_text(),
     }))
 }
+
+/// `POST /api/proxy/ping` —— 纯 Ping（4 包，连通即通过）。
+pub async fn ping(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ProbeRequest>,
+) -> Json<Value> {
+    let names = if request.names.is_empty() {
+        None
+    } else {
+        Some(request.names)
+    };
+    let results = state
+        .proxy_service
+        .ping(names, request.concurrency.unwrap_or(10).clamp(1, 32))
+        .await;
+    Json(json!({ "results": results }))
+}

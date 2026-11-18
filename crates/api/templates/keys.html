@@ -39,11 +39,8 @@
     </table>
   </form>
 
-  <nav class="pager">
-    {% if has_prev %}<a class="btn btn--ghost" href="{{ prev_href }}">上一页</a>{% endif %}
-    <span class="muted">{{ page_label }}</span>
-    {% if has_next %}<a class="btn btn--ghost" href="{{ next_href }}">下一页</a>{% endif %}
-  </nav>
+  <span class="muted">{{ page_label }}</span>
+  {% include "pagination.html" %}
 
   {% if rows.is_empty() && error.is_empty() %}
   <p class="empty">还没有密钥。调用 /v1/* 之前先在这里建一把。</p>

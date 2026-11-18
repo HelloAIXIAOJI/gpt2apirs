@@ -54,6 +54,16 @@ pub static NUMERIC_SPECS: &[NumericSpec] = &[
         description: "单张参考图（含 mask）的大小上限；超过直接拒绝，不读进内存。",
     },
     NumericSpec {
+        key: "list_page_size",
+        default: 50.0,
+        min: 0.0,
+        max: Some(1000.0),
+        kind: NumericKind::Integer,
+        unit: Some("条"),
+        restart_required: false,
+        description: "后台列表每页条数：50 / 100 常用，0 表示不分页（最多 1000 条）。",
+    },
+    NumericSpec {
         key: "image_archive_threshold_mb",
         default: 0.0,
         min: 0.0,
@@ -403,6 +413,7 @@ mod tests {
             "image_input_max_mb",
             "image_archive_threshold_mb",
             "image_max_n",
+            "list_page_size",
         ];
         assert_eq!(NUMERIC_SPECS.len(), expected.len());
         for key in expected {

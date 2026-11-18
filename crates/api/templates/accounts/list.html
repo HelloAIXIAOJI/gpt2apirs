@@ -82,10 +82,7 @@
   <p class="empty">没有符合条件的账号。</p>
   {% endif %}
 
-  <nav class="pager">
-    {% if has_prev %}<a class="btn btn--ghost" href="{{ prev_href }}">上一页</a>{% endif %}
-    <span class="muted">{{ page_label }}</span>
-    {% if has_next %}<a class="btn btn--ghost" href="{{ next_href }}">下一页</a>{% endif %}
-  </nav>
+  <span class="muted">{{ page_label }}</span>
+  {% include "pagination.html" %}
 </section>
 {% endblock %}

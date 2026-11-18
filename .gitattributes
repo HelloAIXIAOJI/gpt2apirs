@@ -1,0 +1,3 @@
+# 迁移脚本按 LF 存储与检出：sqlx 会对已应用的迁移比对校验和，
+# 行尾一变就报 VersionMismatch。
+crates/storage/migrations/*.sql text eol=lf

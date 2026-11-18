@@ -22,7 +22,6 @@ use crate::routes::accounts::{BatchRequest, UpdateAccountRequest};
 use crate::state::AppState;
 
 /// 每页条数。
-const PAGE_SIZE: i64 = 20;
 
 /// 列表筛选参数。
 #[derive(Debug, Default, Deserialize)]
@@ -36,9 +35,9 @@ pub struct Filters {
     /// 关键词。
     #[serde(default)]
     pub keyword: String,
-    /// 偏移。
+    /// 页码，从 1 开始。
     #[serde(default)]
-    pub offset: i64,
+    pub page: i64,
     /// 一次性提示（从重定向带回来）。
     #[serde(default)]
     pub flash: String,
@@ -48,17 +47,16 @@ pub struct Filters {
 }
 
 impl Filters {
-    fn query(&self, offset: i64) -> String {
+    fn page_prefix(&self) -> String {
         format!(
-            "?status={}&plan={}&keyword={}&offset={}",
+            "?status={}&plan={}&keyword={}&page=",
             encode(&self.status),
             encode(&self.plan),
-            encode(&self.keyword),
-            offset
+            encode(&self.keyword)
         )
     }
 
-    fn to_filter(&self) -> AccountFilter {
+    fn to_filter(&self, offset: i64, limit: i64) -> AccountFilter {
         AccountFilter {
             status: AccountStatus::parse(self.status.trim()),
             plan: if self.plan.trim().is_empty() {
@@ -68,8 +66,8 @@ impl Filters {
             },
             source: None,
             keyword: Some(self.keyword.trim().to_string()).filter(|value| !value.is_empty()),
-            offset: self.offset.max(0),
-            limit: PAGE_SIZE,
+            offset,
+            limit,
         }
     }
 }
@@ -406,10 +404,7 @@ struct AccountsPage {
     status: String,
     plan: String,
     keyword: String,
-    prev_href: String,
-    next_href: String,
-    has_prev: bool,
-    has_next: bool,
+    pager: super::pagination::PageWindow,
     page_label: String,
 }
 
@@ -434,7 +429,9 @@ pub async fn index(
 
 async fn page(state: &AppState, filters: Filters) -> AccountsPage {
     let repo = AccountRepo::new(state.db.clone());
-    let filter = filters.to_filter();
+    let size = super::pagination::page_size(&state.settings);
+    let page = filters.page.max(1);
+    let filter = filters.to_filter((page - 1) * size, size);
     let total = repo.count(&filter).await.unwrap_or(-1);
     let (rows, error) = match repo.list(&filter).await {
         Ok(accounts) => (accounts.iter().map(AccountRow::from_account).collect(), String::new()),
@@ -447,8 +444,16 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
         ),
         Err(error) => format!("账号统计读取失败（{error}）"),
     };
-    let offset = filters.offset.max(0);
-    let has_next = total >= 0 && offset + PAGE_SIZE < total;
+    let pager = super::pagination::window(total.max(0), page, size, &filters.page_prefix());
+    let pager = if total >= 0 {
+        pager
+    } else {
+        super::pagination::PageWindow {
+            visible: false,
+            summary: String::new(),
+            ..pager
+        }
+    };
     AccountsPage {
         nav: nav::items("/accounts"),
         rows,
@@ -459,15 +464,8 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
         status: filters.status.clone(),
         plan: filters.plan.clone(),
         keyword: filters.keyword.clone(),
-        prev_href: filters.query((offset - PAGE_SIZE).max(0)),
-        next_href: filters.query(offset + PAGE_SIZE),
-        has_prev: offset > 0,
-        has_next,
-        page_label: if total >= 0 {
-            format!("第 {}–{} 个 / 共 {} 个", offset + 1, offset + PAGE_SIZE.min(total), total)
-        } else {
-            String::new()
-        },
+        page_label: pager.summary.clone(),
+        pager,
     }
 }
 
@@ -895,13 +893,13 @@ mod tests {
             status: "normal".to_string(),
             plan: String::new(),
             keyword: "a b&c".to_string(),
-            offset: 20,
+            page: 2,
             flash: String::new(),
             op: String::new(),
         };
         assert_eq!(
-            filters.query(40),
-            "?status=normal&plan=&keyword=a%20b%26c&offset=40"
+            filters.page_prefix(),
+            "?status=normal&plan=&keyword=a%20b%26c&page="
         );
     }
 
@@ -986,10 +984,7 @@ mod tests {
             status: String::new(),
             plan: String::new(),
             keyword: String::new(),
-            prev_href: String::new(),
-            next_href: String::new(),
-            has_prev: false,
-            has_next: false,
+            pager: crate::admin::pagination::window(0, 1, 50, "/accounts?page="),
             page_label: String::new(),
         };
         let html = page.render().expect("渲染账号页");

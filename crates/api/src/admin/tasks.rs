@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::Form;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
@@ -48,6 +48,7 @@ struct TasksPage {
     rows: Vec<TaskRow>,
     running: usize,
     poll: bool,
+    pager: super::pagination::PageWindow,
 }
 
 /// 提示参数。
@@ -56,6 +57,9 @@ pub struct FlashParams {
     /// 操作结果提示。
     #[serde(default)]
     pub flash: Option<String>,
+    /// 页码，从 1 开始。
+    #[serde(default)]
+    pub page: i64,
 }
 
 /// 任务操作目标。
@@ -75,15 +79,19 @@ pub async fn index(
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    render(page(&state, params.flash.unwrap_or_default()))
+    render(page(&state, params.flash.unwrap_or_default(), params.page))
 }
 
 /// `GET /tasks/panel` —— 只回面板，供自动刷新。
-pub async fn panel(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+pub async fn panel(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(params): Query<FlashParams>,
+) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    render(panel_only(&state))
+    render(panel_only(&state, params.page))
 }
 
 #[derive(Template)]
@@ -93,27 +101,40 @@ struct TasksPanel {
     running: usize,
     poll: bool,
     error: String,
+    pager: super::pagination::PageWindow,
 }
 
-fn panel_only(state: &AppState) -> TasksPanel {
+fn panel_only(state: &AppState, page_number: i64) -> TasksPanel {
     let (rows, running) = load(state);
+    let total = rows.len() as i64;
+    let size = super::pagination::page_size(&state.settings);
+    let pager = super::pagination::window(total, page_number, size, "/tasks?page=");
+    let offset = ((pager.page - 1) * size) as usize;
+    let page_rows: Vec<TaskRow> = rows.into_iter().skip(offset).take(size as usize).collect();
     TasksPanel {
-        rows,
+        rows: page_rows,
         running,
         poll: running > 0,
         error: String::new(),
+        pager,
     }
 }
 
-fn page(state: &AppState, flash: String) -> TasksPage {
+fn page(state: &AppState, flash: String, page_number: i64) -> TasksPage {
     let (rows, running) = load(state);
+    let total = rows.len() as i64;
+    let size = super::pagination::page_size(&state.settings);
+    let pager = super::pagination::window(total, page_number, size, "/tasks?page=");
+    let offset = ((pager.page - 1) * size) as usize;
+    let page_rows: Vec<TaskRow> = rows.into_iter().skip(offset).take(size as usize).collect();
     TasksPage {
         nav: nav::items("/tasks"),
         flash,
         error: String::new(),
-        rows,
+        rows: page_rows,
         running,
         poll: running > 0,
+        pager,
     }
 }
 

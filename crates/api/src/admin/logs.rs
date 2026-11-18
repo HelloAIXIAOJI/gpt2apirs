@@ -20,7 +20,6 @@ use super::nav;
 use crate::state::AppState;
 
 /// 每页条数。
-const PAGE_SIZE: i64 = 50;
 
 /// 筛选参数。
 #[derive(Debug, Deserialize)]
@@ -37,9 +36,9 @@ pub struct Filters {
     /// 错误码。
     #[serde(default)]
     pub code: String,
-    /// 偏移。
+    /// 页码，从 1 开始。
     #[serde(default)]
-    pub offset: i64,
+    pub page: i64,
 }
 
 impl Default for Filters {
@@ -49,7 +48,7 @@ impl Default for Filters {
             status: String::new(),
             path: String::new(),
             code: String::new(),
-            offset: 0,
+            page: 1,
         }
     }
 }
@@ -61,14 +60,14 @@ impl Filters {
         raw.clamp(1, 24 * 30)
     }
 
-    fn query(&self, offset: i64) -> String {
+    /// 只带筛选条件的前缀，页码由分页控件追加。
+    fn page_prefix(&self) -> String {
         format!(
-            "?hours={}&status={}&path={}&code={}&offset={}",
+            "?hours={}&status={}&path={}&code={}&page=",
             self.hours(),
             super::accounts::encode(&self.status),
             super::accounts::encode(&self.path),
-            super::accounts::encode(&self.code),
-            offset
+            super::accounts::encode(&self.code)
         )
     }
 
@@ -84,8 +83,8 @@ impl Filters {
             account_id: None,
             error_code: Some(self.code.trim().to_string()).filter(|value| !value.is_empty()),
             since: Some(Utc::now() - Duration::hours(self.hours())),
-            limit: PAGE_SIZE,
-            offset: self.offset.max(0),
+            limit: 200,
+            offset: 0,
         }
     }
 }
@@ -162,10 +161,7 @@ struct LogsPage {
     status: String,
     path: String,
     code: String,
-    prev_href: String,
-    next_href: String,
-    has_prev: bool,
-    has_next: bool,
+    pager: super::pagination::PageWindow,
     window_label: String,
 }
 
@@ -220,15 +216,29 @@ pub async fn index(
         Err(error) => (Vec::new(), format!("统计读取失败（{error}）")),
     };
 
-    let rows = match repo.list(&filters.to_query()).await {
+    let size = super::pagination::page_size(&state.settings);
+    let page = filters.page.max(1);
+    let query = CallRecordQuery {
+        offset: (page - 1) * size,
+        limit: size,
+        ..filters.to_query()
+    };
+    let total = match repo.count(&filters.to_query()).await {
+        Ok(total) => total,
+        Err(failure) => {
+            if error.is_empty() {
+                error = format!("总数读取失败（{failure}）");
+            }
+            0
+        }
+    };
+    let rows = match repo.list(&query).await {
         Ok(rows) => rows.iter().map(LogRow::from_row).collect::<Vec<_>>(),
         Err(failure) => {
             error = format!("明细读取失败（{failure}）");
             Vec::new()
         }
     };
-    let has_next = rows.len() as i64 == PAGE_SIZE;
-    let offset = filters.offset.max(0);
     render(LogsPage {
         nav: nav::items("/logs"),
         cards,
@@ -238,11 +248,8 @@ pub async fn index(
         status: filters.status.clone(),
         path: filters.path.clone(),
         code: filters.code.clone(),
-        prev_href: filters.query((offset - PAGE_SIZE).max(0)),
-        next_href: filters.query(offset + PAGE_SIZE),
-        has_prev: offset > 0,
-        has_next,
-        window_label: format!("近 {hours} 小时 · 第 {} 条起", offset + 1),
+        pager: super::pagination::window(total, page, size, &filters.page_prefix()),
+        window_label: format!("近 {hours} 小时"),
     })
 }
 
@@ -291,15 +298,18 @@ mod tests {
             status: "fail".to_string(),
             path: "/v1/images".to_string(),
             code: "upstream_error".to_string(),
-            offset: 50,
+            page: 2,
         };
         let query = filters.to_query();
         assert_eq!(filters.hours(), 720, "小时数应被钳制");
         assert_eq!(query.status_range, Some((400, 599)));
         assert_eq!(query.path_prefix.as_deref(), Some("/v1/images"));
         assert_eq!(query.error_code.as_deref(), Some("upstream_error"));
-        assert_eq!(query.offset, 50);
-    }
+        assert_eq!(query.offset, 0, "偏移由渲染时按页码注入");
+        assert_eq!(
+            filters.page_prefix(),
+            "?hours=720&status=fail&path=%2Fv1%2Fimages&code=upstream_error&page="
+        );    }
 
     #[test]
     fn ok_status_maps_to_2xx() {

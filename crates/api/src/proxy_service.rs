@@ -58,6 +58,25 @@ pub struct ProbeView {
     pub error: Option<String>,
 }
 
+/// 纯 Ping 结果：4 个包里有任意一个响应就算通。
+#[derive(Debug, Clone, Serialize)]
+pub struct PingView {
+    /// 名称。
+    pub name: String,
+    /// 是否连通。
+    pub ok: bool,
+    /// 发出的包数。
+    pub sent: u32,
+    /// 有响应的包数。
+    pub received: u32,
+    /// 最快往返毫秒。
+    pub best_ms: Option<u64>,
+    /// 平均往返毫秒。
+    pub avg_ms: Option<u64>,
+    /// 失败原因。
+    pub error: Option<String>,
+}
+
 /// 运行状态。
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusView {
@@ -244,6 +263,51 @@ impl ProxyService {
         Ok(())
     }
 
+    /// 节点地址快照（名称、服务器、端口、协议）。
+    pub fn endpoints(&self) -> Vec<(String, String, u16, String)> {
+        let guard = self.lock();
+        guard
+            .nodes
+            .iter()
+            .map(|(_, node)| {
+                (node.name.clone(), node.server.clone(), node.port, node.kind.as_str().to_string())
+            })
+            .collect()
+    }
+
+    /// 纯 Ping：往节点地址打 4 个包，任意一个响应就算通。
+    ///
+    /// TCP 协议用握手量往返；hysteria2 是 QUIC（UDP），只能看有没有被 ICMP 拒绝，
+    /// 能发出去就算链路可达 —— 硬用 TCP 测会把好节点全判死。
+    pub async fn ping(&self, names: Option<Vec<String>>, concurrency: usize) -> Vec<PingView> {
+        let wanted: Option<std::collections::HashSet<String>> = names
+            .filter(|list| !list.is_empty())
+            .map(|list| list.into_iter().collect());
+        let targets: Vec<(String, String, u16, String)> = self
+            .endpoints()
+            .into_iter()
+            .filter(|(name, _, _, _)| {
+                wanted.as_ref().map(|set| set.contains(name)).unwrap_or(true)
+            })
+            .collect();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.clamp(1, 32)));
+        let mut tasks = Vec::new();
+        for (name, server, port, kind) in targets {
+            let semaphore = semaphore.clone();
+            tasks.push(tokio::spawn(async move {
+                let _permit = semaphore.acquire_owned().await.expect("信号量");
+                ping_one(name, server, port, kind).await
+            }));
+        }
+        let mut out = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            if let Ok(view) = task.await {
+                out.push(view);
+            }
+        }
+        out
+    }
+
     /// 批量测速。
     pub async fn probe(
         &self,
@@ -378,4 +442,92 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("先刷新订阅"), "{message}");
     }
+}
+
+/// 单个节点打 4 个包：TCP 协议量握手往返，UDP 协议看是否被 ICMP 拒绝。
+async fn ping_one(name: String, server: String, port: u16, kind: String) -> PingView {
+    const PACKETS: u32 = 4;
+    const PACKET_TIMEOUT: Duration = Duration::from_millis(800);
+    let resolved = match tokio::net::lookup_host((server.as_str(), port)).await {
+        Ok(mut addrs) => match addrs.next() {
+            Some(addr) => addr,
+            None => return ping_failed(name, "域名解析为空".to_string()),
+        },
+        Err(error) => return ping_failed(name, format!("域名解析失败：{error}")),
+    };
+    let udp = kind == "hysteria2";
+    let mut received = 0u32;
+    let mut best: Option<u128> = None;
+    let mut total = 0u128;
+    let mut last_error: Option<String> = None;
+    for _ in 0..PACKETS {
+        let started = std::time::Instant::now();
+        let outcome = if udp {
+            match tokio::time::timeout(PACKET_TIMEOUT, ping_udp(resolved)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err("UDP 探测超时".to_string()),
+            }
+        } else {
+            match tokio::time::timeout(PACKET_TIMEOUT, tokio::net::TcpStream::connect(resolved))
+                .await
+            {
+                Ok(Ok(_stream)) => Ok(()),
+                Ok(Err(error)) => Err(format!("{error}")),
+                Err(_) => Err("连接超时".to_string()),
+            }
+        };
+        match outcome {
+            Ok(()) => {
+                let elapsed = started.elapsed().as_millis();
+                received += 1;
+                total += elapsed;
+                best = Some(best.map(|value| value.min(elapsed)).unwrap_or(elapsed));
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    PingView {
+        name,
+        ok: received > 0,
+        sent: PACKETS,
+        received,
+        // UDP 只证明包能发出去，没有真实往返，不给伪延迟
+        best_ms: if udp { None } else { best.map(|value| value as u64) },
+        avg_ms: if received > 0 {
+            Some((total / received as u128) as u64)
+        } else {
+            None
+        },
+        error: if received > 0 { None } else { last_error },
+    }
+}
+
+/// 全丢包时的结果。
+fn ping_failed(name: String, reason: String) -> PingView {
+    PingView {
+        name,
+        ok: false,
+        sent: 4,
+        received: 0,
+        best_ms: None,
+        avg_ms: None,
+        error: Some(reason),
+    }
+}
+
+/// UDP 探测：连上后发一个字节，被 ICMP 拒绝会立即报错，否则算可达。
+async fn ping_udp(addr: std::net::SocketAddr) -> Result<(), String> {
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|error| format!("绑定本地端口失败：{error}"))?;
+    socket
+        .connect(addr)
+        .await
+        .map_err(|error| format!("连接失败：{error}"))?;
+    socket
+        .send(&[0u8])
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("发包失败：{error}"))
 }

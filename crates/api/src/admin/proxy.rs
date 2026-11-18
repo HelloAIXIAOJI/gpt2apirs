@@ -291,6 +291,24 @@ pub async fn probe_json(
     axum::Json(serde_json::json!({ "results": results })).into_response()
 }
 
+/// `POST /proxy/ping.json` —— 纯 Ping（4 包），返回逐节点结果供页面就地更新。
+pub async fn ping_json(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::Json(batch): axum::Json<ProbeBatch>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let names = if batch.names.is_empty() {
+        None
+    } else {
+        Some(batch.names)
+    };
+    let results = state.proxy_service.ping(names, 10).await;
+    axum::Json(serde_json::json!({ "results": results })).into_response()
+}
+
 /// `POST /proxy/clearance` —— 用当前出口测一次能不能过 Cloudflare。
 pub async fn clearance(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !has_session(&state, &headers) {

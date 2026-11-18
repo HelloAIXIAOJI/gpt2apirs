@@ -934,3 +934,16 @@ button:disabled {
 
 .probing { color: var(--muted); font-style: italic; }
 .probe-bad { color: #c2453f; }
+
+
+/* 分页：上一页 / 页码 / 下一页 */
+.pager { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
+.pager__step, .pager__num {
+  display: inline-block; min-width: 34px; padding: 4px 10px;
+  border: 1px solid var(--border, #d8dbe0); border-radius: 6px;
+  text-align: center; text-decoration: none; color: inherit; font-size: 13px;
+}
+.pager__step.is-disabled { opacity: 0.4; pointer-events: none; }
+.pager__numbers { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.pager__num.is-current { background: var(--accent, #3b6ef5); border-color: var(--accent, #3b6ef5); color: #fff; }
+.pager__gap { padding: 4px 2px; color: #8b90a0; }

@@ -17,9 +17,6 @@ use super::has_session;
 use super::nav;
 use crate::state::AppState;
 
-/// 每页图片数。
-const PAGE_SIZE: i64 = 24;
-
 /// 一页里的图片。
 pub struct ImageCard {
     url: String,
@@ -220,7 +217,8 @@ async fn load(state: &AppState, query: &PanelQuery) -> PanelData {
             ("-".to_string(), "-".to_string(), 0)
         }
     };
-    let pages = ((total + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
+    let size = super::pagination::page_size(&state.settings);
+    let pages = ((total + size - 1) / size).max(1);
     let page = page.min(pages);
 
     let images = if tab == "browse" {
@@ -228,8 +226,8 @@ async fn load(state: &AppState, query: &PanelQuery) -> PanelData {
             .list(&ImageAssetQuery {
                 account_id: None,
                 since: None,
-                limit: PAGE_SIZE,
-                offset: (page - 1) * PAGE_SIZE,
+                limit: size,
+                offset: (page - 1) * size,
             })
             .await
         {

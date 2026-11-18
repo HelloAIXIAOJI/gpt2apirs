@@ -89,15 +89,12 @@ impl fmt::Display for KeyRow {
     }
 }
 
-/// 每页条数。
-const PAGE_SIZE: usize = 30;
-
 /// 分页参数。
 #[derive(Debug, Default, Deserialize)]
 pub struct Pager {
     /// 偏移。
     #[serde(default)]
-    pub offset: usize,
+    pub page: i64,
 }
 
 /// 密钥页。
@@ -110,10 +107,7 @@ struct KeysPage {
     error: String,
     active_count: String,
     page_label: String,
-    prev_href: String,
-    next_href: String,
-    has_prev: bool,
-    has_next: bool,
+    pager: super::pagination::PageWindow,
     total: String,
 }
 
@@ -134,10 +128,10 @@ pub async fn index(
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    render(page(&state, String::new(), String::new(), pager.offset).await)
+    render(page(&state, String::new(), String::new(), pager.page).await)
 }
 
-async fn page(state: &AppState, plaintext: String, error: String, offset: usize) -> KeysPage {
+async fn page(state: &AppState, plaintext: String, error: String, page: i64) -> KeysPage {
     let (rows, list_error) = match state.api_keys.list().await {
         Ok(rows) => (rows.iter().map(KeyRow::from_row).collect(), error),
         Err(failure) => {
@@ -154,24 +148,23 @@ async fn page(state: &AppState, plaintext: String, error: String, offset: usize)
         Ok(count) => count.to_string(),
         Err(failure) => format!("读取失败（{failure}）"),
     };
-    let total = rows.len();
-    let offset = offset.min(total.saturating_sub(1));
-    let page_rows: Vec<KeyRow> = rows.into_iter().skip(offset).take(PAGE_SIZE).collect();
+    let total = rows.len() as i64;
+    let size = super::pagination::page_size(&state.settings);
+    let pager = super::pagination::window(total, page, size, "/keys?page=");
+    let offset = (pager.page - 1) * size;
+    let page_rows: Vec<KeyRow> = rows
+        .into_iter()
+        .skip(offset as usize)
+        .take(size as usize)
+        .collect();
     KeysPage {
         nav: nav::items("/keys"),
         rows: page_rows,
         plaintext,
         error: list_error,
         active_count,
-        page_label: if total == 0 {
-            String::new()
-        } else {
-            format!("第 {}–{} 条 / 共 {} 条", offset + 1, (offset + PAGE_SIZE).min(total), total)
-        },
-        prev_href: format!("/keys?offset={}", offset.saturating_sub(PAGE_SIZE)),
-        next_href: format!("/keys?offset={}", offset + PAGE_SIZE),
-        has_prev: offset > 0,
-        has_next: offset + PAGE_SIZE < total,
+        page_label: pager.summary.clone(),
+        pager,
         total: total.to_string(),
     }
 }
