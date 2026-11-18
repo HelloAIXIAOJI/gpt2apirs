@@ -31,8 +31,8 @@ pub struct TextRequest {
     pub upstream_model: String,
     /// User-Agent。
     pub user_agent: String,
-    /// 已知的历史前缀（多轮对话时用来剥掉重复内容）。
-    pub history: String,
+    /// 会被上游回放的历史助手正文（由 [`TextRequest::with_messages`] 自动派生）。
+    history: Vec<String>,
     /// 多轮消息（非空时优先于 `prompt`）。
     pub messages: Vec<(String, String)>,
     /// 已上传到上游的参考图（挂在最后一条 user 消息上）。
@@ -47,16 +47,25 @@ impl TextRequest {
             model: "gpt-5-5".to_string(),
             upstream_model: "gpt-5-5".to_string(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
-            history: String::new(),
+            history: Vec::new(),
             messages: Vec::new(),
             images: Vec::new(),
         }
     }
 
     /// 带上多轮消息（chat/completions 用）。
+    ///
+    /// 历史回放判定所需的助手正文在这里**自动派生**：
+    /// 调用方只负责给消息，不必记得再填一份 history（漏填就是线上重复回复那个 bug）。
     pub fn with_messages(mut self, messages: Vec<(String, String)>) -> Self {
+        self.history = gpt2apirs_protocol::text_stream::assistant_history(&messages);
         self.messages = messages;
         self
+    }
+
+    /// 会被上游回放的历史助手正文。
+    pub fn history(&self) -> &[String] {
+        &self.history
     }
 
     /// 带上参考图（图文对话用）。
@@ -139,7 +148,7 @@ pub async fn generate_text(
         .into());
     }
 
-    let (text, conversation_id, deltas) = collect_text(&sse.body, &request.history);
+    let (text, conversation_id, deltas) = collect_text(&sse.body, request.history());
     if text.trim().is_empty() {
         // 空回复要能诊断：把 SSE 的头尾留下来
         return Err(GenerateError::new(
@@ -200,7 +209,18 @@ mod tests {
         let request = TextRequest::new("hi");
         assert_eq!(request.model, "gpt-5-5");
         assert_eq!(request.upstream_model, "gpt-5-5");
-        assert!(request.history.is_empty());
+        assert!(request.history().is_empty());
+    }
+
+    #[test]
+    fn multi_turn_request_derives_replay_history() {
+        // 调用方只给消息，回放判定所需的历史正文必须自动带上
+        let request = TextRequest::new(String::new()).with_messages(vec![
+            ("user".to_string(), "问".to_string()),
+            ("assistant".to_string(), "上一答".to_string()),
+            ("user".to_string(), "再问".to_string()),
+        ]);
+        assert_eq!(request.history(), ["上一答".to_string()]);
     }
 
     #[test]
@@ -227,7 +247,7 @@ mod tests {
             "data: {\"o\":\"patch\",\"v\":[{\"p\":\"/message/content/parts/0\",\"o\":\"append\",\"v\":\"，世界\"}]}\n\n",
             "data: [DONE]\n\n",
         );
-        let (text, _conversation_id, deltas) = collect_text(sse, "");
+        let (text, _conversation_id, deltas) = collect_text(sse, &[]);
         assert_eq!(text, "你好，世界");
         assert_eq!(deltas.len(), 2);
     }
@@ -236,7 +256,7 @@ mod tests {
     fn accumulator_is_reusable_type() {
         // 保证公开类型能被外部构造（文档示例依赖）
         let mut accumulator = TextAccumulator::new();
-        assert!(accumulator.push_payload("[DONE]", "").is_none());
+        assert!(accumulator.push_payload("[DONE]").is_none());
         assert!(accumulator.done);
     }
 }
@@ -336,7 +356,7 @@ pub async fn generate_text_stream(
     };
 
     let snapshot = std::sync::Arc::new(std::sync::Mutex::new(StreamSnapshot::default()));
-    let history = request.history.clone();
+    let history = request.history().to_vec();
 
     // 状态：字节流 + 分帧器 + 累积器 + 待发片段
     struct State {
@@ -345,17 +365,15 @@ pub async fn generate_text_stream(
         accumulator: TextAccumulator,
         pending: std::collections::VecDeque<String>,
         snapshot: std::sync::Arc<std::sync::Mutex<StreamSnapshot>>,
-        history: String,
         finished: bool,
     }
 
     let state = State {
         bytes,
         framer: gpt2apirs_protocol::sse_framer::SseFramer::new(),
-        accumulator: TextAccumulator::new(),
+        accumulator: TextAccumulator::with_history(history),
         pending: std::collections::VecDeque::new(),
         snapshot: snapshot.clone(),
-        history,
         finished: false,
     };
 
@@ -384,8 +402,7 @@ pub async fn generate_text_stream(
                     let text = String::from_utf8_lossy(&chunk);
                     let payloads = state.framer.push(&text);
                     for payload in payloads {
-                        if let Some(delta) = state.accumulator.push_payload(&payload, &state.history)
-                        {
+                        if let Some(delta) = state.accumulator.push_payload(&payload) {
                             state.pending.push_back(delta);
                         }
                         if state.accumulator.done {
@@ -411,8 +428,7 @@ pub async fn generate_text_stream(
                 None => {
                     // 流结束：把缓冲区残余当最后一条事件
                     if let Some(payload) = state.framer.finish() {
-                        if let Some(delta) = state.accumulator.push_payload(&payload, &state.history)
-                        {
+                        if let Some(delta) = state.accumulator.push_payload(&payload) {
                             state.pending.push_back(delta);
                         }
                     }

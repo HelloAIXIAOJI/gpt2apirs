@@ -97,7 +97,7 @@ pub async fn search(
             format!("搜索会话返回 {}", sse.status),
         ));
     }
-    let (_text, conversation_id, _deltas) = collect_text(&sse.body, "");
+    let (_text, conversation_id, _deltas) = collect_text(&sse.body, &[]);
     if conversation_id.is_empty() {
         return Err(GenerateError::new(
             FailureKind::Protocol,

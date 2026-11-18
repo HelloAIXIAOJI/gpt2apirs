@@ -1,11 +1,12 @@
 //! 从上游 SSE 里还原助手文本。
 //!
 //! 上行把「完整消息」和「增量补丁」混在一起下发，必须只取用户可见的那条。
-//! 四条过滤规则（缺一条就会泄漏内部内容）：
+//! 五条过滤规则，缺一条就泄漏或重复：
 //!
-//! 四条过滤规则，缺一条就泄漏：`role` 必须是 assistant（否则把用户的话当回复）；
+//! `role` 必须是 assistant（否则把用户的话当回复）；
 //! `is_visually_hidden_from_conversation` 不能为 true（否则漏 system 消息）；
-//! `recipient` 必须空或 `all`（否则漏发给工具的指令）；`channel` 必须空或 `final`（否则**漏思维链**）。
+//! `recipient` 必须空或 `all`（否则漏发给工具的指令）；`channel` 必须空或 `final`（否则**漏思维链**）；
+//! 正文必须不属于**回放的历史**（否则上一轮的回复会被当成这一轮的开头重发出去）。
 
 use serde_json::Value;
 
@@ -87,15 +88,88 @@ pub fn assistant_message_text(message: &Value) -> String {
         .to_string()
 }
 
-/// 去掉前缀里的历史轮次内容。
+/// 上游的历史回放。
 ///
-/// 上游有时会把前几轮的文本一起重发，这里把已知历史从前缀剥掉。
-pub fn strip_history(text: &str, history: &str) -> String {
-    let mut remaining = text;
-    while !history.is_empty() && remaining.starts_with(history) {
-        remaining = &remaining[history.len()..];
+/// 我们发上去的每条助手消息，上游在开始本轮生成前都会按顺序重发一遍。
+/// 这些帧是**上一轮的话**，不是本轮输出，必须整条吃掉，否则流式客户端会
+/// 看到上一轮的回复被原样重复（非流式看不见：最终值被后续帧覆盖了）。
+#[derive(Debug, Clone, Default)]
+pub struct HistoryEcho {
+    /// 已知的历史助手正文，按发送顺序。
+    texts: Vec<String>,
+    /// 已经吃掉的历史条数。
+    consumed: usize,
+}
+
+impl HistoryEcho {
+    /// 用历史助手正文构造（空正文不参与匹配）。
+    pub fn new(texts: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            texts: texts
+                .into_iter()
+                .filter(|text| !text.trim().is_empty())
+                .collect(),
+            consumed: 0,
+        }
     }
-    remaining.to_string()
+
+    /// 候选是**整段新消息**（完整消息对象，或带 replace 的补丁）时使用。
+    ///
+    /// 只跟「下一条还没吃掉的历史」比：回放一帧吃一条，
+    /// 吃完之后同样的文本就是模型真的又回答了一遍，不能再吃。
+    fn strip_fresh(&mut self, candidate: &str) -> String {
+        let mut rest = candidate;
+        while let Some(known) = self.texts.get(self.consumed) {
+            let Some(tail) = rest.strip_prefix(known.as_str()) else {
+                break;
+            };
+            self.consumed += 1;
+            rest = tail;
+        }
+        rest.to_string()
+    }
+
+    /// 候选是**累积增长**的（append 补丁）时使用。
+    ///
+    /// 累积文本里已经吃掉的历史仍留在前端，要重新越过它再往下吃。
+    fn strip_growing(&mut self, candidate: &str) -> String {
+        let mut rest = candidate;
+        for known in &self.texts[..self.consumed] {
+            let Some(tail) = rest.strip_prefix(known.as_str()) else {
+                break;
+            };
+            rest = tail;
+        }
+        let mut consumed = self.consumed;
+        while let Some(known) = self.texts.get(consumed) {
+            if let Some(tail) = rest.strip_prefix(known.as_str()) {
+                consumed += 1;
+                rest = tail;
+                continue;
+            }
+            // 半截历史（回放被切成几帧）：先压住不吐，等下一帧补全再判。
+            // 累积文本只增不减，压住不会丢内容。
+            if known.starts_with(rest) {
+                self.consumed = consumed;
+                return String::new();
+            }
+            break;
+        }
+        self.consumed = consumed;
+        rest.to_string()
+    }
+}
+
+/// 从多轮消息里取出会被上游回放的助手正文（按顺序）。
+///
+/// 只取 assistant：user / system 的正文本来就会被角色过滤挡掉。
+pub fn assistant_history(messages: &[(String, String)]) -> Vec<String> {
+    messages
+        .iter()
+        .filter(|(role, _)| role.trim().eq_ignore_ascii_case("assistant"))
+        .map(|(_, text)| text.clone())
+        .filter(|text| !text.trim().is_empty())
+        .collect()
 }
 
 fn is_internal_annotation_part(part: &str) -> bool {
@@ -172,8 +246,8 @@ pub fn sanitize_output_text(text: &str) -> String {
     out
 }
 
-/// 应用一个补丁操作。
-fn apply_patch_op(operation: &Value, current: &str, history: &str) -> String {
+/// 应用一个补丁操作。返回（新文本, 是否整段覆盖）。
+fn apply_patch_op(operation: &Value, current: &str) -> (String, bool) {
     let op = operation.get("o").and_then(Value::as_str).unwrap_or("");
     let value = operation
         .get("v")
@@ -183,16 +257,17 @@ fn apply_patch_op(operation: &Value, current: &str, history: &str) -> String {
         })
         .unwrap_or_default();
     match op {
-        "append" => format!("{current}{value}"),
-        "replace" => strip_history(&value, history),
-        _ => current.to_string(),
+        "append" => (format!("{current}{value}"), false),
+        // replace 之后候选不再累积：历史回放要按「整段」判定，不能重复吃
+        "replace" => (value, true),
+        _ => (current.to_string(), false),
     }
 }
 
-/// 递归应用文本补丁。
-pub fn apply_text_patch(event: &Value, current: &str, history: &str) -> String {
+/// 递归应用文本补丁。返回（新文本, 是否整段覆盖）。
+pub fn apply_text_patch(event: &Value, current: &str) -> (String, bool) {
     if event.get("p").and_then(Value::as_str) == Some("/message/content/parts/0") {
-        return apply_patch_op(event, current, history);
+        return apply_patch_op(event, current);
     }
     let operations = event.get("v");
     // 裸字符串增量：{"v": "一段文本"} 且没有 p / o
@@ -200,26 +275,30 @@ pub fn apply_text_patch(event: &Value, current: &str, history: &str) -> String {
         let has_path = event.get("p").is_some();
         let has_op = event.get("o").is_some();
         if !current.is_empty() && !has_path && !has_op {
-            return format!("{current}{text}");
+            return (format!("{current}{text}"), false);
         }
-        return current.to_string();
+        return (current.to_string(), false);
     }
     let Some(Value::Array(items)) = operations else {
-        return current.to_string();
+        return (current.to_string(), false);
     };
     let mut text = current.to_string();
+    let mut replaced = false;
     for item in items {
         if item.is_object() {
-            text = apply_text_patch(item, &text, history);
+            let (next, did_replace) = apply_text_patch(item, &text);
+            text = next;
+            replaced |= did_replace;
         }
     }
-    text
+    (text, replaced)
 }
 
 /// 从一个事件里取「当前完整文本」。
 ///
-/// 先看有没有完整消息（直接取），没有再按补丁累积。
-pub fn assistant_raw_text(event: &Value, current: &str, history: &str) -> String {
+/// 返回（候选文本, 是否整段覆盖）。先看有没有完整消息（直接取，整段覆盖），
+/// 没有再按补丁累积 —— 补丁里是否 replace 由 apply_text_patch 一并报上来。
+pub fn assistant_raw_text(event: &Value, current: &str) -> (String, bool) {
     for candidate in [Some(event), event.get("v")].into_iter().flatten() {
         if !candidate.is_object() {
             continue;
@@ -228,12 +307,33 @@ pub fn assistant_raw_text(event: &Value, current: &str, history: &str) -> String
             if message.is_object() && is_visible_assistant_message(message) {
                 let text = assistant_message_text(message);
                 if !text.is_empty() {
-                    return strip_history(&text, history);
+                    return (text, true);
                 }
             }
         }
     }
-    apply_text_patch(event, current, history)
+    apply_text_patch(event, current)
+}
+
+/// 事件里可见助手消息的 id（没有就是 None）。
+fn assistant_message_id(event: &Value) -> Option<String> {
+    for candidate in [Some(event), event.get("v")].into_iter().flatten() {
+        let Some(message) = candidate.get("message") else {
+            continue;
+        };
+        if !is_visible_assistant_message(message) {
+            continue;
+        }
+        let id = message
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !id.is_empty() {
+            return Some(id.to_string());
+        }
+    }
+    None
 }
 
 /// 文本累积器：喂 SSE 事件，吐出增量。
@@ -247,18 +347,32 @@ pub struct TextAccumulator {
     pub conversation_id: String,
     /// 是否见过 DONE。
     pub done: bool,
+    /// 上游历史回放的判定器。
+    echo: HistoryEcho,
+    /// 上一条可见助手消息的 id：用来区分「同一帧重复」和「新的一条消息」。
+    last_message_id: Option<String>,
+    /// 本轮是否已经开始（出现过真内容）。开始之后新消息帧不再做历史剥离。
+    started: bool,
 }
 
 impl TextAccumulator {
-    /// 新建。
+    /// 新建（没有历史可回放）。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 带上「已经发给上游的历史助手正文」，用来吃掉上游回放的历史。
+    pub fn with_history(texts: Vec<String>) -> Self {
+        Self {
+            echo: HistoryEcho::new(texts),
+            ..Self::default()
+        }
     }
 
     /// 喂一条 SSE payload（`data:` 后面的原文）。
     ///
     /// 返回**新增**的文本片段；没有新增返回 `None`。
-    pub fn push_payload(&mut self, payload: &str, history: &str) -> Option<String> {
+    pub fn push_payload(&mut self, payload: &str) -> Option<String> {
         if payload.trim() == "[DONE]" {
             self.done = true;
             return None;
@@ -271,18 +385,39 @@ impl TextAccumulator {
         let Ok(event) = serde_json::from_str::<Value>(payload) else {
             return None;
         };
-        let next_raw = assistant_raw_text(&event, &self.raw, history);
-        if next_raw == self.raw {
+        // 两条不同 id 的消息可能正文一模一样（模型把上一轮原样又说一遍），
+        // 只看文本会把它们当成同一帧吃掉。
+        let message_id = assistant_message_id(&event);
+        let new_message = match (&message_id, &self.last_message_id) {
+            (Some(current), Some(previous)) => current != previous,
+            _ => false,
+        };
+        let (candidate, replaced) = assistant_raw_text(&event, &self.raw);
+        if candidate == self.raw && !new_message {
             return None;
         }
-        let next_text = sanitize_output_text(&next_raw);
+        // 上游的历史回放不是本轮输出：整段吃掉，不公告给客户端。
+        // 回放只会出现在本轮开始之前；一旦本轮有了内容，新消息帧一律不再剥离，
+        // 免得把「答案恰好以历史文本开头」当成回声切掉。
+        let rest = match (replaced, self.started) {
+            (true, false) => self.echo.strip_fresh(&candidate),
+            (true, true) => candidate.clone(),
+            (false, _) => self.echo.strip_growing(&candidate),
+        };
+        let next_text = sanitize_output_text(&rest);
         let delta = if next_text.starts_with(&self.text) {
             next_text[self.text.len()..].to_string()
         } else {
             next_text.clone()
         };
-        self.raw = next_raw;
+        self.raw = candidate;
         self.text = next_text;
+        if !self.started && !self.text.is_empty() {
+            self.started = true;
+        }
+        if message_id.is_some() {
+            self.last_message_id = message_id;
+        }
         if delta.is_empty() {
             None
         } else {
@@ -291,10 +426,10 @@ impl TextAccumulator {
     }
 
     /// 一次性吃掉整段 SSE 文本。
-    pub fn push_raw_sse(&mut self, raw: &str, history: &str) -> Vec<String> {
+    pub fn push_raw_sse(&mut self, raw: &str) -> Vec<String> {
         let mut deltas = Vec::new();
         for payload in iter_sse_payloads(raw) {
-            if let Some(delta) = self.push_payload(&payload, history) {
+            if let Some(delta) = self.push_payload(&payload) {
                 deltas.push(delta);
             }
         }
@@ -319,9 +454,9 @@ fn find_conversation_id(payload: &str) -> Option<String> {
 }
 
 /// 便捷函数：整段 SSE  (文本, conversation_id, 增量序列)。
-pub fn collect_text(raw_sse: &str, history: &str) -> (String, String, Vec<String>) {
-    let mut accumulator = TextAccumulator::new();
-    let deltas = accumulator.push_raw_sse(raw_sse, history);
+pub fn collect_text(raw_sse: &str, history: &[String]) -> (String, String, Vec<String>) {
+    let mut accumulator = TextAccumulator::with_history(history.to_vec());
+    let deltas = accumulator.push_raw_sse(raw_sse);
     (accumulator.text, accumulator.conversation_id, deltas)
 }
 
@@ -385,12 +520,171 @@ mod tests {
     }
 
     #[test]
-    fn strip_history_removes_prefix() {
-        assert_eq!(strip_history("abcXYZ", "abc"), "XYZ");
-        assert_eq!(strip_history("XYZ", "abc"), "XYZ");
-        assert_eq!(strip_history("abc", ""), "abc");
-        // 反复剥离
-        assert_eq!(strip_history("abcabcX", "abc"), "X");
+    fn history_replay_is_dropped() {
+        // 上游在开始本轮生成前，会把发上去的助手正文按顺序重发一遍
+        let mut accumulator = TextAccumulator::with_history(vec!["上一轮答复".to_string()]);
+        assert_eq!(
+            accumulator.push_payload(&assistant_message("上一轮答复").to_string()),
+            None
+        );
+        assert_eq!(accumulator.text, "");
+        assert_eq!(
+            accumulator.push_payload(&assistant_message("本轮答复").to_string()),
+            Some("本轮答复".to_string())
+        );
+        assert_eq!(accumulator.text, "本轮答复");
+    }
+
+    #[test]
+    fn every_history_turn_is_dropped_in_order() {
+        let mut accumulator =
+            TextAccumulator::with_history(vec!["第一答".to_string(), "第二答".to_string()]);
+        for replay in ["第一答", "第二答"] {
+            assert_eq!(
+                accumulator.push_payload(&assistant_message(replay).to_string()),
+                None
+            );
+        }
+        assert_eq!(accumulator.text, "");
+        assert_eq!(
+            accumulator.push_payload(&assistant_message("第三答").to_string()),
+            Some("第三答".to_string())
+        );
+    }
+
+    #[test]
+    fn identical_answer_after_replay_is_kept() {
+        // 回放吃掉之后，同样文本的另一条消息就是模型真的又回答了一遍
+        let mut accumulator = TextAccumulator::with_history(vec!["同样的回答".to_string()]);
+        let message = |id: &str, text: &str| {
+            json!({"v": {"message": {
+                "id": id,
+                "author": {"role": "assistant"},
+                "content": {"content_type": "text", "parts": [text]},
+                "recipient": "all",
+                "channel": "final",
+            }}})
+            .to_string()
+        };
+        assert_eq!(accumulator.push_payload(&message("m-历史", "同样的回答")), None);
+        assert_eq!(
+            accumulator.push_payload(&message("m-本轮", "同样的回答")),
+            Some("同样的回答".to_string())
+        );
+        assert_eq!(accumulator.text, "同样的回答");
+    }
+
+    #[test]
+    fn growing_patch_replay_is_dropped() {
+        // 累积形态：回放用 append 堆在当前消息上，吃完历史之后才是本轮
+        let mut accumulator = TextAccumulator::with_history(vec!["上一轮".to_string()]);
+        let append = |text: &str| {
+            json!({"o": "patch", "v": [
+                {"p": "/message/content/parts/0", "o": "append", "v": text}
+            ]})
+            .to_string()
+        };
+        assert_eq!(accumulator.push_payload(&append("上一轮")), None);
+        assert_eq!(
+            accumulator.push_payload(&append("本轮")),
+            Some("本轮".to_string())
+        );
+        assert_eq!(accumulator.text, "本轮");
+    }
+
+    #[test]
+    fn half_a_history_frame_is_held_back() {
+        // 回放被切成两帧时，前半截不能先漏给客户端
+        let mut accumulator = TextAccumulator::with_history(vec!["上一轮答复".to_string()]);
+        let append = |text: &str| {
+            json!({"o": "patch", "v": [
+                {"p": "/message/content/parts/0", "o": "append", "v": text}
+            ]})
+            .to_string()
+        };
+        assert_eq!(accumulator.push_payload(&append("上一轮")), None);
+        assert_eq!(accumulator.push_payload(&append("答复")), None);
+        assert_eq!(accumulator.text, "");
+        assert_eq!(
+            accumulator.push_payload(&append("本轮答复")),
+            Some("本轮答复".to_string())
+        );
+    }
+
+    #[test]
+    fn stripping_stops_once_the_turn_has_content() {
+        // 回放只出现在本轮开始之前；开始之后，答案里出现历史文本也不能再切
+        let mut accumulator =
+            TextAccumulator::with_history(vec!["第一答".to_string(), "第二答".to_string()]);
+        let message = |id: &str, text: &str| {
+            json!({"v": {"message": {
+                "id": id,
+                "author": {"role": "assistant"},
+                "content": {"content_type": "text", "parts": [text]},
+                "recipient": "all",
+                "channel": "final",
+            }}})
+            .to_string()
+        };
+        assert_eq!(accumulator.push_payload(&message("m-1", "第一答")), None);
+        assert_eq!(
+            accumulator.push_payload(&message("m-2", "本轮开头")),
+            Some("本轮开头".to_string())
+        );
+        assert_eq!(
+            accumulator.push_payload(&message("m-3", "第二答的后续")),
+            Some("第二答的后续".to_string())
+        );
+    }
+
+    /// 真实抓包（2026-11-18 采集）：三帧历史 + 新一轮回复，全是完整消息帧。
+    ///
+    /// 只删了与解析无关的帧（会话 token / 广告 / STE 元数据），结构与正文原样保留。
+    fn real_multiturn_sse() -> &'static str {
+        include_str!("../tests/fixtures/text_multiturn_sse.txt")
+    }
+
+    fn real_multiturn_history() -> Vec<String> {
+        assistant_history(&[
+            ("user".to_string(), "你好，你叫什么名字？".to_string()),
+            (
+                "assistant".to_string(),
+                "MARKER_PREV_REPLY_ALPHA 我叫小暖，很高兴认识你。".to_string(),
+            ),
+            ("user".to_string(), "再说一句，只回一句话。".to_string()),
+        ])
+    }
+
+    #[test]
+    fn real_multiturn_stream_drops_replayed_history() {
+        let (text, conversation_id, deltas) =
+            collect_text(real_multiturn_sse(), &real_multiturn_history());
+        assert_eq!(text, "我叫小暖，很高兴再次和你聊天！");
+        assert!(!text.contains("MARKER_PREV_REPLY_ALPHA"), "回放不能进正文：{text}");
+        assert_eq!(deltas.concat(), text, "增量拼接必须等于正文");
+        assert_eq!(conversation_id, "6afd870e-2e6c-83ee-9de2-4c112a853d44");
+    }
+
+    #[test]
+    fn real_multiturn_stream_without_history_repeats_the_previous_turn() {
+        // 这条锁住「必须带 history」：不带的话非流式看着正常，流式会重复上一轮。
+        let (text, _, deltas) = collect_text(real_multiturn_sse(), &[]);
+        assert!(!text.contains("MARKER_PREV_REPLY_ALPHA"), "非流式：后续帧把回放覆盖了");
+        assert!(
+            deltas.concat().starts_with("MARKER_PREV_REPLY_ALPHA"),
+            "流式增量里确实会重复：{deltas:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_history_keeps_only_assistant_text() {
+        let messages = vec![
+            ("system".to_string(), "内部指令".to_string()),
+            ("user".to_string(), "问题".to_string()),
+            ("assistant".to_string(), "答复".to_string()),
+            ("user".to_string(), "追问".to_string()),
+        ];
+        assert_eq!(assistant_history(&messages), vec!["答复".to_string()]);
     }
 
     #[test]
@@ -399,11 +693,11 @@ mod tests {
         let event = json!({"o": "patch", "v": [
             {"p": "/message/content/parts/0", "o": "append", "v": "你好"}
         ]});
-        assert_eq!(accumulator.push_payload(&event.to_string(), ""), Some("你好".to_string()));
+        assert_eq!(accumulator.push_payload(&event.to_string()), Some("你好".to_string()));
         let event = json!({"o": "patch", "v": [
             {"p": "/message/content/parts/0", "o": "append", "v": "，世界"}
         ]});
-        assert_eq!(accumulator.push_payload(&event.to_string(), ""), Some("，世界".to_string()));
+        assert_eq!(accumulator.push_payload(&event.to_string()), Some("，世界".to_string()));
         assert_eq!(accumulator.text, "你好，世界");
     }
 
@@ -413,12 +707,10 @@ mod tests {
         accumulator.push_payload(
             &json!({"o": "patch", "v": [{"p": "/message/content/parts/0", "o": "append", "v": "旧"}]})
                 .to_string(),
-            "",
         );
         accumulator.push_payload(
             &json!({"o": "patch", "v": [{"p": "/message/content/parts/0", "o": "replace", "v": "新"}]})
                 .to_string(),
-            "",
         );
         assert_eq!(accumulator.text, "新");
     }
@@ -428,9 +720,9 @@ mod tests {
         let mut accumulator = TextAccumulator::new();
         // 裸字符串增量只在「已有基础文本」时追加：
         // 首条通常是完整消息，之后的裸串才是增量。
-        accumulator.push_payload(&assistant_message("第一段").to_string(), "");
+        accumulator.push_payload(&assistant_message("第一段").to_string());
         // 真实形态是 {"v": "增量"}，不是顶层 JSON 字符串
-        let delta = accumulator.push_payload(&json!({"v": "第二段"}).to_string(), "");
+        let delta = accumulator.push_payload(&json!({"v": "第二段"}).to_string());
         assert_eq!(delta, Some("第二段".to_string()));
         assert_eq!(accumulator.text, "第一段第二段");
     }
@@ -440,7 +732,7 @@ mod tests {
         // 没有基础文本时，裸字符串无法判断是「增量」还是「新消息」，保守忽略
         let mut accumulator = TextAccumulator::new();
         assert_eq!(
-            accumulator.push_payload(&json!({"v": "孤立增量"}).to_string(), ""),
+            accumulator.push_payload(&json!({"v": "孤立增量"}).to_string()),
             None
         );
         assert_eq!(accumulator.text, "");
@@ -449,15 +741,16 @@ mod tests {
     #[test]
     fn full_message_event_is_taken_directly() {
         let mut accumulator = TextAccumulator::new();
-        let delta = accumulator.push_payload(&assistant_message("完整回复").to_string(), "");
+        let delta = accumulator.push_payload(&assistant_message("完整回复").to_string());
         assert_eq!(delta, Some("完整回复".to_string()));
         assert_eq!(accumulator.text, "完整回复");
     }
 
     #[test]
-    fn history_prefix_is_stripped() {
-        let mut accumulator = TextAccumulator::new();
-        let delta = accumulator.push_payload(&assistant_message("历史新内容").to_string(), "历史");
+    fn fresh_message_with_history_tail_is_trimmed() {
+        // 整段候选 = 历史 + 本轮（同一帧里贴在一起）时只留本轮
+        let mut accumulator = TextAccumulator::with_history(vec!["历史".to_string()]);
+        let delta = accumulator.push_payload(&assistant_message("历史新内容").to_string());
         assert_eq!(delta, Some("新内容".to_string()));
     }
 
@@ -469,7 +762,7 @@ mod tests {
             "content": {"parts": ["系统内部说明"]},
             "metadata": {"is_visually_hidden_from_conversation": true},
         }}});
-        assert_eq!(accumulator.push_payload(&event.to_string(), ""), None);
+        assert_eq!(accumulator.push_payload(&event.to_string()), None);
         assert_eq!(accumulator.text, "");
     }
 
@@ -481,7 +774,7 @@ mod tests {
             "content": {"parts": ["思维链内容"]},
             "channel": "analysis",
         }}});
-        assert_eq!(accumulator.push_payload(&event.to_string(), ""), None);
+        assert_eq!(accumulator.push_payload(&event.to_string()), None);
         assert_eq!(accumulator.text, "");
     }
 
@@ -490,7 +783,6 @@ mod tests {
         let mut accumulator = TextAccumulator::new();
         accumulator.push_payload(
             &json!({"type": "resume_conversation_token", "conversation_id": "conv-123"}).to_string(),
-            "",
         );
         assert_eq!(accumulator.conversation_id, "conv-123");
     }
@@ -498,7 +790,7 @@ mod tests {
     #[test]
     fn done_payload_marks_finished() {
         let mut accumulator = TextAccumulator::new();
-        assert_eq!(accumulator.push_payload("[DONE]", ""), None);
+        assert_eq!(accumulator.push_payload("[DONE]"), None);
         assert!(accumulator.done);
     }
 
@@ -511,7 +803,7 @@ mod tests {
             "data: {\"o\":\"patch\",\"v\":[{\"p\":\"/message/content/parts/0\",\"o\":\"append\",\"v\":\"lo\"}]}\n\n",
             "data: [DONE]\n\n",
         );
-        let (text, conversation_id, deltas) = collect_text(sse, "");
+        let (text, conversation_id, deltas) = collect_text(sse, &[]);
         assert_eq!(text, "Hello");
         assert_eq!(conversation_id, "c-1");
         assert_eq!(deltas, vec!["Hel".to_string(), "lo".to_string()]);
