@@ -117,3 +117,40 @@ fn done_terminates_stream() {
     assert_eq!(events.len(), 2, "应只处理到 [DONE]");
     assert_eq!(events[1].kind, gpt2apirs_protocol::ConversationEventKind::Done);
 }
+
+/// 上游只回文本（拒绝/解释）时，正文必须留下来。
+///
+/// 生图链路以前只抽 `file-service://` / `sediment://` 两种 id，assistant 说的话
+/// 直接丢掉，于是「没出图」对外只能报一个空错误。
+#[test]
+fn assistant_text_is_kept_for_no_image_cases() {
+    let payload = r#"{"v":{"message":{"author":{"role":"assistant"},"content":{"content_type":"text","parts":["抱歉，我无法生成这张图片。"]},"recipient":"all","channel":"final"}}}"#;
+    let mut state = gpt2apirs_protocol::ConversationState::default();
+    gpt2apirs_protocol::update_conversation_state(&mut state, payload);
+    assert!(state.file_ids.is_empty());
+    assert!(state.sediment_ids.is_empty());
+    assert_eq!(state.text, "抱歉，我无法生成这张图片。");
+}
+
+/// 思维链 / 发给工具的 / 隐藏消息都不算「上游说的话」。
+#[test]
+fn hidden_or_tool_messages_do_not_become_text() {
+    let mut state = gpt2apirs_protocol::ConversationState::default();
+    for payload in [
+        r#"{"v":{"message":{"author":{"role":"assistant"},"content":{"parts":["思维链"]},"channel":"analysis"}}}"#,
+        r#"{"v":{"message":{"author":{"role":"assistant"},"content":{"parts":["发给工具"]},"recipient":"web"}}}"#,
+        r#"{"v":{"message":{"author":{"role":"assistant"},"content":{"parts":["界面不显示"]},"metadata":{"is_visually_hidden_from_conversation":true}}}}"#,
+    ] {
+        gpt2apirs_protocol::update_conversation_state(&mut state, payload);
+    }
+    assert!(state.text.is_empty(), "不该收集到文本：{}", state.text);
+}
+
+/// 审核拦截标记要能被读到（生图链路据此判内容策略）。
+#[test]
+fn moderation_flag_is_recorded() {
+    let payload = r#"{"type":"moderation","moderation_response":{"blocked":true}}"#;
+    let mut state = gpt2apirs_protocol::ConversationState::default();
+    gpt2apirs_protocol::update_conversation_state(&mut state, payload);
+    assert!(state.blocked);
+}

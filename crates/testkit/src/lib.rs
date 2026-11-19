@@ -121,6 +121,54 @@ data: [DONE]\n\n"
     )
 }
 
+/// 上游「只回文本、不出图」时那段话。
+///
+/// 生图链路必须把它原样当成请求级失败带出去，而不是报一个空错误。
+pub const IMAGE_TEXT_REPLY: &str = "抱歉，我无法生成这张图片。";
+
+/// 图片会话 SSE：只有助手文本，没有任何图片指针。
+fn image_text_only_sse() -> String {
+    // 用 json! 拼：手写 JSON 要同时躲 Rust 转义和 format! 的花括号转义，太容易多一层。
+    let message = serde_json::json!({
+        "v": {"message": {
+            "id": "mock-msg",
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": [IMAGE_TEXT_REPLY]},
+            "recipient": "all",
+            "channel": "final"
+        }}
+    });
+    format!(
+        "data: {{\"conversation_id\":\"{IMAGE_CONVERSATION_ID}\"}}\n\ndata: {message}\n\ndata: [DONE]\n\n"
+    )
+}
+
+/// 会话详情：assistant 消息里带着图片指针。
+fn conversation_detail_with_image() -> String {
+    serde_json::json!({
+        "id": IMAGE_CONVERSATION_ID,
+        "mapping": {
+            "n1": {"message": {
+                "id": "mock-image-msg",
+                "author": {"role": "assistant"},
+                "content": {
+                    "content_type": "multimodal_text",
+                    "parts": [
+                        {
+                            "content_type": "image_asset_pointer",
+                            "asset_pointer": format!("file-service://{IMAGE_FILE_ID}"),
+                        },
+                        IMAGE_TEXT_REPLY,
+                    ],
+                },
+                "create_time": 1.0,
+                "metadata": {},
+            }},
+        },
+    })
+    .to_string()
+}
+
 /// 一张 2x2 的合法 PNG，供下载步骤读取。
 fn png_bytes() -> Vec<u8> {
     let image = image::RgbImage::from_pixel(2, 2, image::Rgb([10, 20, 30]));
@@ -195,10 +243,13 @@ async fn handle(
         "/backend-api/f/conversation" => {
             // 图片链路一定带 conduit token，文本链路一定不带
             let is_image = request.headers().contains_key("x-conduit-token");
-            let body = if is_image {
-                image_sse()
-            } else {
-                CONVERSATION_SSE.to_string()
+            let body = match (is_image, current_fault()) {
+                (false, _) => CONVERSATION_SSE.to_string(),
+                // 两种「只回文本」故障的 SSE 形态相同，区别只在会话详情里有没有图
+                (true, Some(Fault::ImageTextOnly | Fault::ImageTextOnlyWithDetailImage)) => {
+                    image_text_only_sse()
+                }
+                (true, _) => image_sse(),
             };
             ([("content-type", "text/event-stream")], body).into_response()
         }
@@ -211,6 +262,12 @@ async fn handle(
             json_text(format!(
                 "{{\"download_url\":\"http://{host}{IMAGE_ASSET_PATH}\"}}"
             ))
+        }
+        // 会话详情：只在那个故障下才有图，别的用例走不到这里
+        p if p.starts_with("/backend-api/conversation/")
+            && matches!(current_fault(), Some(Fault::ImageTextOnlyWithDetailImage)) =>
+        {
+            json_text(conversation_detail_with_image())
         }
         IMAGE_ASSET_PATH => ([("content-type", "image/png")], png_bytes()).into_response(),
         other => (
@@ -254,6 +311,17 @@ pub enum Fault {
     },
     /// 会话 SSE 只发前 N 字节就以 200 结束（模拟中途断流）。
     TruncateSse(usize),
+    /// 图片会话只回助手文本、不给任何图片指针（上游拒绝或解释）。
+    ImageTextOnly,
+    /// 图片会话 SSE 只有文本，但会话详情里其实有图。
+    ///
+    /// 用来说明「没图」必须真的确认过，不能看 SSE 里没有指针就判拒绝。
+    ImageTextOnlyWithDetailImage,
+    /// 不注入故障，只占住串行锁。
+    ///
+    /// mock 是进程内全局的：不带故障的用例也要持锁，否则会和注入故障的用例
+    /// 在同一进程里并发跑，彼此看到对方的响应。
+    Healthy,
     /// 前 `times` 次会话请求返回 401，之后恢复正常。
     ///
     /// 用来验证「换号重试」：第一个账号吃到 401，网关应换下一个账号重试。

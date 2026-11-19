@@ -39,6 +39,8 @@ fn point_data_dir() {
 async fn image_pipeline_runs_against_local_mock() {
     point_data_dir();
     let mock = spawn().await;
+    // mock 是进程内全局的：持锁把所有用例串起来，免得互相污染
+    let _serial = gpt2apirs_testkit::inject(gpt2apirs_testkit::Fault::Healthy).await;
 
     let client = Client::new(ClientOptions::default()).expect("客户端");
     let request = ImageRequest::new("画一只猫")
@@ -122,4 +124,78 @@ async fn image_pipeline_runs_against_local_mock() {
 
     // 收尾：删掉落盘文件
     let _ = std::fs::remove_file(&saved);
+}
+
+/// 上游只回文本、不出图：必须当场按请求级失败返回，不许轮询、不许换号。
+///
+/// 这条是「502 请求总时限已耗尽（阶段 bootstrap）」那个线上问题的回归测试：
+/// 以前文本被丢掉，没图就进 60 秒轮询，然后判成可换号，最后拿空预算撞 bootstrap。
+#[tokio::test]
+async fn text_reply_without_image_fails_fast() {
+    point_data_dir();
+    let mock = spawn().await;
+    let _fault = gpt2apirs_testkit::inject(gpt2apirs_testkit::Fault::ImageTextOnly).await;
+
+    let client = Client::new(ClientOptions::default()).expect("客户端");
+    let request = ImageRequest::new("画一只猫");
+    // 给足预算：如果能通过，说明不是被时限拦下的
+    let deadline = Deadline::after(Duration::from_secs(60));
+    // mock 的命中记录是进程级累加的，只看本次请求产生的那一段
+    let baseline = mock.hits().len();
+
+    let error = generate_images(&client, "mock-token", &request, deadline)
+        .await
+        .expect_err("只有文本没有图时不该算成功");
+
+    assert_eq!(
+        error.kind,
+        gpt2apirs_generate::error::FailureKind::TextReply,
+        "应判成「上游只回文本」：{error:?}"
+    );
+    assert!(
+        error.message.contains(gpt2apirs_testkit::IMAGE_TEXT_REPLY),
+        "上游那段话要原样带出去，实际：{}",
+        error.message
+    );
+    assert!(!error.kind.switch_account(), "文本回复不该换号");
+
+    // 关键：不能进兜底轮询。允许的只有「判失败前那一次确认」
+    let mine: Vec<String> = mock.hits()[baseline..].to_vec();
+    let detail_hits = mine
+        .iter()
+        .filter(|hit| hit.starts_with("/backend-api/conversation/"))
+        .count();
+    assert!(
+        detail_hits <= 1,
+        "最多查一次会话详情确认没图，不该轮询：{detail_hits} 次，命中 {mine:?}"
+    );
+}
+
+/// SSE 里没有指针、但会话详情里有图：必须去捞回来，不能判成「只回文本」。
+///
+/// 出图之后助手往往会补一段说明文字，只看 SSE 会把「图在会话里」误判成拒绝。
+#[tokio::test]
+async fn image_found_in_conversation_detail_is_not_a_text_reply() {
+    point_data_dir();
+    let mock = spawn().await;
+    let _fault = gpt2apirs_testkit::inject(
+        gpt2apirs_testkit::Fault::ImageTextOnlyWithDetailImage,
+    )
+    .await;
+
+    let client = Client::new(ClientOptions::default()).expect("客户端");
+    let request = ImageRequest::new("画一只猫");
+    let deadline = Deadline::after(Duration::from_secs(60));
+    let baseline = mock.hits().len();
+
+    let (result, _diag) = generate_images(&client, "mock-token", &request, deadline)
+        .await
+        .expect("图在会话详情里，应被捞回来");
+
+    assert_eq!(result.images.len(), 1, "应下载并落盘一张图：{result:?}");
+    let mine: Vec<String> = mock.hits()[baseline..].to_vec();
+    assert!(
+        mine.iter().any(|hit| hit.starts_with("/backend-api/conversation/")),
+        "应查过会话详情把图捞回来，实际 {mine:?}"
+    );
 }

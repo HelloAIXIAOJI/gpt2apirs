@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpt2apirs_account::{PoolError, SelectionFilter};
 use gpt2apirs_core::{AppError, Deadline};
@@ -46,6 +47,20 @@ struct SlotResult {
     error: Option<SlotFailure>,
 }
 
+/// 换号重试至少还要有这么多剩余预算。
+///
+/// 一轮最少要 bootstrap + sentinel + conversation/prepare + SSE 才算跑得完；
+/// 只剩十几秒就换号，等于拿空预算撞 bootstrap，把上一次的真实错误盖掉。
+const MIN_RETRY_BUDGET: Duration = Duration::from_secs(30);
+
+/// 剩余预算还够不够再跑一轮。
+fn retry_budget_ok(deadline: Deadline) -> bool {
+    match deadline.remaining() {
+        None => deadline.is_unlimited(),
+        Some(left) => left >= MIN_RETRY_BUDGET,
+    }
+}
+
 fn attempts_limit(state: &AppState) -> usize {
     state
         .settings
@@ -79,7 +94,11 @@ where
     let mut excluded: HashSet<Uuid> = HashSet::new();
     let mut last_error: Option<SlotFailure> = None;
 
-    for _ in 0..max_attempts {
+    for attempt in 0..max_attempts {
+        // 首次尝试照常；换号之前先看预算，不够就把上一次的真实失败带出去
+        if attempt > 0 && !retry_budget_ok(deadline) {
+            break;
+        }
         let filter = SelectionFilter {
             exclude: excluded.clone(),
             ..SelectionFilter::for_image()
@@ -411,4 +430,25 @@ async fn collect(mut set: JoinSet<SlotResult>, total: usize) -> Result<Vec<SlotO
             "所有槽位都失败且没有错误信息"
         ))),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_needs_enough_budget_left() {
+        // 只剩十几秒还去换号，等于拿空预算撞 bootstrap，把真实错误盖掉
+        assert!(!retry_budget_ok(Deadline::in_secs(10.0)));
+        assert!(!retry_budget_ok(Deadline::in_secs(0.0)));
+        assert!(!retry_budget_ok(Deadline::in_secs(29.0)), "差一点就不行");
+        // 构造函数本身要花掉几微秒，所以用 31 秒验证「够一轮」这一侧
+        assert!(retry_budget_ok(Deadline::in_secs(31.0)));
+        assert!(retry_budget_ok(Deadline::in_secs(60.0)));
+    }
+
+    #[test]
+    fn unlimited_deadline_always_allows_retry() {
+        assert!(retry_budget_ok(Deadline::unlimited()));
+    }
 }

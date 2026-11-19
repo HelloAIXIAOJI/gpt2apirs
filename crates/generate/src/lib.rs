@@ -596,7 +596,28 @@ async fn generate_one(
     )
     .await?;
 
-    // ---- 8. 兜底：SSE 结束却没图时轮询会话详情，等后到的图片 id ----
+    // ---- 8. 没图时先看上游说了什么：拒绝/解释只有文本，换号和轮询都没用 ----
+    if result.images.is_empty() && (state.blocked || !state.text.trim().is_empty()) {
+        // 图可能只是没进 SSE：立刻查一次会话详情再判，别把「图在会话里」当成拒绝。
+        // 查不到就忽略 —— 探针失败不该把真实原因盖掉。
+        let _ = probe_conversation_images(
+            client,
+            token,
+            &auth,
+            request,
+            target_format,
+            deadline,
+            &mut result,
+        )
+        .await;
+    }
+    if result.images.is_empty()
+        && let Some(error) = no_image_failure(state.blocked, &state.text)
+    {
+        return Err(error);
+    }
+
+    // ---- 9. 兜底：SSE 结束却没图时轮询会话详情，等后到的图片 id ----
     if result.images.is_empty() && request.poll.is_enabled() {
         let started = std::time::Instant::now();
         poll_for_images(
@@ -607,6 +628,75 @@ async fn generate_one(
     }
 
     Ok((result, diag))
+}
+
+/// 立刻查一次会话详情（不等待、不重试）：确认「是没图，还是图没进 SSE」。
+///
+/// 只在准备把「没图」判成失败之前调用。出图后助手常常还会附一段说明文字，
+/// 只看 SSE 会把「图在会话里」误判成「上游只回了文本」。
+async fn probe_conversation_images(
+    client: &Client,
+    token: &str,
+    auth: &str,
+    request: &ImageRequest,
+    target_format: crate::format::OutputFormat,
+    deadline: Deadline,
+    result: &mut ImageResult,
+) -> std::result::Result<(), GenerateError> {
+    if result.conversation_id.is_empty() {
+        return Ok(());
+    }
+    let payload = conversation::fetch_conversation_payload(
+        client,
+        token,
+        &request.user_agent,
+        &result.conversation_id,
+        deadline,
+    )
+    .await?;
+    let (_, file_ids, sediment_ids) = extract_conversation_ids(&payload.to_string());
+    let grew = merge_ids(&mut result.file_ids, file_ids)
+        | merge_ids(&mut result.sediment_ids, sediment_ids);
+    if !grew {
+        return Ok(());
+    }
+    fetch_images(
+        client,
+        auth,
+        request,
+        &result.conversation_id,
+        &result.file_ids,
+        &result.sediment_ids,
+        target_format,
+        deadline,
+        &mut result.images,
+    )
+    .await
+}
+
+/// 上游没给图时，把它「说了什么」翻成分类失败。
+///
+/// 调用方**必须已经确认没有图片资产**：出图后助手往往还会附带一段说明文字，
+/// 只看文本会把正常结果判成拒绝。
+///
+/// 判定顺序：被审核拦截 → 内容策略；有可见文本 → 请求级失败（原文带出去）；
+/// 两者都没有 → `None`，交给轮询去等后到的图片 id。
+pub(crate) fn no_image_failure(blocked: bool, text: &str) -> Option<GenerateError> {
+    let text = text.trim();
+    if blocked {
+        return Some(GenerateError::new(
+            FailureKind::ContentPolicy,
+            if text.is_empty() {
+                "上游判定内容不合规，未生成图片".to_string()
+            } else {
+                text.to_string()
+            },
+        ));
+    }
+    if text.is_empty() {
+        return None;
+    }
+    Some(GenerateError::new(FailureKind::TextReply, text.to_string()))
 }
 
 /// 解析下载地址并下载，成功的图片追加到 `images`。
@@ -1112,6 +1202,47 @@ mod tests {
         assert!(prompt.contains("生成格式为 gif。"));
         assert!(prompt.contains("frame_count: 20"));
         assert!(prompt.contains("frame_duration_ms: 120"));
+    }
+
+    #[test]
+    fn no_image_with_text_is_a_request_level_failure() {
+        // 上游只回了文本：换号没用，也不该去轮询
+        let error = no_image_failure(false, "抱歉，我无法生成这张图片。").expect("应判定失败");
+        assert_eq!(error.kind, FailureKind::TextReply);
+        assert_eq!(error.kind.code(), "upstream_text_reply");
+        assert!(error.message.contains("无法生成"), "原文要带出去：{}", error.message);
+        assert!(!error.kind.switch_account(), "文本回复不该换号");
+    }
+
+    #[test]
+    fn text_only_image_sse_classifies_as_text_reply() {
+        // 端到端串一遍：SSE 文本 → 状态 → 分类
+        let sse = concat!(
+            "data: {\"conversation_id\":\"c-1\"}\n\n",
+            "data: {\"v\":{\"message\":{\"id\":\"m1\",\"author\":{\"role\":\"assistant\"},",
+            "\"content\":{\"content_type\":\"text\",\"parts\":[\"抱歉，我无法生成这张图片。\"]},",
+            "\"recipient\":\"all\",\"channel\":\"final\"}}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let (_, state) = parse_conversation_stream(sse);
+        assert_eq!(state.text, "抱歉，我无法生成这张图片。");
+        let error = no_image_failure(state.blocked, &state.text).expect("应判成文本回复");
+        assert_eq!(error.kind, FailureKind::TextReply);
+    }
+
+    #[test]
+    fn no_image_and_no_text_falls_through_to_polling() {
+        assert!(no_image_failure(false, "").is_none());
+        assert!(no_image_failure(false, "   \n").is_none(), "空白不算文本");
+    }
+
+    #[test]
+    fn blocked_without_text_still_reports_content_policy() {
+        let error = no_image_failure(true, "").expect("应判定内容策略");
+        assert_eq!(error.kind, FailureKind::ContentPolicy);
+        let error = no_image_failure(true, "被拦截了").expect("应判定内容策略");
+        assert_eq!(error.kind, FailureKind::ContentPolicy);
+        assert_eq!(error.message, "被拦截了");
     }
 
     #[test]

@@ -27,6 +27,8 @@ pub enum FailureKind {
     InvalidRequest,
     /// 上游正常结束但没吐任何文本。
     EmptyReply,
+    /// 上游只回了文本、没出图（拒绝或解释）。换号没用，重试也没用。
+    TextReply,
 }
 
 impl FailureKind {
@@ -63,6 +65,7 @@ impl FailureKind {
             Self::EmptyImages => "upstream_no_image",
             Self::InvalidRequest => "upstream_invalid_request",
             Self::EmptyReply => "upstream_empty_reply",
+            Self::TextReply => "upstream_text_reply",
         }
     }
 
@@ -72,7 +75,9 @@ impl FailureKind {
     /// 请求问题必须回 400，否则客户端会当服务端故障去重试。
     pub fn status(self) -> u16 {
         match self {
-            Self::ContentPolicy | Self::InvalidRequest => 400,
+            // 上游只回了文本：请求本身没问题也可能被拒，但责任不在服务端，
+            // 客户端拿到 400 + 原文才知道要不要改提示词。
+            Self::ContentPolicy | Self::InvalidRequest | Self::TextReply => 400,
             Self::QuotaExhausted | Self::RateLimited => 429,
             // 人机验证：账号需要人工处理，不是调用方的错，也不是服务端挂了
             Self::TurnstileRequired | Self::ArkoseRequired => 503,
@@ -321,6 +326,10 @@ mod tests {
         }
         // 换号没用
         assert!(!FailureKind::ContentPolicy.switch_account());
+        assert!(
+            !FailureKind::TextReply.switch_account(),
+            "上游只回文本：换号再问一遍也是同样的话"
+        );
         assert!(!FailureKind::TurnstileRequired.switch_account());
         assert!(!FailureKind::ArkoseRequired.switch_account());
         assert!(!FailureKind::Protocol.switch_account());
@@ -340,6 +349,8 @@ mod tests {
     fn codes_are_stable() {
         assert_eq!(FailureKind::TokenInvalid.code(), "account_token_invalid");
         assert_eq!(FailureKind::EmptyImages.code(), "upstream_no_image");
+        assert_eq!(FailureKind::TextReply.code(), "upstream_text_reply");
+        assert_eq!(FailureKind::TextReply.status(), 400, "文本回复是请求级问题，不是服务端故障");
         assert_eq!(
             FailureKind::ContentPolicy.code(),
             "content_policy_violation"

@@ -21,7 +21,13 @@ pub struct ConversationState {
     /// 本轮用途，例如 `"image gen"`。
     pub turn_use_case: String,
     /// 累积的助手文本。
+    ///
+    /// 生图链路里这段文本**只有在上游没给图时才有意义**：模型拒绝或解释时
+    /// 只有文本、没有图片 id。出图后附带的说明文字也会进这里，所以判断
+    /// 「是否只是回了文本」必须先确认没有图片资产。
     pub text: String,
+    /// 产出 `text` 的累积器（喂事件时同步更新，调用方不用管）。
+    assistant: crate::text_stream::TextAccumulator,
 }
 
 /// 从一条 SSE 事件得到的增量结果。
@@ -178,6 +184,13 @@ fn is_image_tool_event(event: &Value) -> bool {
 /// 用一条原始 payload 更新状态。
 ///
 pub fn update_conversation_state(state: &mut ConversationState, payload: &str) {
+    // 助手正文先落在累积器里：拒绝/解释类的回复只有文本，没有图片 id，
+    // 不留下来就只能对外报一个「没图」的空错误。
+    state.assistant.push_payload(payload);
+    if !state.assistant.text.is_empty() {
+        state.text = state.assistant.text.clone();
+    }
+
     let parsed: Option<Value> = serde_json::from_str(payload).ok();
     let event = parsed.as_ref().filter(|v| v.is_object());
 
