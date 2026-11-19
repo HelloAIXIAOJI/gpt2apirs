@@ -36,6 +36,32 @@ fn prepare_env() -> bool {
         .unwrap_or(false)
 }
 
+/// 拿一个可用 token：优先 `GPT2APIRS_TEST_TOKEN`，其次数据库。
+///
+/// 有环境变量时完全不碰数据库 —— 开 VPN 时数据库地址也会被带走，连不上。
+async fn token_or_skip() -> Option<(String, Option<sqlx::PgPool>)> {
+    if let Ok(token) = std::env::var("GPT2APIRS_TEST_TOKEN") {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            println!("使用账号: <GPT2APIRS_TEST_TOKEN>");
+            return Some((token, None));
+        }
+    }
+    if !prepare_env() {
+        eprintln!("跳过：未找到 DATABASE_URL");
+        return None;
+    }
+    let cfg = gpt2apirs_core::BootstrapConfig::from_env().expect("配置应可加载");
+    let pool = build_pool(&cfg).await.expect("应能连接 PostgreSQL");
+    let Some((token, label)) = pick_token(&pool).await else {
+        eprintln!("跳过：库里没有可用账号");
+        pool.close().await;
+        return None;
+    };
+    println!("使用账号: {label}");
+    Some((token, Some(pool)))
+}
+
 async fn pick_token(pool: &sqlx::PgPool) -> Option<(String, String)> {
     let row: Option<(uuid::Uuid, String, Option<String>)> = sqlx::query_as(
         "select id, access_token, email from accounts \
@@ -51,19 +77,9 @@ async fn pick_token(pool: &sqlx::PgPool) -> Option<(String, String)> {
 
 #[tokio::test]
 async fn text_generation_returns_real_answer() {
-    if !prepare_env() {
-        eprintln!("跳过：未找到 DATABASE_URL");
-        return;
-    }
-    let cfg = gpt2apirs_core::BootstrapConfig::from_env().expect("配置应可加载");
-    let pool = build_pool(&cfg).await.expect("应能连接 PostgreSQL");
-
-    let Some((token, label)) = pick_token(&pool).await else {
-        eprintln!("跳过：库里没有可用账号");
-        pool.close().await;
+    let Some((token, pool)) = token_or_skip().await else {
         return;
     };
-    println!("使用账号: {label}");
 
     let client = Client::new(ClientOptions {
         emulation: Some(Emulation::Chrome110),
@@ -108,13 +124,28 @@ async fn text_generation_returns_real_answer() {
         !result.text.contains('\u{E200}'),
         "内部注解标记不应出现在输出里"
     );
-    let joined: String = result.deltas.concat();
+    let joined = join_text(&result.deltas);
     assert_eq!(joined, result.text, "增量拼接应等于全文");
 
-    let (again, _, _) = collect_text(&result.sse_raw, &[]);
+    // 思考内容必须与正文分开：正文里不该出现思考段的文本
+    println!(
+        "思考内容 {} 字节 / 正文 {} 字节",
+        result.reasoning.len(),
+        result.text.len()
+    );
+    if !result.reasoning.trim().is_empty() {
+        assert!(
+            !result.text.contains(result.reasoning.trim()),
+            "思考内容不能混进正文"
+        );
+    }
+
+    let (again, _reasoning, _cid, _deltas) = collect_text(&result.sse_raw, &[]);
     assert_eq!(again, result.text, "重复解析应得到相同文本");
 
-    pool.close().await;
+    if let Some(pool) = pool {
+        pool.close().await;
+    }
 }
 
 /// 多轮对话：上一轮助手正文**不能**被当成这一轮的开头重发出去。
@@ -124,19 +155,9 @@ async fn text_generation_returns_real_answer() {
 /// 上一轮的话被原样重复一遍（非流式看不见，因为最终值被后续帧覆盖）。
 #[tokio::test]
 async fn multi_turn_does_not_repeat_previous_reply() {
-    if !prepare_env() {
-        eprintln!("跳过：未找到 DATABASE_URL");
-        return;
-    }
-    let cfg = gpt2apirs_core::BootstrapConfig::from_env().expect("配置应可加载");
-    let pool = build_pool(&cfg).await.expect("应能连接 PostgreSQL");
-
-    let Some((token, label)) = pick_token(&pool).await else {
-        eprintln!("跳过：库里没有可用账号");
-        pool.close().await;
+    let Some((token, pool)) = token_or_skip().await else {
         return;
     };
-    println!("使用账号: {label}");
 
     let client = Client::new(ClientOptions {
         emulation: Some(Emulation::Chrome110),
@@ -169,7 +190,7 @@ async fn multi_turn_does_not_repeat_previous_reply() {
     }
     std::fs::write(&capture, &result.sse_raw).expect("写 SSE 样本");
 
-    let joined: String = result.deltas.concat();
+    let joined = join_text(&result.deltas);
     println!("--- 最终正文 ---");
     println!("{}", result.text);
     println!("--- 增量拼接 ---");
@@ -186,5 +207,54 @@ async fn multi_turn_does_not_repeat_previous_reply() {
         "流式增量里出现了上一轮的助手原文：{joined}"
     );
 
-    pool.close().await;
+    if let Some(pool) = pool {
+        pool.close().await;
+    }
+}
+
+/// 只拼正文增量（思考内容单列，不参与拼接）。
+fn join_text(deltas: &[gpt2apirs_protocol::text_stream::Delta]) -> String {
+    deltas
+        .iter()
+        .filter_map(|delta| match delta {
+            gpt2apirs_protocol::text_stream::Delta::Text(text) => Some(text.as_str()),
+            gpt2apirs_protocol::text_stream::Delta::Reasoning(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+/// 思考强度透传：上游接受就带上，拒绝（422）就自动摘掉重发，不能让请求整体失败。
+#[tokio::test]
+async fn thinking_effort_is_accepted_by_upstream() {
+    let Some((token, pool)) = token_or_skip().await else {
+        return;
+    };
+
+    let client = Client::new(ClientOptions {
+        emulation: Some(Emulation::Chrome110),
+        proxy: test_proxy(),
+        timeout_secs: Some(180),
+    })
+    .expect("客户端");
+
+    let mut request = TextRequest::new("用一句话说明什么是二分查找。不要用列表。")
+        .with_thinking_effort(Some("low".to_string()));
+    request.upstream_model = models::upstream_model_for("gpt-5-5").to_string();
+
+    let started = std::time::Instant::now();
+    let (result, _diag) = generate_text(&client, &token, &request, Deadline::in_secs(180.0))
+        .await
+        .expect("带 thinking_effort 的请求应被上游接受");
+    println!(
+        "耗时 {:.1}s / 正文 {} 字节 / 思考 {} 字节",
+        started.elapsed().as_secs_f64(),
+        result.text.len(),
+        result.reasoning.len()
+    );
+    assert!(!result.text.trim().is_empty(), "回复不应为空");
+
+    if let Some(pool) = pool {
+        pool.close().await;
+    }
 }

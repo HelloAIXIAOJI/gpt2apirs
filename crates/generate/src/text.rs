@@ -31,6 +31,8 @@ pub struct TextRequest {
     pub upstream_model: String,
     /// User-Agent。
     pub user_agent: String,
+    /// 思考强度（原样透传给上游；`None` = 不传，用上游默认）。
+    pub thinking_effort: Option<String>,
     /// 会被上游回放的历史助手正文（由 [`TextRequest::with_messages`] 自动派生）。
     history: Vec<String>,
     /// 多轮消息（非空时优先于 `prompt`）。
@@ -47,6 +49,7 @@ impl TextRequest {
             model: "gpt-5-5".to_string(),
             upstream_model: "gpt-5-5".to_string(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
+            thinking_effort: None,
             history: Vec::new(),
             messages: Vec::new(),
             images: Vec::new(),
@@ -60,6 +63,12 @@ impl TextRequest {
     pub fn with_messages(mut self, messages: Vec<(String, String)>) -> Self {
         self.history = gpt2apirs_protocol::text_stream::assistant_history(&messages);
         self.messages = messages;
+        self
+    }
+
+    /// 指定思考强度（低档能让首字更快）。
+    pub fn with_thinking_effort(mut self, effort: Option<String>) -> Self {
+        self.thinking_effort = effort.map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
         self
     }
 
@@ -86,10 +95,12 @@ pub struct TextResult {
     /// 与图片不同：这里必须**逐字保留**用户可见内容，
     /// 任何缩写、补全、格式化都会让下游误以为模型真的那样说。
     pub text: String,
+    /// 思考内容（`analysis` / 文本链路的 `commentary`），与正文严格分开。
+    pub reasoning: String,
     /// 会话 ID。
     pub conversation_id: String,
     /// 增量片段（流式响应用）。
-    pub deltas: Vec<String>,
+    pub deltas: Vec<gpt2apirs_protocol::text_stream::Delta>,
     /// 原始 SSE（诊断用，调用方可丢弃）。
     pub sse_raw: String,
 }
@@ -108,31 +119,25 @@ pub async fn generate_text(
     } = handshake(client, token, &request.user_agent, deadline).await?;
 
     let budget = stage_budget(deadline, "sse", stage_caps::SSE)?;
-    let sse = client
-        .post_sse(
-            &upstream_url(CONVERSATION),
-            // 文本链路**不带** conduit_token（那是图片链路才有的）
-            &image_headers(
-                &request.user_agent,
-                token,
-                CONVERSATION,
-                &requirements_token,
-                &proof_token,
-                None,
-                "text/event-stream",
-            ),
-            &if request.messages.is_empty() {
-                build_text_conversation_payload(&request.prompt, &request.upstream_model)
-            } else {
-                build_text_conversation_payload_with_images(
-                    &request.messages,
-                    &request.images,
-                    &request.upstream_model,
-                )
-            },
-            Some(budget),
-        )
+    let headers = image_headers(
+        &request.user_agent,
+        token,
+        CONVERSATION,
+        &requirements_token,
+        &proof_token,
+        None,
+        "text/event-stream",
+    );
+    let mut payload = conversation_payload(request);
+    let mut sse = client
+        .post_sse(&upstream_url(CONVERSATION), &headers, &payload, Some(budget))
         .await?;
+    if rejects_thinking_effort(sse.status, &sse.body) && drop_thinking_effort(&mut payload) {
+        tracing::warn!("上游不接受 thinking_effort，已去掉该字段重发");
+        sse = client
+            .post_sse(&upstream_url(CONVERSATION), &headers, &payload, Some(budget))
+            .await?;
+    }
     diag.sse_status = sse.status;
     diag.sse_bytes = sse.body.len();
     if sse.status != 200 {
@@ -148,7 +153,7 @@ pub async fn generate_text(
         .into());
     }
 
-    let (text, conversation_id, deltas) = collect_text(&sse.body, request.history());
+    let (text, reasoning, conversation_id, deltas) = collect_text(&sse.body, request.history());
     if text.trim().is_empty() {
         // 空回复要能诊断：把 SSE 的头尾留下来
         return Err(GenerateError::new(
@@ -165,6 +170,7 @@ pub async fn generate_text(
     Ok((
         TextResult {
             text,
+            reasoning,
             conversation_id,
             deltas,
             sse_raw: sse.body,
@@ -177,6 +183,48 @@ pub async fn generate_text(
 ///
 /// 目前上游是一次性把 SSE 给全的（`post_sse` 读完才返回），
 /// 所以这里先把增量切成小块吐出去 —— 对客户端来说时序仍然比「全等」好。
+/// 组装发往上游的会话请求体，并挂上思考强度。
+///
+/// `thinking_effort` **原样透传**：上游认这个字段我们就给它，能不能降档由上游决定。
+/// 不做归一化 —— 参考实现里把 `"none"` 归一成空串，等于没传，是个坑。
+fn conversation_payload(request: &TextRequest) -> serde_json::Value {
+    let mut payload = if request.messages.is_empty() {
+        build_text_conversation_payload(&request.prompt, &request.upstream_model)
+    } else {
+        build_text_conversation_payload_with_images(
+            &request.messages,
+            &request.images,
+            &request.upstream_model,
+        )
+    };
+    if let Some(effort) = request
+        .thinking_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        payload["thinking_effort"] = serde_json::Value::String(effort.to_string());
+    }
+    payload
+}
+
+/// 上游是不是因为 `thinking_effort` 拒了这个请求体。
+///
+/// 实测（2026-11-19）：带上这个字段会得到 422 `Invalid conversation body`。
+/// 所以透传要「先试后摘」，不能把字段硬塞进去让请求整体失败。
+fn rejects_thinking_effort(status: u16, body: &str) -> bool {
+    status == 422 || (status == 400 && body.contains("Invalid conversation body"))
+}
+
+/// 去掉 `thinking_effort`；返回是否真的删掉了（没这字段就不用重发）。
+fn drop_thinking_effort(payload: &mut serde_json::Value) -> bool {
+    payload
+        .as_object_mut()
+        .and_then(|map| map.remove("thinking_effort"))
+        .is_some()
+}
+
+/// 把整段正文按固定长度切片（非流式透传时用）。
 pub fn stream_deltas(result: &TextResult, chunk_len: usize) -> Vec<String> {
     if chunk_len == 0 || result.text.is_empty() {
         return vec![result.text.clone()];
@@ -210,6 +258,36 @@ mod tests {
         assert_eq!(request.model, "gpt-5-5");
         assert_eq!(request.upstream_model, "gpt-5-5");
         assert!(request.history().is_empty());
+    }
+
+    #[test]
+    fn thinking_effort_is_passed_through_verbatim() {
+        // 原样透传：不做归一化，上游认不认由它决定
+        for given in ["low", "xhigh", "none"] {
+            let request = TextRequest::new("hi").with_thinking_effort(Some(given.to_string()));
+            let payload = conversation_payload(&request);
+            assert_eq!(payload["thinking_effort"], given, "应原样带上 {given}");
+        }
+        // 空值等于不传
+        let request = TextRequest::new("hi").with_thinking_effort(Some("  ".to_string()));
+        assert!(conversation_payload(&request).get("thinking_effort").is_none());
+        let request = TextRequest::new("hi");
+        assert!(conversation_payload(&request).get("thinking_effort").is_none());
+    }
+
+    #[test]
+    fn rejected_effort_is_dropped_for_retry() {
+        // 实测 422 Invalid conversation body：透传失败时要能摘掉字段重发
+        assert!(rejects_thinking_effort(422, "{\"detail\":\"Invalid conversation body\"}"));
+        assert!(rejects_thinking_effort(400, "Invalid conversation body"));
+        assert!(!rejects_thinking_effort(200, ""));
+        assert!(!rejects_thinking_effort(429, "rate limited"));
+
+        let mut payload = serde_json::json!({ "action": "next", "thinking_effort": "low" });
+        assert!(drop_thinking_effort(&mut payload));
+        assert!(payload.get("thinking_effort").is_none());
+        // 已经没有了就别再重发
+        assert!(!drop_thinking_effort(&mut payload));
     }
 
     #[test]
@@ -247,7 +325,7 @@ mod tests {
             "data: {\"o\":\"patch\",\"v\":[{\"p\":\"/message/content/parts/0\",\"o\":\"append\",\"v\":\"，世界\"}]}\n\n",
             "data: [DONE]\n\n",
         );
-        let (text, _conversation_id, deltas) = collect_text(sse, &[]);
+        let (text, _reasoning, _conversation_id, deltas) = collect_text(sse, &[]);
         assert_eq!(text, "你好，世界");
         assert_eq!(deltas.len(), 2);
     }
@@ -268,6 +346,8 @@ mod tests {
 pub struct StreamSnapshot {
     /// 完整文本（已清洗）。
     pub text: String,
+    /// 思考内容（已清洗）。
+    pub reasoning: String,
     /// 会话 ID。
     pub conversation_id: String,
     /// 是否已正常结束。
@@ -279,7 +359,7 @@ pub struct TextStream {
     /// 增量文本流。每项是一个新增片段。
     pub deltas: futures_util::stream::BoxStream<
         'static,
-        std::result::Result<String, GenerateError>,
+        std::result::Result<gpt2apirs_protocol::text_stream::Delta, GenerateError>,
     >,
     /// 结束后读全文（用于算 usage / 记日志）。
     pub snapshot: std::sync::Arc<std::sync::Mutex<StreamSnapshot>>,
@@ -308,35 +388,41 @@ pub async fn generate_text_stream(
 
     let budget = stage_budget(deadline, "sse", stage_caps::SSE)
         .map_err(|error| GenerateError::new(FailureKind::Network, error.to_string()))?;
-    // 先落到局部变量，避免临时数组在调用期间被释放
-    let messages: Vec<(String, String)> = if request.messages.is_empty() {
-        vec![("user".to_string(), request.prompt.clone())]
-    } else {
-        request.messages.clone()
-    };
-    let payload = build_text_conversation_payload_with_images(
-        &messages,
-        &request.images,
-        &request.upstream_model,
+    let mut payload = conversation_payload(request);
+    let headers = image_headers(
+        &request.user_agent,
+        token,
+        CONVERSATION,
+        &requirements_token,
+        &proof_token,
+        None,
+        "text/event-stream",
     );
 
-    let started = client
+    let mut started = client
         .post_sse_stream(
             &upstream_url(CONVERSATION),
-            &image_headers(
-                &request.user_agent,
-                token,
-                CONVERSATION,
-                &requirements_token,
-                &proof_token,
-                None,
-                "text/event-stream",
-            ),
+            &headers,
             &payload,
             Some(budget),
         )
         .await
         .map_err(|error| GenerateError::new(FailureKind::Network, error.to_string()))?;
+
+    if rejects_thinking_effort(started.status, &started.body_prefix)
+        && drop_thinking_effort(&mut payload)
+    {
+        tracing::warn!("上游不接受 thinking_effort，已去掉该字段重发（流式）");
+        started = client
+            .post_sse_stream(
+                &upstream_url(CONVERSATION),
+                &headers,
+                &payload,
+                Some(budget),
+            )
+            .await
+            .map_err(|error| GenerateError::new(FailureKind::Network, error.to_string()))?;
+    }
 
     if started.status != 200 {
         return Err(GenerateError::new(
@@ -363,7 +449,7 @@ pub async fn generate_text_stream(
         bytes: futures_util::stream::BoxStream<'static, anyhow::Result<Vec<u8>>>,
         framer: gpt2apirs_protocol::sse_framer::SseFramer,
         accumulator: TextAccumulator,
-        pending: std::collections::VecDeque<String>,
+        pending: std::collections::VecDeque<gpt2apirs_protocol::text_stream::Delta>,
         snapshot: std::sync::Arc<std::sync::Mutex<StreamSnapshot>>,
         finished: bool,
     }
@@ -390,6 +476,7 @@ pub async fn generate_text_stream(
                     let mut guard = state.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                     if guard.text.is_empty() {
                         guard.text = state.accumulator.text.clone();
+                        guard.reasoning = state.accumulator.reasoning.clone();
                         guard.conversation_id = state.accumulator.conversation_id.clone();
                         guard.finished = true;
                     }
@@ -415,6 +502,7 @@ pub async fn generate_text_stream(
                     {
                         let mut guard = state.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                         guard.text = state.accumulator.text.clone();
+                        guard.reasoning = state.accumulator.reasoning.clone();
                         guard.conversation_id = state.accumulator.conversation_id.clone();
                     }
                     return Some((
@@ -439,6 +527,7 @@ pub async fn generate_text_stream(
                     {
                         let mut guard = state.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                         guard.text = state.accumulator.text.clone();
+                        guard.reasoning = state.accumulator.reasoning.clone();
                         guard.conversation_id = state.accumulator.conversation_id.clone();
                         guard.finished = true;
                     }

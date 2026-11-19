@@ -20,19 +20,45 @@ const ANNOTATION_CLOSE: char = '\u{E201}';
 /// 注解内部的分段符（U+E202）。
 const ANNOTATION_SEP: char = '\u{E202}';
 
-/// 判断某个 assistant 消息是否**面向用户**（只看 `final` 频道）。
-pub fn is_visible_assistant_message(message: &Value) -> bool {
-    is_visible_assistant_message_with(message, false)
+/// 一条增量：正文或思考内容。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delta {
+    /// 正文（`delta.content`）。
+    Text(String),
+    /// 思考内容（`delta.reasoning_content`）。
+    Reasoning(String),
 }
 
-/// 同 [`is_visible_assistant_message`]，但可以额外接受 `commentary` 频道。
+/// 一条助手消息应该落到哪条通道。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MessageChannel {
+    /// 正文（用户看到的那句话）。
+    #[default]
+    Answer,
+    /// 思考内容：上游的 `analysis`，以及不当作正文的 `commentary`。
+    Reasoning,
+}
+
+/// 判断某个 assistant 消息是否**面向用户**（只看 `final` 频道）。
+pub fn is_visible_assistant_message(message: &Value) -> bool {
+    classify_message_channel(message, false) == Some(MessageChannel::Answer)
+}
+
+/// 分类一条助手消息该进「正文」还是「思考内容」，不值得收的返回 `None`。
 ///
-/// 上游把「拒绝/解释」这类话放在 `commentary` 上（实测：色情内容拒绝）。
-/// 生图链路要拿它当失败原因，所以那边放宽；文本链路仍然只认 `final`，
-/// 否则 `commentary` 里的过程话会被当成回答。
-pub fn is_visible_assistant_message_with(message: &Value, allow_commentary: bool) -> bool {
+/// 规则：
+/// - 角色必须是 assistant，`recipient` 必须空或 `all`；
+/// - 隐藏消息只有当频道是 `final` 时才收（那些是真的答案，只是界面不展示）；
+/// - `final` / 空频道 → 正文；
+/// - `commentary` → 生图链路当正文（拒绝理由），文本链路当思考内容；
+/// - `analysis` → 思考内容；
+/// - 其它频道（工具、未知）→ 不收。
+pub fn classify_message_channel(
+    message: &Value,
+    allow_commentary: bool,
+) -> Option<MessageChannel> {
     let Some(author) = message.get("author") else {
-        return false;
+        return None;
     };
     let role = author
         .get("role")
@@ -41,15 +67,7 @@ pub fn is_visible_assistant_message_with(message: &Value, allow_commentary: bool
         .trim()
         .to_ascii_lowercase();
     if role != "assistant" {
-        return false;
-    }
-    if message
-        .get("metadata")
-        .and_then(|meta| meta.get("is_visually_hidden_from_conversation"))
-        .and_then(Value::as_bool)
-        == Some(true)
-    {
-        return false;
+        return None;
     }
     let recipient = message
         .get("recipient")
@@ -58,7 +76,7 @@ pub fn is_visible_assistant_message_with(message: &Value, allow_commentary: bool
         .trim()
         .to_ascii_lowercase();
     if !recipient.is_empty() && recipient != "all" {
-        return false;
+        return None;
     }
     let channel = message
         .get("channel")
@@ -66,13 +84,20 @@ pub fn is_visible_assistant_message_with(message: &Value, allow_commentary: bool
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    let allowed = channel.is_empty()
-        || channel == "final"
-        || (allow_commentary && channel == "commentary");
-    if !allowed {
-        return false;
+    let hidden = message
+        .get("metadata")
+        .and_then(|meta| meta.get("is_visually_hidden_from_conversation"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    match channel.as_str() {
+        // 空频道：隐藏消息不能当正文（那多半是内部指令）
+        "" if hidden => None,
+        "" | "final" => Some(MessageChannel::Answer),
+        "commentary" if allow_commentary => Some(MessageChannel::Answer),
+        // 思考内容本来就常常是隐藏的（界面不展示），照收不误
+        "commentary" | "analysis" => Some(MessageChannel::Reasoning),
+        _ => None,
     }
-    true
 }
 
 /// 取一条消息的正文。
@@ -359,7 +384,9 @@ fn assistant_raw_text_with(event: &Value, current: &str, allow_commentary: bool)
             continue;
         }
         if let Some(message) = candidate.get("message") {
-            if message.is_object() && is_visible_assistant_message_with(message, allow_commentary) {
+            if message.is_object()
+                && classify_message_channel(message, allow_commentary) == Some(MessageChannel::Answer)
+            {
                 let text = assistant_message_text(message);
                 if !text.is_empty() {
                     return (text, true);
@@ -376,7 +403,7 @@ fn assistant_message_id(event: &Value, allow_commentary: bool) -> Option<String>
         let Some(message) = candidate.get("message") else {
             continue;
         };
-        if !is_visible_assistant_message_with(message, allow_commentary) {
+        if classify_message_channel(message, allow_commentary) != Some(MessageChannel::Answer) {
             continue;
         }
         let id = message
@@ -396,6 +423,8 @@ fn assistant_message_id(event: &Value, allow_commentary: bool) -> Option<String>
 /// 判定「这帧是不是本轮的」靠它，而不是靠正文比对 ——
 /// 回放帧是终态（`finished_successfully` / `end_turn`），本轮帧先非终态后终态。
 struct AssistantMeta {
+    /// 该落到哪条通道（正文 / 思考）。
+    channel: MessageChannel,
     /// 消息 id。
     id: String,
     /// 上游给的状态串（`in_progress` / `finished_successfully` …），可能为空。
@@ -424,10 +453,14 @@ fn assistant_meta(event: &Value, allow_commentary: bool) -> Option<AssistantMeta
         let Some(message) = candidate.get("message") else {
             continue;
         };
-        if !message.is_object() || !is_visible_assistant_message_with(message, allow_commentary) {
+        if !message.is_object() {
             continue;
         }
+        let Some(channel) = classify_message_channel(message, allow_commentary) else {
+            continue;
+        };
         return Some(AssistantMeta {
+            channel,
             id: message
                 .get("id")
                 .and_then(Value::as_str)
@@ -454,6 +487,10 @@ pub struct TextAccumulator {
     pub raw: String,
     /// 已清洗的完整文本。
     pub text: String,
+    /// 思考内容（`analysis` / 文本链路的 `commentary`）。
+    ///
+    /// 单独放，绝不并进 [`Self::text`]：客户端要正文时不该看到思维链。
+    pub reasoning: String,
     /// 会话 ID（一旦出现就记住）。
     pub conversation_id: String,
     /// 是否见过 DONE。
@@ -471,6 +508,10 @@ pub struct TextAccumulator {
     /// 只有生图链路需要：上游把「拒绝/解释」放在 commentary 上，
     /// 而文本链路要它保持不可见（否则过程话会被当成回答）。
     allow_commentary: bool,
+    /// 未清洗的思考内容。
+    reasoning_raw: String,
+    /// 当前消息的频道（补丁帧跟着它走）。
+    current_channel: MessageChannel,
     /// 最后一条被跳过的**终态**助手正文。
     ///
     /// 上游偶尔整条流只给一条终态回复（内容策略拒绝、极短回答），
@@ -503,7 +544,7 @@ impl TextAccumulator {
     /// 喂一条 SSE payload（`data:` 后面的原文）。
     ///
     /// 返回**新增**的文本片段；没有新增返回 `None`。
-    pub fn push_payload(&mut self, payload: &str) -> Option<String> {
+    pub fn push_payload(&mut self, payload: &str) -> Option<Delta> {
         if payload.trim() == "[DONE]" {
             self.done = true;
             return None;
@@ -525,16 +566,23 @@ impl TextAccumulator {
         };
 
         // 有结构信息就按结构判，没有（补丁帧 / 老形态）才回头比正文。
-        let (candidate, replaced) = match assistant_meta(&event, self.allow_commentary) {
+        let (candidate, replaced, channel) = match assistant_meta(&event, self.allow_commentary) {
             Some(meta) if meta.is_structural() => {
                 if !self.started {
+                    if meta.is_terminal() && meta.channel == MessageChannel::Reasoning {
+                        // 终态的思考帧（拒绝/解释）不是回放：历史里的助手正文走 Answer。
+                        // 先收下来，别丢；也不据此认定本轮已开始。
+                        return self.ingest_reasoning(meta.text);
+                    }
                     if meta.is_terminal() {
                         // 本轮开始之前的终态帧 = 历史回放。
                         // 只有「整条流就这么一条终态回复」才留着兜底，不能让回放顶替答案。
-                        if self.echo.knows(&meta.text) {
-                            self.echo.consume_exact(&meta.text);
-                        } else if !meta.text.trim().is_empty() {
-                            self.last_terminal_text = meta.text.clone();
+                        if meta.channel == MessageChannel::Answer {
+                            if self.echo.knows(&meta.text) {
+                                self.echo.consume_exact(&meta.text);
+                            } else if !meta.text.trim().is_empty() {
+                                self.last_terminal_text = meta.text.clone();
+                            }
                         }
                         return None;
                     }
@@ -550,15 +598,27 @@ impl TextAccumulator {
                     // 本轮已锁定另一条消息：并发分支或迟到的回放，整帧丢弃
                     return None;
                 }
+                self.current_channel = meta.channel;
                 let text = if meta.text.is_empty() {
-                    self.raw.clone()
+                    self.current_raw().to_string()
                 } else {
-                    meta.text.clone()
+                    meta.text
                 };
-                (text, true)
+                (text, true, meta.channel)
             }
-            _ => assistant_raw_text_with(&event, &self.raw, self.allow_commentary),
+            _ => {
+                // 补丁帧：跟着当前消息的频道走
+                let current = self.current_raw().to_string();
+                let (candidate, replaced) =
+                    assistant_raw_text_with(&event, &current, self.allow_commentary);
+                (candidate, replaced, self.current_channel)
+            }
         };
+
+        if channel == MessageChannel::Reasoning {
+            return self.ingest_reasoning(candidate);
+        }
+
         if candidate == self.raw && !new_message {
             return None;
         }
@@ -590,7 +650,36 @@ impl TextAccumulator {
         if delta.is_empty() {
             None
         } else {
-            Some(delta)
+            Some(Delta::Text(delta))
+        }
+    }
+
+    /// 当前频道对应的「未清洗文本」。
+    fn current_raw(&self) -> &str {
+        if self.current_channel == MessageChannel::Reasoning {
+            &self.reasoning_raw
+        } else {
+            &self.raw
+        }
+    }
+
+    /// 吃一段思考内容：单独累积，不碰正文。
+    fn ingest_reasoning(&mut self, candidate: String) -> Option<Delta> {
+        if candidate == self.reasoning_raw {
+            return None;
+        }
+        let next = sanitize_output_text(&candidate);
+        let delta = if next.starts_with(&self.reasoning) {
+            next[self.reasoning.len()..].to_string()
+        } else {
+            next.clone()
+        };
+        self.reasoning_raw = candidate;
+        self.reasoning = next;
+        if delta.is_empty() {
+            None
+        } else {
+            Some(Delta::Reasoning(delta))
         }
     }
 
@@ -598,7 +687,7 @@ impl TextAccumulator {
     ///
     /// 上游偶尔整条流只给一条终态消息（拒绝、极短回答）。结构判定会把它当回放跳过，
     /// 这时没正文，只能认它 —— 但前提是它不是历史（历史在跳过时已经记成回放了）。
-    pub fn flush(&mut self) -> Option<String> {
+    pub fn flush(&mut self) -> Option<Delta> {
         if !self.text.is_empty() || self.last_terminal_text.is_empty() {
             return None;
         }
@@ -608,11 +697,11 @@ impl TextAccumulator {
         }
         self.text = text.clone();
         self.raw = text.clone();
-        Some(text)
+        Some(Delta::Text(text))
     }
 
     /// 一次性吃掉整段 SSE 文本。
-    pub fn push_raw_sse(&mut self, raw: &str) -> Vec<String> {
+    pub fn push_raw_sse(&mut self, raw: &str) -> Vec<Delta> {
         let mut deltas = Vec::new();
         for payload in iter_sse_payloads(raw) {
             if let Some(delta) = self.push_payload(&payload) {
@@ -639,20 +728,40 @@ fn find_conversation_id(payload: &str) -> Option<String> {
     }
 }
 
-/// 便捷函数：整段 SSE  (文本, conversation_id, 增量序列)。
-pub fn collect_text(raw_sse: &str, history: &[String]) -> (String, String, Vec<String>) {
+/// 便捷函数：整段 SSE →（正文, 思考内容, conversation_id, 增量序列）。
+pub fn collect_text(
+    raw_sse: &str,
+    history: &[String],
+) -> (String, String, String, Vec<Delta>) {
     let mut accumulator = TextAccumulator::with_history(history.to_vec());
     let mut deltas = accumulator.push_raw_sse(raw_sse);
     if let Some(tail) = accumulator.flush() {
         deltas.push(tail);
     }
-    (accumulator.text, accumulator.conversation_id, deltas)
+    (
+        accumulator.text,
+        accumulator.reasoning,
+        accumulator.conversation_id,
+        deltas,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 只拼正文增量（思考内容单独走）。
+    fn join_text(deltas: &[Delta]) -> String {
+        deltas
+            .iter()
+            .filter_map(|delta| match delta {
+                Delta::Text(text) => Some(text.as_str()),
+                Delta::Reasoning(_) => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
 
     fn assistant_message(text: &str) -> Value {
         json!({
@@ -719,7 +828,7 @@ mod tests {
         assert_eq!(accumulator.text, "");
         assert_eq!(
             accumulator.push_payload(&assistant_message("本轮答复").to_string()),
-            Some("本轮答复".to_string())
+            Some(Delta::Text("本轮答复".to_string()))
         );
         assert_eq!(accumulator.text, "本轮答复");
     }
@@ -737,7 +846,7 @@ mod tests {
         assert_eq!(accumulator.text, "");
         assert_eq!(
             accumulator.push_payload(&assistant_message("第三答").to_string()),
-            Some("第三答".to_string())
+            Some(Delta::Text("第三答".to_string()))
         );
     }
 
@@ -754,7 +863,7 @@ mod tests {
         assert_eq!(accumulator.text, "");
         assert_eq!(
             accumulator.push_payload(&assistant_message("这轮的新答案").to_string()),
-            Some("这轮的新答案".to_string())
+            Some(Delta::Text("这轮的新答案".to_string()))
         );
         assert_eq!(accumulator.text, "这轮的新答案");
     }
@@ -791,7 +900,7 @@ mod tests {
         assert_eq!(accumulator.push_payload(&message("m-历史", "同样的回答")), None);
         assert_eq!(
             accumulator.push_payload(&message("m-本轮", "同样的回答")),
-            Some("同样的回答".to_string())
+            Some(Delta::Text("同样的回答".to_string()))
         );
         assert_eq!(accumulator.text, "同样的回答");
     }
@@ -809,7 +918,7 @@ mod tests {
         assert_eq!(accumulator.push_payload(&append("上一轮")), None);
         assert_eq!(
             accumulator.push_payload(&append("本轮")),
-            Some("本轮".to_string())
+            Some(Delta::Text("本轮".to_string()))
         );
         assert_eq!(accumulator.text, "本轮");
     }
@@ -829,7 +938,7 @@ mod tests {
         assert_eq!(accumulator.text, "");
         assert_eq!(
             accumulator.push_payload(&append("本轮答复")),
-            Some("本轮答复".to_string())
+            Some(Delta::Text("本轮答复".to_string()))
         );
     }
 
@@ -851,11 +960,11 @@ mod tests {
         assert_eq!(accumulator.push_payload(&message("m-1", "第一答")), None);
         assert_eq!(
             accumulator.push_payload(&message("m-2", "本轮开头")),
-            Some("本轮开头".to_string())
+            Some(Delta::Text("本轮开头".to_string()))
         );
         assert_eq!(
             accumulator.push_payload(&message("m-3", "第二答的后续")),
-            Some("第二答的后续".to_string())
+            Some(Delta::Text("第二答的后续".to_string()))
         );
     }
 
@@ -879,11 +988,11 @@ mod tests {
 
     #[test]
     fn real_multiturn_stream_drops_replayed_history() {
-        let (text, conversation_id, deltas) =
+        let (text, _reasoning, conversation_id, deltas) =
             collect_text(real_multiturn_sse(), &real_multiturn_history());
         assert_eq!(text, "我叫小暖，很高兴再次和你聊天！");
         assert!(!text.contains("MARKER_PREV_REPLY_ALPHA"), "回放不能进正文：{text}");
-        assert_eq!(deltas.concat(), text, "增量拼接必须等于正文");
+        assert_eq!(join_text(&deltas), text, "增量拼接必须等于正文");
         assert_eq!(conversation_id, "6afd870e-2e6c-83ee-9de2-4c112a853d44");
     }
 
@@ -891,10 +1000,10 @@ mod tests {
     fn real_multiturn_stream_drops_replay_even_without_history() {
         // 回放帧是终态（finished_successfully），结构判定直接跳过 ——
         // 不依赖把历史传进来比对正文。
-        let (text, _, deltas) = collect_text(real_multiturn_sse(), &[]);
+        let (text, _reasoning, _, deltas) = collect_text(real_multiturn_sse(), &[]);
         assert_eq!(text, "我叫小暖，很高兴再次和你聊天！");
         assert!(
-            !deltas.concat().contains("MARKER_PREV_REPLY_ALPHA"),
+            !join_text(&deltas).contains("MARKER_PREV_REPLY_ALPHA"),
             "流式增量里不该出现回放：{deltas:?}"
         );
     }
@@ -931,7 +1040,7 @@ mod tests {
                 "in_progress",
                 "这轮的回答"
             )),
-            Some("这轮的回答".to_string())
+            Some(Delta::Text("这轮的回答".to_string()))
         );
         assert_eq!(accumulator.text, "这轮的回答");
     }
@@ -941,7 +1050,7 @@ mod tests {
         let mut accumulator = TextAccumulator::new();
         assert_eq!(
             accumulator.push_payload(&assistant_message_with_status("m-new", "in_progress", "本轮")),
-            Some("本轮".to_string())
+            Some(Delta::Text("本轮".to_string()))
         );
         // 锁定之后再来的别的消息（并发分支、迟到回放）整帧丢掉
         assert_eq!(
@@ -963,7 +1072,7 @@ mod tests {
             )),
             None
         );
-        assert_eq!(accumulator.flush(), Some("抱歉，这个我不能做。".to_string()));
+        assert_eq!(accumulator.flush(), Some(Delta::Text("抱歉，这个我不能做。".to_string())));
         assert_eq!(accumulator.text, "抱歉，这个我不能做。");
     }
 
@@ -980,6 +1089,45 @@ mod tests {
         assert_eq!(accumulator.text, "");
     }
 
+    /// 带频道的助手消息。
+    fn assistant_message_in_channel(id: &str, channel: &str, status: &str, text: &str) -> String {
+        json!({"v": {"message": {
+            "id": id,
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": [text]},
+            "recipient": "all",
+            "channel": channel,
+            "status": status,
+        }}})
+        .to_string()
+    }
+
+    #[test]
+    fn analysis_channel_becomes_reasoning_not_answer() {
+        let mut accumulator = TextAccumulator::new();
+        // 思考段：analysis 频道
+        let delta = accumulator.push_payload(&assistant_message_in_channel(
+            "m1",
+            "analysis",
+            "in_progress",
+            "先想一想",
+        ));
+        assert_eq!(delta, Some(Delta::Reasoning("先想一想".to_string())));
+        assert_eq!(accumulator.text, "", "思考内容不能进正文");
+        assert_eq!(accumulator.reasoning, "先想一想");
+
+        // 正文段：同一条消息切到 final
+        let delta = accumulator.push_payload(&assistant_message_in_channel(
+            "m1",
+            "final",
+            "in_progress",
+            "答案是 42",
+        ));
+        assert_eq!(delta, Some(Delta::Text("答案是 42".to_string())));
+        assert_eq!(accumulator.text, "答案是 42");
+        assert_eq!(accumulator.reasoning, "先想一想");
+    }
+
     #[test]
     fn commentary_refusal_is_captured_only_when_allowed() {
         // 线上实测：色情内容拒绝挂在 commentary 上
@@ -994,18 +1142,23 @@ mod tests {
         }}})
         .to_string();
 
-        // 文本链路：commentary 不可见，正文必须为空
+        // 文本链路：commentary 不算正文，但会作为思考内容留下
         let mut text_side = TextAccumulator::new();
         text_side.push_payload(&payload);
         assert!(text_side.flush().is_none());
         assert_eq!(text_side.text, "");
+        assert!(
+            text_side.reasoning.contains("防护限制"),
+            "应落到思考内容：{}",
+            text_side.reasoning
+        );
 
         // 生图链路：要拿到这段拒绝理由
         let mut image_side = TextAccumulator::new().with_commentary();
         image_side.push_payload(&payload);
         assert_eq!(
             image_side.flush(),
-            Some("非常抱歉，该提示可能违反了关于裸露、色情或情色内容的防护限制。".to_string())
+            Some(Delta::Text("非常抱歉，该提示可能违反了关于裸露、色情或情色内容的防护限制。".to_string()))
         );
     }
 
@@ -1026,11 +1179,11 @@ mod tests {
         let event = json!({"o": "patch", "v": [
             {"p": "/message/content/parts/0", "o": "append", "v": "你好"}
         ]});
-        assert_eq!(accumulator.push_payload(&event.to_string()), Some("你好".to_string()));
+        assert_eq!(accumulator.push_payload(&event.to_string()), Some(Delta::Text("你好".to_string())));
         let event = json!({"o": "patch", "v": [
             {"p": "/message/content/parts/0", "o": "append", "v": "，世界"}
         ]});
-        assert_eq!(accumulator.push_payload(&event.to_string()), Some("，世界".to_string()));
+        assert_eq!(accumulator.push_payload(&event.to_string()), Some(Delta::Text("，世界".to_string())));
         assert_eq!(accumulator.text, "你好，世界");
     }
 
@@ -1056,7 +1209,7 @@ mod tests {
         accumulator.push_payload(&assistant_message("第一段").to_string());
         // 真实形态是 {"v": "增量"}，不是顶层 JSON 字符串
         let delta = accumulator.push_payload(&json!({"v": "第二段"}).to_string());
-        assert_eq!(delta, Some("第二段".to_string()));
+        assert_eq!(delta, Some(Delta::Text("第二段".to_string())));
         assert_eq!(accumulator.text, "第一段第二段");
     }
 
@@ -1075,7 +1228,7 @@ mod tests {
     fn full_message_event_is_taken_directly() {
         let mut accumulator = TextAccumulator::new();
         let delta = accumulator.push_payload(&assistant_message("完整回复").to_string());
-        assert_eq!(delta, Some("完整回复".to_string()));
+        assert_eq!(delta, Some(Delta::Text("完整回复".to_string())));
         assert_eq!(accumulator.text, "完整回复");
     }
 
@@ -1084,7 +1237,7 @@ mod tests {
         // 整段候选 = 历史 + 本轮（同一帧里贴在一起）时只留本轮
         let mut accumulator = TextAccumulator::with_history(vec!["历史".to_string()]);
         let delta = accumulator.push_payload(&assistant_message("历史新内容").to_string());
-        assert_eq!(delta, Some("新内容".to_string()));
+        assert_eq!(delta, Some(Delta::Text("新内容".to_string())));
     }
 
     #[test]
@@ -1136,10 +1289,10 @@ mod tests {
             "data: {\"o\":\"patch\",\"v\":[{\"p\":\"/message/content/parts/0\",\"o\":\"append\",\"v\":\"lo\"}]}\n\n",
             "data: [DONE]\n\n",
         );
-        let (text, conversation_id, deltas) = collect_text(sse, &[]);
+        let (text, _reasoning, conversation_id, deltas) = collect_text(sse, &[]);
         assert_eq!(text, "Hello");
         assert_eq!(conversation_id, "c-1");
-        assert_eq!(deltas, vec!["Hel".to_string(), "lo".to_string()]);
+        assert_eq!(deltas, vec![Delta::Text("Hel".to_string()), Delta::Text("lo".to_string())]);
     }
 
     #[test]

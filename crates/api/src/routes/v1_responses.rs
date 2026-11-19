@@ -208,11 +208,12 @@ pub async fn create_response(
 
     // 真流式：命中时直接返回 SSE，不走「先跑完再切块」
     if request.stream.unwrap_or(false) {
-        let handle = start_text_stream(&state, messages.clone(), Vec::new(), &model, deadline).await?;
+        let handle =
+        start_text_stream(&state, messages.clone(), Vec::new(), &model, deadline, None).await?;
         return Ok(build_live_stream(handle, &model).into_response());
     }
 
-    let outcome = run_text(&state, &messages, &[], &model, deadline).await?;
+    let outcome = run_text(&state, &messages, &[], &model, deadline, None).await?;
 
     let prompt_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
     let completion_tokens = gpt2apirs_core::tokens::count_text_tokens(&outcome.result.text, &model);
@@ -284,15 +285,19 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
         let errors = body_errors.clone();
         async move {
             match item {
-                Ok(delta) => Some(Ok::<_, Infallible>(sse_event(
-                    "response.output_text.delta",
-                    json!({
-                        "item_id": id,
-                        "output_index": 0,
-                        "content_index": 0,
-                        "delta": delta,
-                    }),
-                ))),
+                // 思考内容不映射到 output_text（那会被当成正文），这里只转正文
+                Ok(gpt2apirs_protocol::text_stream::Delta::Text(delta)) => {
+                    Some(Ok::<_, Infallible>(sse_event(
+                        "response.output_text.delta",
+                        json!({
+                            "item_id": id,
+                            "output_index": 0,
+                            "content_index": 0,
+                            "delta": delta,
+                        }),
+                    )))
+                }
+                Ok(gpt2apirs_protocol::text_stream::Delta::Reasoning(_)) => None,
                 Err(error) => {
                     // 记下来在末尾报，不中断——客户端已收到的部分不该丢
                     if let Ok(mut slot) = errors.lock() {
@@ -387,7 +392,7 @@ mod live_stream_tests {
         let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
         let mut body = response.into_body().into_data_stream();
 
-        sender.send(Ok("第一段".to_string())).await.expect("发送");
+        sender.send(Ok(gpt2apirs_protocol::text_stream::Delta::Text("第一段".to_string()))).await.expect("发送");
 
         let seen = tokio::time::timeout(Duration::from_secs(5), async {
             let mut buffer = String::new();
@@ -413,6 +418,7 @@ mod live_stream_tests {
         let snapshot = handle.snapshot.clone();
         if let Ok(mut guard) = snapshot.lock() {
             *guard = StreamSnapshot {
+                reasoning: String::new(),
                 text: "你好世界".to_string(),
                 conversation_id: "conv".to_string(),
                 finished: true,
@@ -420,8 +426,8 @@ mod live_stream_tests {
         }
         let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
 
-        sender.send(Ok("你好".to_string())).await.expect("发送");
-        sender.send(Ok("世界".to_string())).await.expect("发送");
+        sender.send(Ok(gpt2apirs_protocol::text_stream::Delta::Text("你好".to_string()))).await.expect("发送");
+        sender.send(Ok(gpt2apirs_protocol::text_stream::Delta::Text("世界".to_string()))).await.expect("发送");
         drop(sender);
 
         let body = collect_body(response).await;
@@ -440,7 +446,7 @@ mod live_stream_tests {
         let (sender, handle) = channel_handle();
         let response = build_live_stream(handle, gpt2apirs_generate::models::DEFAULT_TEXT_MODEL);
 
-        sender.send(Ok("部分".to_string())).await.expect("发送");
+        sender.send(Ok(gpt2apirs_protocol::text_stream::Delta::Text("部分".to_string()))).await.expect("发送");
         sender
             .send(Err(GenerateError::new(
                 gpt2apirs_generate::error::FailureKind::Network,

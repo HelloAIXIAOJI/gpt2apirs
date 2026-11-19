@@ -11,7 +11,7 @@ use uuid::Uuid;
 use crate::routes::text_common::StreamHandle;
 
 /// 一条增量项。
-pub type DeltaItem = std::result::Result<String, GenerateError>;
+pub type DeltaItem = std::result::Result<gpt2apirs_protocol::text_stream::Delta, GenerateError>;
 
 /// 建一个可手动喂数据的 {@link StreamHandle}。
 ///

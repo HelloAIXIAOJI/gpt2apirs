@@ -10,8 +10,9 @@ use gpt2apirs_generate::text::TextResult;
 #[derive(Clone)]
 struct Entry {
     text: String,
+    reasoning: String,
     conversation_id: String,
-    deltas: Vec<String>,
+    deltas: Vec<gpt2apirs_protocol::text_stream::Delta>,
     at: Instant,
 }
 
@@ -47,6 +48,7 @@ pub fn get(key: u64, ttl: Duration) -> Option<TextResult> {
     }
     Some(TextResult {
         text: entry.text.clone(),
+        reasoning: entry.reasoning.clone(),
         conversation_id: entry.conversation_id.clone(),
         deltas: entry.deltas.clone(),
         sse_raw: String::new(),
@@ -75,6 +77,7 @@ pub fn put(key: u64, result: &TextResult, ttl: Duration) {
         key,
         Entry {
             text: result.text.clone(),
+            reasoning: result.reasoning.clone(),
             conversation_id: result.conversation_id.clone(),
             deltas: result.deltas.clone(),
             at: Instant::now(),
@@ -104,8 +107,9 @@ mod tests {
     fn sample(text: &str) -> TextResult {
         TextResult {
             text: text.to_string(),
+            reasoning: String::new(),
             conversation_id: "conv-1".to_string(),
-            deltas: vec![text.to_string()],
+            deltas: vec![gpt2apirs_protocol::text_stream::Delta::Text(text.to_string())],
             sse_raw: String::new(),
         }
     }

@@ -50,6 +50,35 @@ pub struct ChatCompletionRequest {
     /// 输出模态（只支持 `text`；要图片请走生图端点）。
     #[serde(default)]
     pub modalities: Option<Value>,
+    /// 思考强度（OpenAI 侧叫法）。
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    /// 思考强度（部分客户端用这个叫法）。
+    #[serde(default)]
+    pub thinking_effort: Option<String>,
+    /// `reasoning: { effort: "low" }` 这种嵌套写法。
+    #[serde(default)]
+    pub reasoning: Option<Value>,
+}
+
+/// 从三种写法里取思考强度，原样透传给上游。
+///
+/// 优先级：`thinking_effort` > `reasoning_effort` > `reasoning.effort`。
+/// 取到就原样发，不做归一化 —— 上游认不认由它决定，我们别替它猜。
+fn resolve_thinking_effort(request: &ChatCompletionRequest) -> Option<String> {
+    let from_nested = request
+        .reasoning
+        .as_ref()
+        .and_then(|value| value.get("effort"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    request
+        .thinking_effort
+        .clone()
+        .or_else(|| request.reasoning_effort.clone())
+        .or(from_nested)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 /// 校验 `modalities`：只接受纯文本输出。
@@ -275,6 +304,8 @@ pub async fn chat_completions(
         .unwrap_or_else(|| gpt2apirs_generate::models::DEFAULT_TEXT_MODEL.to_string());
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
 
+    let effort = resolve_thinking_effort(&request);
+
     if request.stream.unwrap_or(false) {
         // ---- 真流式：上游每吐一段就转发一段 ----
         let handle = start_text_stream(
@@ -283,13 +314,22 @@ pub async fn chat_completions(
             images.clone(),
             &requested_model,
             deadline,
+            effort.as_deref(),
         )
         .await?;
         return Ok(build_live_stream(handle, &requested_model).into_response());
     }
 
     // ---- 取号  生成  记账（与其他文本端点共用）----
-    let outcome = run_text(&state, &messages, &images, &requested_model, deadline).await?;
+    let outcome = run_text(
+        &state,
+        &messages,
+        &images,
+        &requested_model,
+        deadline,
+        effort.as_deref(),
+    )
+    .await?;
     let result = &outcome.result;
     let diag = &outcome.diag;
 
@@ -308,6 +348,12 @@ pub async fn chat_completions(
         "文本生成完成"
     );
 
+    let mut message = json!({ "role": "assistant", "content": result.text });
+    if !result.reasoning.trim().is_empty() {
+        // 思考内容单列一个字段：客户端想看就显示，不看也不会混进正文
+        message["reasoning_content"] = json!(result.reasoning);
+    }
+
     Ok(Json(json!({
         "id": completion_id,
         "object": "chat.completion",
@@ -315,7 +361,7 @@ pub async fn chat_completions(
         "model": requested_model,
         "choices": [{
             "index": 0,
-            "message": { "role": "assistant", "content": result.text },
+            "message": message,
             "finish_reason": "stop",
         }],
         "usage": usage,
@@ -367,14 +413,25 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
         let errors = body_errors.clone();
         async move {
             match item {
-                Ok(delta) => Some(Ok(Event::default().data(chunk_payload(
-                    &id,
-                    &model,
-                    created,
-                    json!({ "content": delta }),
-                    Value::Null,
-                    None,
-                )))),
+                Ok(delta) => {
+                    // 思考内容单独放 `reasoning_content`，正文永远只有 `content`
+                    let payload = match delta {
+                        gpt2apirs_protocol::text_stream::Delta::Text(text) => {
+                            json!({ "content": text })
+                        }
+                        gpt2apirs_protocol::text_stream::Delta::Reasoning(text) => {
+                            json!({ "reasoning_content": text })
+                        }
+                    };
+                    Some(Ok(Event::default().data(chunk_payload(
+                        &id,
+                        &model,
+                        created,
+                        payload,
+                        Value::Null,
+                        None,
+                    ))))
+                }
                 Err(error) => {
                     // 记下来，末块里报出去；不在这里中断，让客户端拿到已生成的部分
                     if let Ok(mut guard) = errors.lock() {
@@ -486,7 +543,7 @@ mod keepalive_tests {
     #[tokio::test]
     async fn streaming_deltas_do_not_trigger_keep_alive() {
         let (sender, handle) = crate::routes::test_support::channel_handle();
-        sender.send(Ok("第一段".to_string())).await.ok();
+        sender.send(Ok(gpt2apirs_protocol::text_stream::Delta::Text("第一段".to_string()))).await.ok();
         let mut body = build_live_stream(handle, "text").into_body().into_data_stream();
 
         let first = tokio::time::timeout(Duration::from_secs(1), body.next())
@@ -506,5 +563,92 @@ mod keepalive_tests {
         assert!(!second.contains("keepalive"), "有内容时不该插心跳：{second}");
 
         drop(sender);
+    }
+}
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+    use std::time::Duration;
+
+    use futures_util::StreamExt;
+
+    /// 思考内容必须走 `reasoning_content`，不能混进 `content`。
+    #[tokio::test]
+    async fn reasoning_delta_is_sent_on_its_own_field() {
+        let (sender, handle) = crate::routes::test_support::channel_handle();
+        sender
+            .send(Ok(gpt2apirs_protocol::text_stream::Delta::Reasoning(
+                "先想一想".to_string(),
+            )))
+            .await
+            .ok();
+        sender
+            .send(Ok(gpt2apirs_protocol::text_stream::Delta::Text(
+                "答案".to_string(),
+            )))
+            .await
+            .ok();
+
+        let mut body = build_live_stream(handle, "text").into_body().into_data_stream();
+
+        let first = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("role 块")
+            .expect("应有数据")
+            .expect("读块失败");
+        assert!(String::from_utf8_lossy(&first).contains("assistant"));
+
+        let second = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("思考块")
+            .expect("应有数据")
+            .expect("读块失败");
+        let second = String::from_utf8_lossy(&second).to_string();
+        assert!(second.contains("reasoning_content"), "思考内容要单列：{second}");
+        assert!(second.contains("先想一想"), "{second}");
+        assert!(!second.contains("\"content\":\"先想一想\""), "不能混进正文：{second}");
+
+        let third = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("正文块")
+            .expect("应有数据")
+            .expect("读块失败");
+        let third = String::from_utf8_lossy(&third).to_string();
+        assert!(third.contains("\"content\":\"答案\""), "正文走 content：{third}");
+        assert!(!third.contains("reasoning_content"), "{third}");
+
+        drop(sender);
+    }
+
+    /// 三种写法都能取到思考强度，且原样保留。
+    #[test]
+    fn thinking_effort_is_resolved_from_three_shapes() {
+        let base = |json: &str| -> ChatCompletionRequest {
+            serde_json::from_str(json).expect("请求体应可解析")
+        };
+
+        assert_eq!(
+            resolve_thinking_effort(&base(
+                r#"{"messages":[{"role":"user","content":"hi"}],"thinking_effort":"low"}"#
+            )),
+            Some("low".to_string())
+        );
+        assert_eq!(
+            resolve_thinking_effort(&base(
+                r#"{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"xhigh"}"#
+            )),
+            Some("xhigh".to_string())
+        );
+        assert_eq!(
+            resolve_thinking_effort(&base(
+                r#"{"messages":[{"role":"user","content":"hi"}],"reasoning":{"effort":"medium"}}"#
+            )),
+            Some("medium".to_string())
+        );
+        // 都没给 = 不传
+        assert_eq!(
+            resolve_thinking_effort(&base(r#"{"messages":[{"role":"user","content":"hi"}]}"#)),
+            None
+        );
     }
 }

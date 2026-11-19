@@ -211,6 +211,7 @@ pub async fn run_text(
     images: &[gpt2apirs_generate::inputs::ImageSource],
     requested_model: &str,
     deadline: Deadline,
+    thinking_effort: Option<&str>,
 ) -> Result<TextOutcome, ApiError> {
     // ---- 富文本策略：只改发给上游的内容；usage 由端点用原始消息单独算 ----
     let policy = rich_text_policy(state);
@@ -234,7 +235,9 @@ pub async fn run_text(
         });
     }
 
-    let mut request = TextRequest::new(String::new()).with_messages(messages.to_vec());
+    let mut request = TextRequest::new(String::new())
+        .with_messages(messages.to_vec())
+        .with_thinking_effort(thinking_effort.map(str::to_string));
     request.model = requested_model.to_string();
     request.upstream_model = models::upstream_model_for(requested_model).to_string();
 
@@ -351,10 +354,13 @@ pub fn resolve_model(requested: Option<&str>) -> String {
 
 /// 一次流式生成的控制块。
 pub struct StreamHandle {
-    /// 增量文本流（已附加「结束后记账」）。
+    /// 增量流（正文与思考内容分开；已附加「结束后记账」）。
     pub deltas: futures_util::stream::BoxStream<
         'static,
-        std::result::Result<String, gpt2apirs_generate::error::GenerateError>,
+        std::result::Result<
+            gpt2apirs_protocol::text_stream::Delta,
+            gpt2apirs_generate::error::GenerateError,
+        >,
     >,
     /// 结束后读全文。
     pub snapshot: std::sync::Arc<std::sync::Mutex<gpt2apirs_generate::text::StreamSnapshot>>,
@@ -378,6 +384,7 @@ pub async fn start_text_stream(
     images: Vec<gpt2apirs_generate::inputs::ImageSource>,
     requested_model: &str,
     deadline: Deadline,
+    thinking_effort: Option<&str>,
 ) -> Result<StreamHandle, ApiError> {
     use futures_util::StreamExt;
 
@@ -385,7 +392,9 @@ pub async fn start_text_stream(
     let policy = rich_text_policy(state);
     let (dispatch, billing) = dispatch_messages(policy, messages);
 
-    let mut request = TextRequest::new(String::new()).with_messages(dispatch);
+    let mut request = TextRequest::new(String::new())
+        .with_messages(dispatch)
+        .with_thinking_effort(thinking_effort.map(str::to_string));
     request.model = requested_model.to_string();
     request.upstream_model = models::upstream_model_for(requested_model).to_string();
 
@@ -428,13 +437,17 @@ pub async fn start_text_stream(
                 crate::routes::rich_text::StreamStripper::new(),
                 |stripper, item| {
                     let output = match &item {
-                        Ok(delta) => {
-                            let ready = stripper.push(delta);
+                        Ok(gpt2apirs_protocol::text_stream::Delta::Text(text)) => {
+                            let ready = stripper.push(text);
                             if ready.is_empty() {
                                 None
                             } else {
-                                Some(Ok(ready))
+                                Some(Ok(gpt2apirs_protocol::text_stream::Delta::Text(ready)))
                             }
+                        }
+                        // 思考内容不做剥离：它不是给用户看的富文本
+                        Ok(gpt2apirs_protocol::text_stream::Delta::Reasoning(_)) => {
+                            Some(item.clone())
                         }
                         Err(_) => Some(item.clone()),
                     };
@@ -452,7 +465,10 @@ pub async fn start_text_stream(
     struct State {
         inner: futures_util::stream::BoxStream<
             'static,
-            std::result::Result<String, gpt2apirs_generate::error::GenerateError>,
+            std::result::Result<
+                gpt2apirs_protocol::text_stream::Delta,
+                gpt2apirs_generate::error::GenerateError,
+            >,
         >,
         pool: std::sync::Arc<gpt2apirs_account::AccountPool>,
         lease: Option<gpt2apirs_account::AccountLease>,

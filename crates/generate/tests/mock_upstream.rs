@@ -98,10 +98,22 @@ async fn replaying_only_the_last_history_turn_does_not_leak() {
             result.text
         );
         assert!(
-            !result.deltas.concat().contains(leaked),
+            !join_text(&result.deltas).contains(leaked),
             "流式增量里不该出现历史：{leaked}\n实际：{:?}",
             result.deltas
         );
     }
     assert!(mock.saw("/backend-api/f/conversation"));
+}
+
+/// 只拼正文增量（思考内容单列）。
+fn join_text(deltas: &[gpt2apirs_protocol::text_stream::Delta]) -> String {
+    deltas
+        .iter()
+        .filter_map(|delta| match delta {
+            gpt2apirs_protocol::text_stream::Delta::Text(text) => Some(text.as_str()),
+            gpt2apirs_protocol::text_stream::Delta::Reasoning(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
