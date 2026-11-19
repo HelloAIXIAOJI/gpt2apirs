@@ -28,7 +28,13 @@
 
 ## 快速开始
 
-需要 Rust 与 PostgreSQL。
+需要 Rust（2024 edition）、PostgreSQL，以及编译 BoringSSL 的工具链：
+
+- Linux：`cmake ninja-build nasm perl pkg-config libclang-dev`
+- macOS：`brew install cmake ninja nasm`（perl 与 clang 随 Xcode 命令行工具）
+- Windows：VS「使用 C++ 的桌面开发」+ `cmake`、`ninja`、`nasm`，并把它们放进 PATH
+
+不想自己编 BoringSSL 的话，直接用 [Releases](https://github.com/HelloAIXIAOJI/gpt2apirs/releases) 里的二进制。
 
 ```bash
 git clone https://github.com/HelloAIXIAOJI/gpt2apirs && cd gpt2apirs
@@ -111,6 +117,8 @@ OpenAI 与 Anthropic 双协议兼容，文本支持流式输出。
 ## 常见问题
 
 **第一次请求报「未启用 tls feature」**：编译时缺少 `--features tls`。
+
+**编译报 `btls-sys` / BoringSSL 失败**：构建工具没齐，对着上一节的清单补。Windows 上如果报 `generator : Visual Studio xx` 不被支持，说明 VS 自带的 cmake 太老，装一份独立的 cmake 与 ninja 放到 PATH 前面。
 
 **启动报 `DATABASE_URL` 缺失**：`.env` 不在可执行文件同目录。
 
