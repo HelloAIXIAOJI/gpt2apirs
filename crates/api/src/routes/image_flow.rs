@@ -21,8 +21,10 @@ use crate::state::AppState;
 
 /// 一次成功的生成。
 pub struct SlotOutcome {
-    /// 图片（至少 1 张）。
+    /// 图片（可能 0 张：上游只回文字时正文在 `text` 里）。
     pub images: Vec<gpt2apirs_generate::GeneratedImage>,
+    /// 上游只回文字时的正文（照文本模型的做法原样返回）。
+    pub text: String,
     /// 服务的账号。
     pub account_id: Uuid,
     /// 诊断。
@@ -198,7 +200,8 @@ pub async fn run_generation(
                     })?;
                     let (result, diag) = generate_images(&client, &token, &single, deadline)
                         .await?;
-                    if result.images.is_empty() {
+                    // 上游只回了文字：这不是失败，把话原样交给调用方
+                    if result.images.is_empty() && result.text.trim().is_empty() {
                         return Err(GenerateError::new(
                             FailureKind::EmptyImages,
                             "上游没有返回图片",
@@ -206,6 +209,7 @@ pub async fn run_generation(
                     }
                     Ok(SlotOutcome {
                         images: result.images,
+                        text: result.text,
                         account_id: Uuid::nil(),
                         diag,
                     })
@@ -344,7 +348,8 @@ pub async fn run_edit(
                     let single = single.with_images(references);
                     let (result, diag) = generate_images(&client, &token, &single, deadline)
                         .await?;
-                    if result.images.is_empty() {
+                    // 上游只回了文字：这不是失败，把话原样交给调用方
+                    if result.images.is_empty() && result.text.trim().is_empty() {
                         return Err(GenerateError::new(
                             FailureKind::EmptyImages,
                             "上游没有返回图片",
@@ -352,6 +357,7 @@ pub async fn run_edit(
                     }
                     Ok(SlotOutcome {
                         images: result.images,
+                        text: result.text,
                         account_id: Uuid::nil(),
                         diag,
                     })

@@ -126,12 +126,12 @@ async fn image_pipeline_runs_against_local_mock() {
     let _ = std::fs::remove_file(&saved);
 }
 
-/// 上游只回文本、不出图：必须当场按请求级失败返回，不许轮询、不许换号。
+/// 上游只回文本、不出图：把这段文字当结果返回，不许轮询、不许换号。
 ///
 /// 这条是「502 请求总时限已耗尽（阶段 bootstrap）」那个线上问题的回归测试：
 /// 以前文本被丢掉，没图就进 60 秒轮询，然后判成可换号，最后拿空预算撞 bootstrap。
 #[tokio::test]
-async fn text_reply_without_image_fails_fast() {
+async fn text_reply_without_image_is_returned_as_text() {
     point_data_dir();
     let mock = spawn().await;
     let _fault = gpt2apirs_testkit::inject(gpt2apirs_testkit::Fault::ImageTextOnly).await;
@@ -143,21 +143,17 @@ async fn text_reply_without_image_fails_fast() {
     // mock 的命中记录是进程级累加的，只看本次请求产生的那一段
     let baseline = mock.hits().len();
 
-    let error = generate_images(&client, "mock-token", &request, deadline)
+    // 照文本模型的做法：上游说啥就返回啥，不当失败
+    let (result, _diag) = generate_images(&client, "mock-token", &request, deadline)
         .await
-        .expect_err("只有文本没有图时不该算成功");
+        .expect("只有文本没有图时应算成功");
 
+    assert!(result.images.is_empty(), "不应凭空多出图片");
     assert_eq!(
-        error.kind,
-        gpt2apirs_generate::error::FailureKind::TextReply,
-        "应判成「上游只回文本」：{error:?}"
+        result.text.trim(),
+        gpt2apirs_testkit::IMAGE_TEXT_REPLY,
+        "上游那段话要原样带回"
     );
-    assert!(
-        error.message.contains(gpt2apirs_testkit::IMAGE_TEXT_REPLY),
-        "上游那段话要原样带出去，实际：{}",
-        error.message
-    );
-    assert!(!error.kind.switch_account(), "文本回复不该换号");
 
     // 关键：不能进兜底轮询。允许的只有「判失败前那一次确认」
     let mine: Vec<String> = mock.hits()[baseline..].to_vec();

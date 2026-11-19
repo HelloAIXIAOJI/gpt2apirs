@@ -1103,6 +1103,20 @@ mod tests {
     }
 
     #[test]
+    fn image_text_only_frame_without_status_is_captured() {
+        // 生图链路：上游只发一条没有 status 的 final 消息（testkit 的 ImageTextOnly 形态）
+        let sse = concat!(
+            "data: {\"conversation_id\":\"c\"}\n\n",
+            "data: {\"v\":{\"message\":{\"author\":{\"role\":\"assistant\"},\"channel\":\"final\",",
+            "\"content\":{\"content_type\":\"text\",\"parts\":[\"抱歉\"]},\"id\":\"m\",\"recipient\":\"all\"}}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let mut accumulator = TextAccumulator::new().with_commentary();
+        let deltas = accumulator.push_raw_sse(sse);
+        assert_eq!(accumulator.text, "抱歉", "deltas={deltas:?}");
+    }
+
+    #[test]
     fn analysis_channel_becomes_reasoning_not_answer() {
         let mut accumulator = TextAccumulator::new();
         // 思考段：analysis 频道

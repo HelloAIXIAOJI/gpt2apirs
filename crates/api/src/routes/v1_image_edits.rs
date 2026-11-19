@@ -305,11 +305,22 @@ pub async fn edit_images(
         }
     }
 
+    // 上游只回了文字：照文本模型的做法返回给调用方，不当失败
+    let message = if items.is_empty() {
+        slots
+            .iter()
+            .map(|slot| slot.text.trim())
+            .find(|text| !text.is_empty())
+            .map(str::to_string)
+    } else {
+        None
+    };
+
     Ok(crate::image_response::ImageResponse {
         created: chrono::Utc::now().timestamp(),
         usage: gpt2apirs_core::tokens::image_usage(0, input_image_tokens, output_tokens),
         items,
-        message: None,
+        message,
     }
     .into_response())
 }

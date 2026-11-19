@@ -465,7 +465,17 @@ async fn run_edit(
                     )
                 })
                 .sum();
-            if let Some(task) = store.finish(id, Ok(images), input_tokens, output_tokens) {
+            // 上游只回了文字：任务没有地方放这句话，按失败收尾并把它当作原因
+            let text = slots
+                .iter()
+                .map(|slot| slot.text.trim())
+                .find(|text| !text.is_empty());
+            let outcome = match (images.is_empty(), text) {
+                (true, Some(text)) => Err(text.to_string()),
+                _ => Ok(images),
+            };
+            let output_tokens = if matches!(outcome, Ok(_)) { output_tokens } else { 0 };
+            if let Some(task) = store.finish(id, outcome, input_tokens, output_tokens) {
                 persist_finish(&state, &task).await;
             }
         }
@@ -515,7 +525,15 @@ async fn run(
                     });
                 }
             }
-            Ok(images)
+            // 上游只回了文字：任务没有地方放这句话，按失败收尾并把它当作原因
+            match slots
+                .iter()
+                .map(|slot| slot.text.trim())
+                .find(|text| !text.is_empty())
+            {
+                Some(text) if images.is_empty() => Err(text.to_string()),
+                _ => Ok(images),
+            }
         }
         Err(error) => Err(error.error.message()),
     };

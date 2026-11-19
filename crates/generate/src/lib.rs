@@ -267,6 +267,8 @@ pub struct ImageResult {
     pub sediment_ids: Vec<String>,
     /// 解析出的 file ID。
     pub file_ids: Vec<String>,
+    /// 上游只回了文字、没出图时，这段文字就是结果（照文本模型的做法原样返回）。
+    pub text: String,
     /// 原始 SSE（排错用）。
     pub sse_raw: String,
 }
@@ -334,6 +336,10 @@ pub async fn generate_images(
         combined.file_ids.extend(result.file_ids);
         combined.sse_raw = result.sse_raw;
         combined.images.extend(result.images);
+        // 只有文字时也要带出去：分片聚合漏了它，调用方会拿到一句空话（曾经踩过）
+        if !result.text.trim().is_empty() {
+            combined.text = result.text;
+        }
     }
 
     Ok((combined, diagnostics))
@@ -577,6 +583,7 @@ async fn generate_one(
         conversation_id: state.conversation_id.clone(),
         sediment_ids: state.sediment_ids.clone(),
         file_ids: state.file_ids.clone(),
+        text: String::new(),
         sse_raw: sse.body.clone(),
         images: Vec::new(),
     };
@@ -611,10 +618,25 @@ async fn generate_one(
         )
         .await;
     }
-    if result.images.is_empty()
-        && let Some(error) = no_image_failure(state.blocked, &state.text)
-    {
-        return Err(error);
+    if result.images.is_empty() {
+        // 被审核拦下：这是真失败，带上上游原文
+        if state.blocked {
+            return Err(GenerateError::new(
+                FailureKind::ContentPolicy,
+                if state.text.trim().is_empty() {
+                    "上游判定内容不合规，未生成图片".to_string()
+                } else {
+                    state.text.trim().to_string()
+                },
+            ));
+        }
+        // 上游只回了文字（反问、要参考图、解释）：照文本模型的做法当结果返回，
+        // 不当失败 —— 调用方拿到的就是这句话，跟聊天一样。
+        let text = state.text.trim();
+        if !text.is_empty() {
+            result.text = text.to_string();
+            return Ok((result, diag));
+        }
     }
 
     // ---- 9. 兜底：SSE 结束却没图时轮询会话详情，等后到的图片 id ----
@@ -674,30 +696,7 @@ async fn probe_conversation_images(
     .await
 }
 
-/// 上游没给图时，把它「说了什么」翻成分类失败。
-///
-/// 调用方**必须已经确认没有图片资产**：出图后助手往往还会附带一段说明文字，
-/// 只看文本会把正常结果判成拒绝。
-///
-/// 判定顺序：被审核拦截 → 内容策略；有可见文本 → 请求级失败（原文带出去）；
-/// 两者都没有 → `None`，交给轮询去等后到的图片 id。
-pub(crate) fn no_image_failure(blocked: bool, text: &str) -> Option<GenerateError> {
-    let text = text.trim();
-    if blocked {
-        return Some(GenerateError::new(
-            FailureKind::ContentPolicy,
-            if text.is_empty() {
-                "上游判定内容不合规，未生成图片".to_string()
-            } else {
-                text.to_string()
-            },
-        ));
-    }
-    if text.is_empty() {
-        return None;
-    }
-    Some(GenerateError::new(FailureKind::TextReply, text.to_string()))
-}
+
 
 /// 解析下载地址并下载，成功的图片追加到 `images`。
 ///
@@ -1205,44 +1204,18 @@ mod tests {
     }
 
     #[test]
-    fn no_image_with_text_is_a_request_level_failure() {
-        // 上游只回了文本：换号没用，也不该去轮询
-        let error = no_image_failure(false, "抱歉，我无法生成这张图片。").expect("应判定失败");
-        assert_eq!(error.kind, FailureKind::TextReply);
-        assert_eq!(error.kind.code(), "upstream_text_reply");
-        assert!(error.message.contains("无法生成"), "原文要带出去：{}", error.message);
-        assert!(!error.kind.switch_account(), "文本回复不该换号");
-    }
-
-    #[test]
-    fn text_only_image_sse_classifies_as_text_reply() {
-        // 端到端串一遍：SSE 文本 → 状态 → 分类
+    fn text_only_image_sse_keeps_the_text_for_the_caller() {
+        // 上游只回文字时，这段文字就是结果：状态里要能读到，且不当作图片
         let sse = concat!(
             "data: {\"conversation_id\":\"c-1\"}\n\n",
             "data: {\"v\":{\"message\":{\"id\":\"m1\",\"author\":{\"role\":\"assistant\"},",
-            "\"content\":{\"content_type\":\"text\",\"parts\":[\"抱歉，我无法生成这张图片。\"]},",
+            "\"content\":{\"content_type\":\"text\",\"parts\":[\"请先上传你提到的参考图片。\"]},",
             "\"recipient\":\"all\",\"channel\":\"final\"}}}\n\n",
             "data: [DONE]\n\n",
         );
         let (_, state) = parse_conversation_stream(sse);
-        assert_eq!(state.text, "抱歉，我无法生成这张图片。");
-        let error = no_image_failure(state.blocked, &state.text).expect("应判成文本回复");
-        assert_eq!(error.kind, FailureKind::TextReply);
-    }
-
-    #[test]
-    fn no_image_and_no_text_falls_through_to_polling() {
-        assert!(no_image_failure(false, "").is_none());
-        assert!(no_image_failure(false, "   \n").is_none(), "空白不算文本");
-    }
-
-    #[test]
-    fn blocked_without_text_still_reports_content_policy() {
-        let error = no_image_failure(true, "").expect("应判定内容策略");
-        assert_eq!(error.kind, FailureKind::ContentPolicy);
-        let error = no_image_failure(true, "被拦截了").expect("应判定内容策略");
-        assert_eq!(error.kind, FailureKind::ContentPolicy);
-        assert_eq!(error.message, "被拦截了");
+        assert_eq!(state.text, "请先上传你提到的参考图片。");
+        assert!(state.file_ids.is_empty() && state.sediment_ids.is_empty());
     }
 
     #[test]

@@ -220,11 +220,23 @@ pub async fn generate(
         }
     }
 
+    // 上游只回了文字（反问、要参考图、解释）：照文本模型的做法把话返回给调用方，
+    // 而不是报一个「没有图片」的错。
+    let message = if items.is_empty() {
+        slots
+            .iter()
+            .map(|slot| slot.text.trim())
+            .find(|text| !text.is_empty())
+            .map(str::to_string)
+    } else {
+        None
+    };
+
     Ok(crate::image_response::ImageResponse {
         created: chrono::Utc::now().timestamp(),
         usage: gpt2apirs_core::tokens::image_usage(0, 0, output_tokens),
         items,
-        message: None,
+        message,
     }
     .into_response())
 }
