@@ -5,7 +5,8 @@
 //!
 //! `role` 必须是 assistant（否则把用户的话当回复）；
 //! `is_visually_hidden_from_conversation` 不能为 true（否则漏 system 消息）；
-//! `recipient` 必须空或 `all`（否则漏发给工具的指令）；`channel` 必须空或 `final`（否则**漏思维链**）；
+//! `recipient` 必须空或 `all`（否则漏发给工具的指令）；`channel` 必须空或 `final`（否则**漏思维链**），
+//! 生图链路例外地再接受 `commentary`（上游把拒绝理由放在那儿，见 [`TextAccumulator::with_commentary`]）；
 //! 正文必须不属于**回放的历史**（否则上一轮的回复会被当成这一轮的开头重发出去）。
 
 use serde_json::Value;
@@ -19,8 +20,17 @@ const ANNOTATION_CLOSE: char = '\u{E201}';
 /// 注解内部的分段符（U+E202）。
 const ANNOTATION_SEP: char = '\u{E202}';
 
-/// 判断某个 assistant 消息是否**面向用户**。
+/// 判断某个 assistant 消息是否**面向用户**（只看 `final` 频道）。
 pub fn is_visible_assistant_message(message: &Value) -> bool {
+    is_visible_assistant_message_with(message, false)
+}
+
+/// 同 [`is_visible_assistant_message`]，但可以额外接受 `commentary` 频道。
+///
+/// 上游把「拒绝/解释」这类话放在 `commentary` 上（实测：色情内容拒绝）。
+/// 生图链路要拿它当失败原因，所以那边放宽；文本链路仍然只认 `final`，
+/// 否则 `commentary` 里的过程话会被当成回答。
+pub fn is_visible_assistant_message_with(message: &Value, allow_commentary: bool) -> bool {
     let Some(author) = message.get("author") else {
         return false;
     };
@@ -56,7 +66,10 @@ pub fn is_visible_assistant_message(message: &Value) -> bool {
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    if !channel.is_empty() && channel != "final" {
+    let allowed = channel.is_empty()
+        || channel == "final"
+        || (allow_commentary && channel == "commentary");
+    if !allowed {
         return false;
     }
     true
@@ -336,12 +349,17 @@ pub fn apply_text_patch(event: &Value, current: &str) -> (String, bool) {
 /// 返回（候选文本, 是否整段覆盖）。先看有没有完整消息（直接取，整段覆盖），
 /// 没有再按补丁累积 —— 补丁里是否 replace 由 apply_text_patch 一并报上来。
 pub fn assistant_raw_text(event: &Value, current: &str) -> (String, bool) {
+    assistant_raw_text_with(event, current, false)
+}
+
+/// 同 [`assistant_raw_text`]，可放宽到接受 `commentary` 频道。
+fn assistant_raw_text_with(event: &Value, current: &str, allow_commentary: bool) -> (String, bool) {
     for candidate in [Some(event), event.get("v")].into_iter().flatten() {
         if !candidate.is_object() {
             continue;
         }
         if let Some(message) = candidate.get("message") {
-            if message.is_object() && is_visible_assistant_message(message) {
+            if message.is_object() && is_visible_assistant_message_with(message, allow_commentary) {
                 let text = assistant_message_text(message);
                 if !text.is_empty() {
                     return (text, true);
@@ -353,12 +371,12 @@ pub fn assistant_raw_text(event: &Value, current: &str) -> (String, bool) {
 }
 
 /// 事件里可见助手消息的 id（没有就是 None）。
-fn assistant_message_id(event: &Value) -> Option<String> {
+fn assistant_message_id(event: &Value, allow_commentary: bool) -> Option<String> {
     for candidate in [Some(event), event.get("v")].into_iter().flatten() {
         let Some(message) = candidate.get("message") else {
             continue;
         };
-        if !is_visible_assistant_message(message) {
+        if !is_visible_assistant_message_with(message, allow_commentary) {
             continue;
         }
         let id = message
@@ -401,12 +419,12 @@ impl AssistantMeta {
 }
 
 /// 取事件里可见助手消息的结构信息。
-fn assistant_meta(event: &Value) -> Option<AssistantMeta> {
+fn assistant_meta(event: &Value, allow_commentary: bool) -> Option<AssistantMeta> {
     for candidate in [Some(event), event.get("v")].into_iter().flatten() {
         let Some(message) = candidate.get("message") else {
             continue;
         };
-        if !message.is_object() || !is_visible_assistant_message(message) {
+        if !message.is_object() || !is_visible_assistant_message_with(message, allow_commentary) {
             continue;
         }
         return Some(AssistantMeta {
@@ -448,6 +466,11 @@ pub struct TextAccumulator {
     current_message_id: Option<String>,
     /// 本轮是否已经开始（锁定了本轮消息）。
     started: bool,
+    /// 是否接受 `commentary` 频道的助手消息。
+    ///
+    /// 只有生图链路需要：上游把「拒绝/解释」放在 commentary 上，
+    /// 而文本链路要它保持不可见（否则过程话会被当成回答）。
+    allow_commentary: bool,
     /// 最后一条被跳过的**终态**助手正文。
     ///
     /// 上游偶尔整条流只给一条终态回复（内容策略拒绝、极短回答），
@@ -469,6 +492,14 @@ impl TextAccumulator {
         }
     }
 
+    /// 放宽可见性：`commentary` 频道的助手消息也算数。
+    ///
+    /// 给生图链路用 —— 上游把拒绝理由放在 commentary 上。
+    pub fn with_commentary(mut self) -> Self {
+        self.allow_commentary = true;
+        self
+    }
+
     /// 喂一条 SSE payload（`data:` 后面的原文）。
     ///
     /// 返回**新增**的文本片段；没有新增返回 `None`。
@@ -487,14 +518,14 @@ impl TextAccumulator {
         };
         // 两条不同 id 的消息可能正文一模一样（模型把上一轮原样又说一遍），
         // 只看文本会把它们当成同一帧吃掉。
-        let frame_id = assistant_message_id(&event);
+        let frame_id = assistant_message_id(&event, self.allow_commentary);
         let new_message = match (&frame_id, &self.current_message_id) {
             (Some(current), Some(previous)) => current != previous,
             _ => false,
         };
 
         // 有结构信息就按结构判，没有（补丁帧 / 老形态）才回头比正文。
-        let (candidate, replaced) = match assistant_meta(&event) {
+        let (candidate, replaced) = match assistant_meta(&event, self.allow_commentary) {
             Some(meta) if meta.is_structural() => {
                 if !self.started {
                     if meta.is_terminal() {
@@ -526,7 +557,7 @@ impl TextAccumulator {
                 };
                 (text, true)
             }
-            _ => assistant_raw_text(&event, &self.raw),
+            _ => assistant_raw_text_with(&event, &self.raw, self.allow_commentary),
         };
         if candidate == self.raw && !new_message {
             return None;
@@ -947,6 +978,35 @@ mod tests {
         ));
         assert_eq!(accumulator.flush(), None, "回放不能顶替答案");
         assert_eq!(accumulator.text, "");
+    }
+
+    #[test]
+    fn commentary_refusal_is_captured_only_when_allowed() {
+        // 线上实测：色情内容拒绝挂在 commentary 上
+        let payload = json!({"v": {"message": {
+            "id": "m-refusal",
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": ["非常抱歉，该提示可能违反了关于裸露、色情或情色内容的防护限制。"]},
+            "recipient": "all",
+            "channel": "commentary",
+            "status": "finished_successfully",
+            "end_turn": true,
+        }}})
+        .to_string();
+
+        // 文本链路：commentary 不可见，正文必须为空
+        let mut text_side = TextAccumulator::new();
+        text_side.push_payload(&payload);
+        assert!(text_side.flush().is_none());
+        assert_eq!(text_side.text, "");
+
+        // 生图链路：要拿到这段拒绝理由
+        let mut image_side = TextAccumulator::new().with_commentary();
+        image_side.push_payload(&payload);
+        assert_eq!(
+            image_side.flush(),
+            Some("非常抱歉，该提示可能违反了关于裸露、色情或情色内容的防护限制。".to_string())
+        );
     }
 
     #[test]

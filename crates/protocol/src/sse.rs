@@ -280,7 +280,11 @@ pub fn iter_sse_payloads(raw: &str) -> Vec<String> {
 /// 解析整条 SSE 原始文本，返回逐事件结果与最终状态。
 ///
 pub fn parse_conversation_stream(raw: &str) -> (Vec<ConversationEvent>, ConversationState) {
-    let mut state = ConversationState::default();
+    // 生图链路要拿到上游的拒绝理由，而它挂在 `commentary` 频道上
+    let mut state = ConversationState {
+        assistant: crate::text_stream::TextAccumulator::new().with_commentary(),
+        ..ConversationState::default()
+    };
     let mut events = Vec::new();
 
     for payload in iter_sse_payloads(raw) {
