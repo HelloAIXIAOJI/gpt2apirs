@@ -118,7 +118,7 @@ OpenAI 与 Anthropic 双协议兼容，文本支持流式输出。
 
 **第一次请求报「未启用 tls feature」**：编译时缺少 `--features tls`。
 
-**编译报 `btls-sys` / BoringSSL 失败**：构建工具没齐，对着上一节的清单补。Windows 上如果报 `generator : Visual Studio xx` 不被支持，说明 VS 自带的 cmake 太老，装一份独立的 cmake 与 ninja 放到 PATH 前面。
+**编译报 `btls-sys` / BoringSSL 失败**：构建工具没齐，对着上一节的清单补。Windows 上如果报 `generator : Visual Studio xx` 不被支持（VS 自带 cmake 太老或认不出当前 VS 版本），改走 Ninja 生成器即可：把 VS 自带的 `cmake`、`ninja` 目录放进 PATH，再设 `CMAKE_GENERATOR=Ninja`；bindgen 找不到 libclang 时设 `LIBCLANG_PATH=<LLVM 的 bin>`。
 
 **启动报 `DATABASE_URL` 缺失**：`.env` 不在可执行文件同目录。
 
