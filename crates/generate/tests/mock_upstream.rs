@@ -27,6 +27,7 @@ use gpt2apirs_testkit::{CONVERSATION_ID, REPLY_TEXT, spawn};
 #[tokio::test]
 async fn text_generation_runs_against_local_mock() {
     let mock = spawn().await;
+    let _serial = gpt2apirs_testkit::inject(gpt2apirs_testkit::Fault::Healthy).await;
     assert_eq!(
         gpt2apirs_protocol::endpoints::base_url(),
         mock.base(),
@@ -60,4 +61,47 @@ async fn text_generation_runs_against_local_mock() {
         "应请求过会话端点，实际收到 {:?}",
         mock.hits()
     );
+}
+
+/// 线上真实形态：历史里两条助手消息，上游只回放后一条。
+///
+/// 按顺序匹配会错位（以为该回第一条），把后一条当成正文吐出去 ——
+/// 用户看到的就是「新一轮回答的开头重复了上一轮」。
+#[tokio::test]
+async fn replaying_only_the_last_history_turn_does_not_leak() {
+    let mock = spawn().await;
+    let _fault =
+        gpt2apirs_testkit::inject(gpt2apirs_testkit::Fault::TextEchoLastOnly).await;
+
+    let client = Client::new(ClientOptions::default()).expect("客户端");
+    let first = "第一轮的回答-不要出现在第二轮里";
+    let second = "第二轮的答案-也不该出现在第三轮里";
+    let mut request = TextRequest::new(String::new()).with_messages(vec![
+        ("user".to_string(), "第一问".to_string()),
+        ("assistant".to_string(), first.to_string()),
+        ("user".to_string(), "第二问".to_string()),
+        ("assistant".to_string(), second.to_string()),
+        ("user".to_string(), "第三问".to_string()),
+    ]);
+    request.upstream_model = models::upstream_model_for(models::DEFAULT_TEXT_MODEL).to_string();
+
+    let deadline = Deadline::after(Duration::from_secs(30));
+    let (result, _diag) = generate_text(&client, "mock-token", &request, deadline)
+        .await
+        .expect("mock 上游下文本链路应成功");
+
+    assert_eq!(result.text, REPLY_TEXT, "正文应只剩本轮答案");
+    for leaked in [first, second] {
+        assert!(
+            !result.text.contains(leaked),
+            "正文里不该出现历史：{leaked}\n实际：{}",
+            result.text
+        );
+        assert!(
+            !result.deltas.concat().contains(leaked),
+            "流式增量里不该出现历史：{leaked}\n实际：{:?}",
+            result.deltas
+        );
+    }
+    assert!(mock.saw("/backend-api/f/conversation"));
 }

@@ -90,75 +90,112 @@ pub fn assistant_message_text(message: &Value) -> String {
 
 /// 上游的历史回放。
 ///
-/// 我们发上去的每条助手消息，上游在开始本轮生成前都会按顺序重发一遍。
+/// 上游在开始本轮生成前，会把历史里的助手正文重发一遍，但**不代表每条都发**：
+/// 实测同一串历史里两条助手消息，只回了后一条。所以这里按「集合」匹配，
+/// 不按顺序 —— 任何一条还没吃掉的历史正文出现，都算回放。
+///
 /// 这些帧是**上一轮的话**，不是本轮输出，必须整条吃掉，否则流式客户端会
-/// 看到上一轮的回复被原样重复（非流式看不见：最终值被后续帧覆盖了）。
+/// 看到上一轮的回复被原样重复（非流式看不见：最终值被后续帧覆盖）。
 #[derive(Debug, Clone, Default)]
 pub struct HistoryEcho {
-    /// 已知的历史助手正文，按发送顺序。
-    texts: Vec<String>,
-    /// 已经吃掉的历史条数。
-    consumed: usize,
+    /// 还没吃掉的历史正文。
+    pending: Vec<String>,
+    /// 已经吃掉的。累积形态下它们还留在文本前端，要能重新越过。
+    consumed: Vec<String>,
 }
 
 impl HistoryEcho {
     /// 用历史助手正文构造（空正文不参与匹配）。
     pub fn new(texts: impl IntoIterator<Item = String>) -> Self {
         Self {
-            texts: texts
+            pending: texts
                 .into_iter()
                 .filter(|text| !text.trim().is_empty())
                 .collect(),
-            consumed: 0,
+            consumed: Vec::new(),
         }
+    }
+
+    /// 这段正文是不是还没吃掉的历史。
+    fn knows(&self, text: &str) -> bool {
+        self.pending.iter().any(|known| known == text)
+    }
+
+    /// 精确吃掉某条历史（结构判定已经确认它是回放时记账用）。
+    fn consume_exact(&mut self, text: &str) {
+        if let Some(index) = self.pending.iter().position(|known| known == text) {
+            let known = self.pending.remove(index);
+            self.consumed.push(known);
+        }
+    }
+
+    /// 吃掉候选前端的**最长**一条待吃历史；吃完返回剩余部分。
+    fn eat_longest(&mut self, candidate: &str) -> Option<String> {
+        let mut best: Option<(usize, usize)> = None;
+        for (index, known) in self.pending.iter().enumerate() {
+            if !candidate.starts_with(known.as_str()) {
+                continue;
+            }
+            let better = match best {
+                Some((_, len)) => known.len() > len,
+                None => true,
+            };
+            if better {
+                best = Some((index, known.len()));
+            }
+        }
+        let (index, len) = best?;
+        let known = self.pending.remove(index);
+        self.consumed.push(known);
+        Some(candidate[len..].to_string())
     }
 
     /// 候选是**整段新消息**（完整消息对象，或带 replace 的补丁）时使用。
     ///
-    /// 只跟「下一条还没吃掉的历史」比：回放一帧吃一条，
-    /// 吃完之后同样的文本就是模型真的又回答了一遍，不能再吃。
+    /// 吃过的就不再吃：吃完之后同样的文本就是模型真的又回答了一遍。
     fn strip_fresh(&mut self, candidate: &str) -> String {
-        let mut rest = candidate;
-        while let Some(known) = self.texts.get(self.consumed) {
-            let Some(tail) = rest.strip_prefix(known.as_str()) else {
-                break;
-            };
-            self.consumed += 1;
+        let mut rest = candidate.to_string();
+        while let Some(tail) = self.eat_longest(&rest) {
             rest = tail;
         }
-        rest.to_string()
+        rest
+    }
+
+    /// 只越过**已经吃掉**的历史：累积文本里它们还留在前端。
+    fn strip_consumed_only(&mut self, candidate: &str) -> String {
+        let mut rest = candidate.to_string();
+        loop {
+            let before = rest.clone();
+            for known in &self.consumed {
+                if let Some(tail) = rest.strip_prefix(known.as_str()) {
+                    rest = tail.to_string();
+                    break;
+                }
+            }
+            if rest == before {
+                break;
+            }
+        }
+        rest
     }
 
     /// 候选是**累积增长**的（append 补丁）时使用。
     ///
-    /// 累积文本里已经吃掉的历史仍留在前端，要重新越过它再往下吃。
+    /// 累积文本里已经吃掉的历史仍留在前端，要反复越过再往下吃。
     fn strip_growing(&mut self, candidate: &str) -> String {
-        let mut rest = candidate;
-        for known in &self.texts[..self.consumed] {
-            let Some(tail) = rest.strip_prefix(known.as_str()) else {
-                break;
-            };
+        let mut rest = self.strip_consumed_only(candidate);
+        while let Some(tail) = self.eat_longest(&rest) {
             rest = tail;
         }
-        let mut consumed = self.consumed;
-        while let Some(known) = self.texts.get(consumed) {
-            if let Some(tail) = rest.strip_prefix(known.as_str()) {
-                consumed += 1;
-                rest = tail;
-                continue;
-            }
-            // 半截历史（回放被切成几帧）：先压住不吐，等下一帧补全再判。
-            // 累积文本只增不减，压住不会丢内容。
-            if known.starts_with(rest) {
-                self.consumed = consumed;
-                return String::new();
-            }
-            break;
+        // 半截回放（被切成几帧）：先压住不吐，等下一帧补全再判。
+        // 累积文本只增不减，压住不会丢内容。
+        if !rest.is_empty() && self.pending.iter().any(|known| known.starts_with(&rest)) {
+            return String::new();
         }
-        self.consumed = consumed;
-        rest.to_string()
+        rest
     }
 }
+
 
 /// 从多轮消息里取出会被上游回放的助手正文（按顺序）。
 ///
@@ -336,6 +373,62 @@ fn assistant_message_id(event: &Value) -> Option<String> {
     None
 }
 
+/// 一条可见助手消息的结构信息。
+///
+/// 判定「这帧是不是本轮的」靠它，而不是靠正文比对 ——
+/// 回放帧是终态（`finished_successfully` / `end_turn`），本轮帧先非终态后终态。
+struct AssistantMeta {
+    /// 消息 id。
+    id: String,
+    /// 上游给的状态串（`in_progress` / `finished_successfully` …），可能为空。
+    status: String,
+    /// `end_turn` 字段（只有 true 有意义）。
+    end_turn: Option<bool>,
+    /// 正文。
+    text: String,
+}
+
+impl AssistantMeta {
+    /// 有没有可用的结构信息；两者都缺就只能靠正文猜。
+    fn is_structural(&self) -> bool {
+        !self.status.is_empty() || self.end_turn.is_some()
+    }
+
+    /// 是否终态（回放帧、或整条流唯一的那条回复）。
+    fn is_terminal(&self) -> bool {
+        self.end_turn == Some(true) || self.status.starts_with("finished")
+    }
+}
+
+/// 取事件里可见助手消息的结构信息。
+fn assistant_meta(event: &Value) -> Option<AssistantMeta> {
+    for candidate in [Some(event), event.get("v")].into_iter().flatten() {
+        let Some(message) = candidate.get("message") else {
+            continue;
+        };
+        if !message.is_object() || !is_visible_assistant_message(message) {
+            continue;
+        }
+        return Some(AssistantMeta {
+            id: message
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            status: message
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            end_turn: message.get("end_turn").and_then(Value::as_bool),
+            text: assistant_message_text(message),
+        });
+    }
+    None
+}
+
 /// 文本累积器：喂 SSE 事件，吐出增量。
 #[derive(Debug, Default, Clone)]
 pub struct TextAccumulator {
@@ -347,12 +440,19 @@ pub struct TextAccumulator {
     pub conversation_id: String,
     /// 是否见过 DONE。
     pub done: bool,
-    /// 上游历史回放的判定器。
+    /// 上游历史回放的判定器（**兜底**：帧里没有结构信息时才用）。
     echo: HistoryEcho,
-    /// 上一条可见助手消息的 id：用来区分「同一帧重复」和「新的一条消息」。
-    last_message_id: Option<String>,
-    /// 本轮是否已经开始（出现过真内容）。开始之后新消息帧不再做历史剥离。
+    /// 上一条可见助手消息的 id。
+    ///
+    /// 结构判定用它锁定「本轮那条消息」；文本兜底用它区分「同一帧重复」和「新的一条消息」。
+    current_message_id: Option<String>,
+    /// 本轮是否已经开始（锁定了本轮消息）。
     started: bool,
+    /// 最后一条被跳过的**终态**助手正文。
+    ///
+    /// 上游偶尔整条流只给一条终态回复（内容策略拒绝、极短回答），
+    /// 那时不会出现非终态帧；整条流没正文时拿它兜底，别把回复丢成空。
+    last_terminal_text: String,
 }
 
 impl TextAccumulator {
@@ -387,12 +487,47 @@ impl TextAccumulator {
         };
         // 两条不同 id 的消息可能正文一模一样（模型把上一轮原样又说一遍），
         // 只看文本会把它们当成同一帧吃掉。
-        let message_id = assistant_message_id(&event);
-        let new_message = match (&message_id, &self.last_message_id) {
+        let frame_id = assistant_message_id(&event);
+        let new_message = match (&frame_id, &self.current_message_id) {
             (Some(current), Some(previous)) => current != previous,
             _ => false,
         };
-        let (candidate, replaced) = assistant_raw_text(&event, &self.raw);
+
+        // 有结构信息就按结构判，没有（补丁帧 / 老形态）才回头比正文。
+        let (candidate, replaced) = match assistant_meta(&event) {
+            Some(meta) if meta.is_structural() => {
+                if !self.started {
+                    if meta.is_terminal() {
+                        // 本轮开始之前的终态帧 = 历史回放。
+                        // 只有「整条流就这么一条终态回复」才留着兜底，不能让回放顶替答案。
+                        if self.echo.knows(&meta.text) {
+                            self.echo.consume_exact(&meta.text);
+                        } else if !meta.text.trim().is_empty() {
+                            self.last_terminal_text = meta.text.clone();
+                        }
+                        return None;
+                    }
+                    // 第一条非终态消息 = 本轮开始，锁定它的 id
+                    self.started = true;
+                    if !meta.id.is_empty() {
+                        self.current_message_id = Some(meta.id.clone());
+                    }
+                } else if let Some(current) = &self.current_message_id
+                    && !meta.id.is_empty()
+                    && *current != meta.id
+                {
+                    // 本轮已锁定另一条消息：并发分支或迟到的回放，整帧丢弃
+                    return None;
+                }
+                let text = if meta.text.is_empty() {
+                    self.raw.clone()
+                } else {
+                    meta.text.clone()
+                };
+                (text, true)
+            }
+            _ => assistant_raw_text(&event, &self.raw),
+        };
         if candidate == self.raw && !new_message {
             return None;
         }
@@ -402,7 +537,10 @@ impl TextAccumulator {
         let rest = match (replaced, self.started) {
             (true, false) => self.echo.strip_fresh(&candidate),
             (true, true) => candidate.clone(),
-            (false, _) => self.echo.strip_growing(&candidate),
+            // 累积形态：本轮开始前连「疑似半截」一起压住；开始后只越过已吃掉的历史，
+            // 免得把已经发出去的内容又压回去
+            (false, false) => self.echo.strip_growing(&candidate),
+            (false, true) => self.echo.strip_consumed_only(&candidate),
         };
         let next_text = sanitize_output_text(&rest);
         let delta = if next_text.starts_with(&self.text) {
@@ -415,14 +553,31 @@ impl TextAccumulator {
         if !self.started && !self.text.is_empty() {
             self.started = true;
         }
-        if message_id.is_some() {
-            self.last_message_id = message_id;
+        if frame_id.is_some() {
+            self.current_message_id = frame_id;
         }
         if delta.is_empty() {
             None
         } else {
             Some(delta)
         }
+    }
+
+    /// 收尾：整条流没见到本轮正文时，用最后一条终态回复兜底。
+    ///
+    /// 上游偶尔整条流只给一条终态消息（拒绝、极短回答）。结构判定会把它当回放跳过，
+    /// 这时没正文，只能认它 —— 但前提是它不是历史（历史在跳过时已经记成回放了）。
+    pub fn flush(&mut self) -> Option<String> {
+        if !self.text.is_empty() || self.last_terminal_text.is_empty() {
+            return None;
+        }
+        let text = sanitize_output_text(&self.last_terminal_text);
+        if text.is_empty() {
+            return None;
+        }
+        self.text = text.clone();
+        self.raw = text.clone();
+        Some(text)
     }
 
     /// 一次性吃掉整段 SSE 文本。
@@ -456,7 +611,10 @@ fn find_conversation_id(payload: &str) -> Option<String> {
 /// 便捷函数：整段 SSE  (文本, conversation_id, 增量序列)。
 pub fn collect_text(raw_sse: &str, history: &[String]) -> (String, String, Vec<String>) {
     let mut accumulator = TextAccumulator::with_history(history.to_vec());
-    let deltas = accumulator.push_raw_sse(raw_sse);
+    let mut deltas = accumulator.push_raw_sse(raw_sse);
+    if let Some(tail) = accumulator.flush() {
+        deltas.push(tail);
+    }
     (accumulator.text, accumulator.conversation_id, deltas)
 }
 
@@ -550,6 +708,39 @@ mod tests {
             accumulator.push_payload(&assistant_message("第三答").to_string()),
             Some("第三答".to_string())
         );
+    }
+
+    #[test]
+    fn echo_of_only_the_last_history_turn_is_dropped() {
+        // 线上真实情况：历史里两条助手消息，上游只回了后一条。
+        // 按顺序匹配会在这里错位，把后一条当成正文吐出去。
+        let mut accumulator =
+            TextAccumulator::with_history(vec!["第一轮的回答".to_string(), "第二轮的答案".to_string()]);
+        assert_eq!(
+            accumulator.push_payload(&assistant_message("第二轮的答案").to_string()),
+            None
+        );
+        assert_eq!(accumulator.text, "");
+        assert_eq!(
+            accumulator.push_payload(&assistant_message("这轮的新答案").to_string()),
+            Some("这轮的新答案".to_string())
+        );
+        assert_eq!(accumulator.text, "这轮的新答案");
+    }
+
+    #[test]
+    fn echo_out_of_order_is_dropped() {
+        // 回放顺序也不可靠：两条都回了但顺序相反，同样不能漏
+        let mut accumulator =
+            TextAccumulator::with_history(vec!["先的回答".to_string(), "后的答案".to_string()]);
+        for replay in ["后的答案", "先的回答"] {
+            assert_eq!(
+                accumulator.push_payload(&assistant_message(replay).to_string()),
+                None,
+                "回放 {replay} 不该漏出去"
+            );
+        }
+        assert_eq!(accumulator.text, "");
     }
 
     #[test]
@@ -666,14 +857,96 @@ mod tests {
     }
 
     #[test]
-    fn real_multiturn_stream_without_history_repeats_the_previous_turn() {
-        // 这条锁住「必须带 history」：不带的话非流式看着正常，流式会重复上一轮。
+    fn real_multiturn_stream_drops_replay_even_without_history() {
+        // 回放帧是终态（finished_successfully），结构判定直接跳过 ——
+        // 不依赖把历史传进来比对正文。
         let (text, _, deltas) = collect_text(real_multiturn_sse(), &[]);
-        assert!(!text.contains("MARKER_PREV_REPLY_ALPHA"), "非流式：后续帧把回放覆盖了");
+        assert_eq!(text, "我叫小暖，很高兴再次和你聊天！");
         assert!(
-            deltas.concat().starts_with("MARKER_PREV_REPLY_ALPHA"),
-            "流式增量里确实会重复：{deltas:?}"
+            !deltas.concat().contains("MARKER_PREV_REPLY_ALPHA"),
+            "流式增量里不该出现回放：{deltas:?}"
         );
+    }
+
+    /// 带结构信息的助手消息帧。
+    fn assistant_message_with_status(id: &str, status: &str, text: &str) -> String {
+        json!({"v": {"message": {
+            "id": id,
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": [text]},
+            "recipient": "all",
+            "channel": "final",
+            "status": status,
+        }}})
+        .to_string()
+    }
+
+    #[test]
+    fn terminal_replay_is_dropped_by_structure_alone() {
+        // 不传任何历史：只靠 status 就能认出回放
+        let mut accumulator = TextAccumulator::new();
+        assert_eq!(
+            accumulator.push_payload(&assistant_message_with_status(
+                "m-old",
+                "finished_successfully",
+                "上一轮的回答"
+            )),
+            None
+        );
+        assert_eq!(accumulator.text, "");
+        assert_eq!(
+            accumulator.push_payload(&assistant_message_with_status(
+                "m-new",
+                "in_progress",
+                "这轮的回答"
+            )),
+            Some("这轮的回答".to_string())
+        );
+        assert_eq!(accumulator.text, "这轮的回答");
+    }
+
+    #[test]
+    fn locked_message_id_rejects_late_or_concurrent_messages() {
+        let mut accumulator = TextAccumulator::new();
+        assert_eq!(
+            accumulator.push_payload(&assistant_message_with_status("m-new", "in_progress", "本轮")),
+            Some("本轮".to_string())
+        );
+        // 锁定之后再来的别的消息（并发分支、迟到回放）整帧丢掉
+        assert_eq!(
+            accumulator.push_payload(&assistant_message_with_status("m-other", "in_progress", "别处")),
+            None
+        );
+        assert_eq!(accumulator.text, "本轮");
+    }
+
+    #[test]
+    fn terminal_only_stream_is_used_as_the_answer() {
+        // 上游整条流只给一条终态回复（拒绝、极短回答）：不能丢成空
+        let mut accumulator = TextAccumulator::new();
+        assert_eq!(
+            accumulator.push_payload(&assistant_message_with_status(
+                "m-only",
+                "finished_successfully",
+                "抱歉，这个我不能做。"
+            )),
+            None
+        );
+        assert_eq!(accumulator.flush(), Some("抱歉，这个我不能做。".to_string()));
+        assert_eq!(accumulator.text, "抱歉，这个我不能做。");
+    }
+
+    #[test]
+    fn terminal_replay_is_not_resurrected_as_the_answer() {
+        // 终态帧如果是历史回放，兜底也不能把它当答案
+        let mut accumulator = TextAccumulator::with_history(vec!["上一轮的回答".to_string()]);
+        accumulator.push_payload(&assistant_message_with_status(
+            "m-old",
+            "finished_successfully",
+            "上一轮的回答",
+        ));
+        assert_eq!(accumulator.flush(), None, "回放不能顶替答案");
+        assert_eq!(accumulator.text, "");
     }
 
     #[test]

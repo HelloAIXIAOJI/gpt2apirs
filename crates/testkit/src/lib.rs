@@ -143,6 +143,45 @@ fn image_text_only_sse() -> String {
     )
 }
 
+/// 文本会话的真实回放形态：只把**最后一条**助手历史重发一遍，再吐答案。
+fn text_echo_last_only_sse(request_body: &str) -> String {
+    let last_assistant = serde_json::from_str::<serde_json::Value>(request_body)
+        .ok()
+        .and_then(|value| value.get("messages").and_then(|m| m.as_array()).cloned())
+        .and_then(|messages| {
+            messages
+                .into_iter()
+                .rev()
+                .find(|message| message["author"]["role"] == "assistant")
+        })
+        .and_then(|message| message["content"]["parts"][0].as_str().map(str::to_string))
+        .unwrap_or_default();
+    // 回放帧：终态。答案帧：非终态（线上就是这个形状）
+    let echo = serde_json::json!({
+        "v": {"message": {
+            "id": "mock-echo",
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": [last_assistant]},
+            "recipient": "all",
+            "channel": "final",
+            "status": "finished_successfully",
+            "end_turn": true,
+        }}
+    });
+    let answer = serde_json::json!({
+        "v": {"message": {
+            "id": "mock-answer",
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": [REPLY_TEXT]},
+            "recipient": "all",
+            "channel": "final",
+            "status": "in_progress",
+            "end_turn": false,
+        }}
+    });
+    format!("data: {echo}\n\ndata: {answer}\n\ndata: [DONE]\n\n")
+}
+
 /// 会话详情：assistant 消息里带着图片指针。
 fn conversation_detail_with_image() -> String {
     serde_json::json!({
@@ -189,7 +228,8 @@ async fn handle(
     let bytes = axum::body::to_bytes(body, 1024 * 1024).await.unwrap_or_default();
     let text = String::from_utf8_lossy(&bytes).to_string();
     if let Ok(mut guard) = hits.lock() {
-        guard.push((path.clone(), text));
+        // 后面按故障构造响应时还要用 `text`（从请求体里取历史），所以这里克隆一份
+        guard.push((path.clone(), text.clone()));
     }
     let request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     // 「前 N 次失败」要在路由之前判定：每次命中消耗一次配额
@@ -244,6 +284,7 @@ async fn handle(
             // 图片链路一定带 conduit token，文本链路一定不带
             let is_image = request.headers().contains_key("x-conduit-token");
             let body = match (is_image, current_fault()) {
+                (false, Some(Fault::TextEchoLastOnly)) => text_echo_last_only_sse(&text),
                 (false, _) => CONVERSATION_SSE.to_string(),
                 // 两种「只回文本」故障的 SSE 形态相同，区别只在会话详情里有没有图
                 (true, Some(Fault::ImageTextOnly | Fault::ImageTextOnlyWithDetailImage)) => {
@@ -313,6 +354,10 @@ pub enum Fault {
     TruncateSse(usize),
     /// 图片会话只回助手文本、不给任何图片指针（上游拒绝或解释）。
     ImageTextOnly,
+    /// 文本会话只回放**最后一条**助手历史，然后才吐本轮答案。
+    ///
+    /// 线上实测就是这个形态：历史里有两条助手消息，上游只回了后一条。
+    TextEchoLastOnly,
     /// 图片会话 SSE 只有文本，但会话详情里其实有图。
     ///
     /// 用来说明「没图」必须真的确认过，不能看 SSE 里没有指针就判拒绝。

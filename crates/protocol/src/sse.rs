@@ -310,6 +310,12 @@ pub fn parse_conversation_stream(raw: &str) -> (Vec<ConversationEvent>, Conversa
         });
     }
 
+    // 收尾：整条流只有一条终态回复（拒绝/极短回答）时它被结构判定跳过了，
+    // 到这里才认 —— 否则生图链路会拿不到那段拒绝理由。
+    if state.assistant.flush().is_some() {
+        state.text = state.assistant.text.clone();
+    }
+
     (events, state)
 }
 

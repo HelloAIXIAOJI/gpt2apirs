@@ -432,6 +432,10 @@ pub async fn generate_text_stream(
                             state.pending.push_back(delta);
                         }
                     }
+                    // 整条流只给了一条终态回复（拒绝、极短回答）时，这时才认它
+                    if let Some(tail) = state.accumulator.flush() {
+                        state.pending.push_back(tail);
+                    }
                     {
                         let mut guard = state.snapshot.lock().unwrap_or_else(|p| p.into_inner());
                         guard.text = state.accumulator.text.clone();
