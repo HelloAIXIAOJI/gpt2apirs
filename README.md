@@ -28,18 +28,18 @@
 
 ## 快速开始
 
-需要 Rust（2024 edition）、PostgreSQL，以及编译 BoringSSL 的工具链：
+需要 Rust（2024 edition）与 PostgreSQL。`--features tls` 会编译 BoringSSL，还要一套构建工具：
 
 - Linux：`cmake ninja-build nasm perl pkg-config libclang-dev`
-- macOS：`brew install cmake ninja nasm`（perl 与 clang 随 Xcode 命令行工具）
-- Windows：VS「使用 C++ 的桌面开发」+ `cmake`、`ninja`、`nasm`，并把它们放进 PATH
+- macOS：`brew install cmake ninja nasm`
+- Windows：VS「使用 C++ 的桌面开发」+ `choco install nasm`；装了 LLVM 时把 `LIBCLANG_PATH` 指到它的 `bin`
 
 不想自己编 BoringSSL 的话，直接用 [Releases](https://github.com/HelloAIXIAOJI/gpt2apirs/releases) 里的二进制。
 
 ```bash
 git clone https://github.com/HelloAIXIAOJI/gpt2apirs && cd gpt2apirs
 cp .env.example .env               # 填 DATABASE_URL 与 ADMIN_KEY
-cargo build --release --features tls
+cargo build --locked --release --features tls -p gpt2apirs-cli
 ./target/release/gpt2apirs
 ```
 
@@ -126,11 +126,30 @@ OpenAI 与 Anthropic 双协议兼容，文本支持流式输出。
 
 ## 本地开发
 
+CI 的测试任务不含 `tls`，跑的是存根客户端，所以下面两条不需要 BoringSSL 工具链：
+
 ```bash
 cargo test --workspace
 cargo check --workspace --all-targets
+```
+
+要连真实上游的检查再开 `tls`（必须先装好上一节那套工具链）：
+
+```bash
 cargo check --workspace --all-features --all-targets
 ```
+
+`*_live` 用例没有 `DATABASE_URL` 会自动跳过，有的话会打真实上游。CI 另外用 `RUSTFLAGS=-D warnings`，本地建议同样设上。
+
+## 发布构建
+
+GH Actions 按 `linux-x86_64`、`linux-aarch64`（release + debug）与 `windows-x86_64`（release）各编一份，命令就是：
+
+```bash
+cargo build --locked --release --features tls -p gpt2apirs-cli
+```
+
+debug 包另设 `CARGO_PROFILE_DEV_DEBUG=0` 去掉调试符号，体积从 GB 级降到百 MB 级。
 ## 社区
 
 [Linux.DO](https://linux.do/) 是世界上最大的中文技术社区。
