@@ -403,7 +403,9 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     })
     .flatten();
 
-    Sse::new(head.chain(body).chain(tail)).into_response()
+    Sse::new(head.chain(body).chain(tail))
+        .keep_alive(super::sse_keep_alive())
+        .into_response()
 }
 
 /// 组一条 SSE 事件：Anthropic 用 `event:` 字段区分类型。

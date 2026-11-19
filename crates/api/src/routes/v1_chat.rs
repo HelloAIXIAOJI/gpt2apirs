@@ -419,7 +419,9 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
         Ok::<_, std::convert::Infallible>(Event::default().data("[DONE]"))
     });
 
-    Sse::new(head.chain(body).chain(tail).chain(done)).into_response()
+    Sse::new(head.chain(body).chain(tail).chain(done))
+        .keep_alive(super::sse_keep_alive())
+        .into_response()
 }
 
 fn chunk_payload(
@@ -441,4 +443,68 @@ fn chunk_payload(
         payload["usage"] = usage;
     }
     payload.to_string()
+}
+
+#[cfg(test)]
+mod keepalive_tests {
+    use super::*;
+    use std::time::Duration;
+
+    use futures_util::StreamExt;
+
+    /// 思考期没有可见文本时，必须每隔两秒发一次心跳注释帧。
+    ///
+    /// 线上表现：上游思考约 10 秒，我们一个字节都不发 → 客户端当成卡死，
+    /// 中间的代理还会攒包，首字节被推到十几秒。
+    #[tokio::test]
+    async fn idle_stream_emits_keep_alive_comments() {
+        let (sender, handle) = crate::routes::test_support::channel_handle();
+        let mut body = build_live_stream(handle, "text").into_body().into_data_stream();
+
+        // 第一块是 role 块，立刻就得到
+        let first = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("role 块应立刻到达")
+            .expect("应有数据")
+            .expect("读块失败");
+        let first = String::from_utf8_lossy(&first).to_string();
+        assert!(first.contains("\"role\":\"assistant\""), "首块应是 role：{first}");
+
+        // 之后不喂任何 delta：2 秒后应收到心跳
+        let next = tokio::time::timeout(Duration::from_secs(4), body.next())
+            .await
+            .expect("空闲 2 秒后应有心跳")
+            .expect("应有数据")
+            .expect("读块失败");
+        let next = String::from_utf8_lossy(&next).to_string();
+        assert!(next.contains(": keepalive"), "应是心跳注释帧：{next}");
+
+        drop(sender);
+    }
+
+    /// 有真实增量时不该插心跳：正文旁边只允许出现自己的事件。
+    #[tokio::test]
+    async fn streaming_deltas_do_not_trigger_keep_alive() {
+        let (sender, handle) = crate::routes::test_support::channel_handle();
+        sender.send(Ok("第一段".to_string())).await.ok();
+        let mut body = build_live_stream(handle, "text").into_body().into_data_stream();
+
+        let first = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("role 块")
+            .expect("应有数据")
+            .expect("读块失败");
+        assert!(String::from_utf8_lossy(&first).contains("assistant"));
+
+        let second = tokio::time::timeout(Duration::from_secs(1), body.next())
+            .await
+            .expect("正文块")
+            .expect("应有数据")
+            .expect("读块失败");
+        let second = String::from_utf8_lossy(&second).to_string();
+        assert!(second.contains("第一段"), "第二块应是正文：{second}");
+        assert!(!second.contains("keepalive"), "有内容时不该插心跳：{second}");
+
+        drop(sender);
+    }
 }
