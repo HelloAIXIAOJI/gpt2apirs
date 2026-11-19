@@ -1782,7 +1782,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-account"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1806,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "askama",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1866,7 +1866,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1890,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-generate"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-http"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -1933,7 +1933,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-proxy-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-storage"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1981,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "gpt2apirs-testkit"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "gpt2apirs-protocol",
