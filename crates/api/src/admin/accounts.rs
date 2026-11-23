@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use askama::Template;
 use axum::Form;
+use chrono::{DateTime, Utc};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -44,6 +45,9 @@ pub struct Filters {
     /// 要跟踪的后台操作 ID。
     #[serde(default)]
     pub op: String,
+    /// 批量作用域（只给作用域预估用）。
+    #[serde(default)]
+    pub scope: String,
 }
 
 impl Filters {
@@ -142,6 +146,67 @@ pub struct BatchForm {
     pub ids: Vec<Uuid>,
     /// 动作名。
     pub action: String,
+    /// 作用域：`selected`（勾选的）/ `filtered`（按当前筛选）/ `all`（全部）。
+    #[serde(default)]
+    pub scope: String,
+    /// 当前筛选（作用域为 filtered 时用）。
+    #[serde(default)]
+    pub status: String,
+    /// 当前筛选：套餐。
+    #[serde(default)]
+    pub plan: String,
+    /// 当前筛选：关键词。
+    #[serde(default)]
+    pub keyword: String,
+}
+
+impl BatchForm {
+    fn filters(&self) -> Filters {
+        Filters {
+            status: self.status.clone(),
+            plan: self.plan.clone(),
+            keyword: self.keyword.clone(),
+            ..Filters::default()
+        }
+    }
+}
+
+/// 按作用域解析真正要操作的账号。
+async fn scope_ids(
+    state: &AppState,
+    form: &BatchForm,
+    forced_status: Option<&str>,
+) -> Result<Vec<Uuid>, String> {
+    let repo = AccountRepo::new(state.db.clone());
+    match form.scope.as_str() {
+        "all" => Ok(repo
+            .list_all()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|account| match forced_status {
+                Some(status) => account.status.as_str() == status,
+                None => true,
+            })
+            .map(|account| account.id)
+            .collect()),
+        "filtered" => {
+            let mut filters = form.filters();
+            if let Some(status) = forced_status {
+                filters.status = status.to_string();
+            }
+            // 显式大上限：作用域是「全部符合条件的」，不能被默认页大小截断
+            let filter = filters.to_filter(0, 100_000);
+            Ok(repo
+                .list(&filter)
+                .await
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .map(|account| account.id)
+                .collect())
+        }
+        _ => Ok(form.ids.clone()),
+    }
 }
 
 /// `POST /accounts/batch`
@@ -153,8 +218,33 @@ pub async fn batch(
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    let form = batch_form(&body);
-    let ids = form.ids.clone();
+    let mut form = batch_form(&body);
+    // 两个一键动作先归一成普通动作 + 固定作用域
+    match form.action.as_str() {
+        "sync_all" => {
+            form.action = "sync".to_string();
+            form.scope = "all".to_string();
+        }
+        "remove_abnormal" => {
+            form.action = "delete".to_string();
+            if form.scope.is_empty() || form.scope == "selected" {
+                form.scope = "filtered".to_string();
+            }
+            form.status = "abnormal".to_string();
+        }
+        _ => {}
+    }
+    if form.scope.is_empty() {
+        form.scope = "selected".to_string();
+    }
+    let forced_status = (form.action == "delete" && form.status == "abnormal").then_some("abnormal");
+    let ids = match scope_ids(&state, &form, forced_status).await {
+        Ok(ids) => ids,
+        Err(error) => return redirect_with_flash("/accounts", &format!("解析作用域失败：{error}")),
+    };
+    if ids.is_empty() && matches!(form.action.as_str(), "delete" | "enable" | "disable" | "export") {
+        return redirect_with_flash("/accounts", "没有符合条件的目标账号");
+    }
     match form.action.as_str() {
         "sync" => match crate::routes::accounts::sync_accounts(
             State(state.clone()),
@@ -270,6 +360,10 @@ fn batch_form(body: &str) -> BatchForm {
     let mut form = BatchForm {
         ids: Vec::new(),
         action: String::new(),
+        scope: String::new(),
+        status: String::new(),
+        plan: String::new(),
+        keyword: String::new(),
     };
     for (key, value) in super::parse_form_pairs(body) {
         match key.as_str() {
@@ -279,10 +373,71 @@ fn batch_form(body: &str) -> BatchForm {
                 }
             }
             "action" => form.action = value,
+            "scope" => form.scope = value,
+            "status" => form.status = value,
+            "plan" => form.plan = value,
+            "keyword" => form.keyword = value,
             _ => {}
         }
     }
     form
+}
+
+/// 把剩余时间说成人话（列表里只放得下一小段）。
+fn humanize_duration(left: chrono::Duration) -> String {
+    let minutes = left.num_minutes();
+    if minutes < 1 {
+        return "不到 1 分钟".to_string();
+    }
+    if minutes < 60 {
+        return format!("{minutes} 分钟");
+    }
+    let hours = minutes / 60;
+    let rest = minutes % 60;
+    if hours < 24 {
+        return if rest == 0 {
+            format!("{hours} 小时")
+        } else {
+            format!("{hours} 小时 {rest} 分")
+        };
+    }
+    format!("{} 天 {} 小时", hours / 24, hours % 24)
+}
+
+/// `GET /accounts/bulk/preview` —— 批量操作会命中多少账号（页面上的预估）。
+///
+/// 只回一句 HTML 片段：作用域 + 当前筛选一起决定命中数，切换下拉时 htmx 直接换掉它。
+pub async fn bulk_preview(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(filters): Query<Filters>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let scope = if filters.scope.is_empty() {
+        "selected".to_string()
+    } else {
+        filters.scope.clone()
+    };
+    let repo = AccountRepo::new(state.db.clone());
+    let count = match scope.as_str() {
+        "all" => repo.list_all().await.map(|items| items.len()),
+        _ => repo.count(&filters.to_filter(0, 0)).await.map(|n| n.max(0) as usize),
+    };
+    let text = match count {
+        Ok(n) => match scope.as_str() {
+            "all" => format!("将影响全部 {n} 个账号"),
+            "filtered" => format!("将影响当前筛选的 {n} 个账号"),
+            _ => "只影响勾选的账号".to_string(),
+        },
+        Err(error) => format!("统计失败（{error}）"),
+    };
+    Html(format!(
+        "<span id=\"scope-hint\" class=\"muted\">{}</span>",
+        escape(&text)
+    ))
+    .into_response()
 }
 
 /// 跳回列表并带一条提示。
@@ -299,17 +454,48 @@ pub struct AccountRow {
     status: String,
     status_label: String,
     plan: String,
+    /// 配额数字（不限量时是「不限」）。
     quota: String,
+    /// 配额语义：可用 / 已耗尽 / 未知 / 不限。
+    quota_state: String,
+    /// 配额语义的样式后缀。
+    quota_tone: String,
+    /// 距配额重置的倒计时（没有就是空串）。
+    reset_hint: String,
     counters: String,
     proxy: String,
+    /// 状态原因的简短说法。
+    reason: String,
+    /// 上游原始错误（悬停看）。
     last_error: String,
+    /// access token 状态（有效 / 即将过期 / 无效）与悬停说明。
+    access_label: String,
+    access_tone: String,
+    access_hint: String,
+    /// refresh token 状态。
+    refresh_label: String,
+    refresh_tone: String,
     toggle_label: String,
     toggle_status: String,
 }
 
 impl AccountRow {
-    fn from_account(account: &Account) -> Self {
-    let disabled = account.status == AccountStatus::Disabled;
+    fn from_account(account: &Account, now: DateTime<Utc>) -> Self {
+        let disabled = account.status == AccountStatus::Disabled;
+        // 凭据状态由 token 本身算（不落库），和 /api/accounts/{id} 用同一个投影
+        let credential = gpt2apirs_account::project(
+            &account.access_token,
+            account.refresh_token.as_deref().unwrap_or(""),
+            account.status == AccountStatus::Abnormal,
+            false,
+            now,
+        );
+        let quota_state = account.quota_state();
+        let reset_hint = account
+            .quota_reset_in(now)
+            .map(|left| format!("{}后重置", humanize_duration(left)))
+            .unwrap_or_default();
+        let (reason, raw_error) = account.status_reason();
         Self {
             id: account.id,
             email: account
@@ -320,14 +506,45 @@ impl AccountRow {
             status: account.status.as_str().to_string(),
             status_label: account.status.label().to_string(),
             plan: account.plan.as_str().to_string(),
-            quota: account.quota.to_string(),
+            quota: if account.quota_unlimited {
+                "不限".to_string()
+            } else if account.quota_confirmed {
+                account.quota.to_string()
+            } else {
+                "?".to_string()
+            },
+            quota_state: quota_state.label().to_string(),
+            quota_tone: match quota_state {
+                gpt2apirs_account::QuotaState::Unlimited => "info".to_string(),
+                gpt2apirs_account::QuotaState::Available => "ok".to_string(),
+                gpt2apirs_account::QuotaState::Exhausted => "warn".to_string(),
+                gpt2apirs_account::QuotaState::Unknown => "muted".to_string(),
+            },
+            reset_hint,
             counters: format!("{} / {}", account.success_count, account.fail_count),
             proxy: if account.proxy.trim().is_empty() {
                 "全局出口".to_string()
             } else {
                 account.proxy.clone()
             },
-            last_error: account.last_error.clone().unwrap_or_default(),
+            reason: reason.to_string(),
+            last_error: raw_error.to_string(),
+            access_label: credential.access.label().to_string(),
+            access_tone: match credential.access {
+                gpt2apirs_account::AccessTokenStatus::Valid => "ok".to_string(),
+                gpt2apirs_account::AccessTokenStatus::Expiring => "warn".to_string(),
+                gpt2apirs_account::AccessTokenStatus::Invalid => "danger".to_string(),
+            },
+            access_hint: match credential.expires_at {
+                Some(exp) => format!("到期 {}", exp.format("%Y-%m-%d %H:%M UTC")),
+                None => "读不出过期时间".to_string(),
+            },
+            refresh_label: credential.refresh.label().to_string(),
+            refresh_tone: match credential.refresh {
+                gpt2apirs_account::RefreshTokenStatus::Valid => "ok".to_string(),
+                gpt2apirs_account::RefreshTokenStatus::Missing => "muted".to_string(),
+                gpt2apirs_account::RefreshTokenStatus::Invalid => "danger".to_string(),
+            },
             toggle_label: if disabled { "启用" } else { "禁用" }.to_string(),
             toggle_status: if disabled { "normal" } else { "disabled" }.to_string(),
         }
@@ -350,14 +567,41 @@ impl fmt::Display for AccountRow {
             escape(&self.status_label)
         )?;
         write!(f, "<td>{}</td>", escape(&self.plan))?;
-        write!(f, "<td class=\"num\">{}</td>", escape(&self.quota))?;
+        // 凭据：AT 状态 + RT 状态，悬停看到期时间
+        write!(
+            f,
+            "<td class=\"cred\"><span class=\"badge badge--{}\" title=\"{}\">AT {}</span> <span class=\"badge badge--{}\">RT {}</span></td>",
+            escape(&self.access_tone),
+            escape(&self.access_hint),
+            escape(&self.access_label),
+            escape(&self.refresh_tone),
+            escape(&self.refresh_label)
+        )?;
+        // 配额：语义 + 数字 + 重置倒计时
+        write!(
+            f,
+            "<td class=\"num\"><span class=\"badge badge--{}\">{}</span> {}",
+            escape(&self.quota_tone),
+            escape(&self.quota_state),
+            escape(&self.quota)
+        )?;
+        if !self.reset_hint.is_empty() {
+            write!(
+                f,
+                " <span class=\"muted\" title=\"{}\">{}</span>",
+                escape(&self.reset_hint),
+                escape(&self.reset_hint)
+            )?;
+        }
+        write!(f, "</td>")?;
         write!(f, "<td class=\"num\">{}</td>", escape(&self.counters))?;
         write!(f, "<td class=\"muted\">{}</td>", escape(&self.proxy))?;
+        // 状态原因：短因一列，原始错误悬停看
         write!(
             f,
             "<td class=\"muted\" title=\"{}\">{}</td>",
             escape(&self.last_error),
-            truncate(&self.last_error, 24)
+            escape(&self.reason)
         )?;
         write!(f, "<td class=\"actions\">")?;
         write!(
@@ -434,7 +678,13 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
     let filter = filters.to_filter((page - 1) * size, size);
     let total = repo.count(&filter).await.unwrap_or(-1);
     let (rows, error) = match repo.list(&filter).await {
-        Ok(accounts) => (accounts.iter().map(AccountRow::from_account).collect(), String::new()),
+        Ok(accounts) => {
+            let now = chrono::Utc::now();
+            (
+                accounts.iter().map(|a| AccountRow::from_account(a, now)).collect(),
+                String::new(),
+            )
+        }
         Err(error) => (Vec::new(), format!("读取失败（{error}）")),
     };
     let summary = match state.pool.stats().await {
@@ -567,7 +817,7 @@ async fn row_response(state: &Arc<AppState>, id: Uuid, message: &str, level: &st
     match repo.get_by_id(id).await {
         Ok(Some(account)) => {
             let html = RowFragment {
-                row: AccountRow::from_account(&account),
+                row: AccountRow::from_account(&account, chrono::Utc::now()),
             }
             .render();
             match html {
@@ -608,14 +858,6 @@ fn escape(text: &str) -> String {
         }
     }
     out
-}
-
-fn truncate(text: &str, limit: usize) -> String {
-    if text.chars().count() <= limit {
-        return escape(text);
-    }
-    let cut: String = text.chars().take(limit).collect();
-    format!("{}…", escape(&cut))
 }
 
 fn render<T: Template>(template: T) -> Response {
@@ -880,11 +1122,91 @@ mod tests {
         assert_eq!(escape("a<b>&\""), "a&lt;b&gt;&amp;&quot;");
     }
 
+    /// 造一个指定过期时间的 AT（只需 payload 里的 exp，不验签）。
+    fn jwt_expiring_in(seconds: i64) -> String {
+        use base64::Engine as _;
+        let payload = serde_json::json!({ "exp": (Utc::now().timestamp() + seconds) });
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(payload.to_string().as_bytes());
+        format!("header.{encoded}.sig")
+    }
+
+    fn account_for_row(quota: i32, unlimited: bool, token_secs: i64) -> Account {
+        let now = Utc::now();
+        Account {
+            id: Uuid::new_v4(),
+            access_token: jwt_expiring_in(token_secs),
+            refresh_token: Some("rt".to_string()),
+            id_token: None,
+            email: Some("row@test.local".to_string()),
+            upstream_account_id: None,
+            plan: Plan::Plus,
+            source: gpt2apirs_account::Source::Web,
+            status: AccountStatus::Normal,
+            quota,
+            quota_confirmed: true,
+            quota_unlimited: unlimited,
+            restore_at: Some(now + chrono::Duration::minutes(45)),
+            proxy: String::new(),
+            success_count: 7,
+            fail_count: 1,
+            invalid_count: 0,
+            last_used_at: None,
+            last_invalid_at: None,
+            last_error: None,
+            last_error_at: None,
+            last_checked_at: None,
+            last_refresh_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     #[test]
-    fn truncates_long_text_with_ellipsis() {
-        assert_eq!(truncate("短", 5), "短");
-        let long = "0123456789";
-        assert_eq!(truncate(long, 4), "0123…");
+    fn row_shows_credentials_quota_semantics_and_countdown() {
+        let now = Utc::now();
+
+        // 即将过期 + 不限量 + 有重置时间
+        let row = AccountRow::from_account(&account_for_row(0, true, 3600), now).to_string();
+        assert!(row.contains("AT 即将过期"), "凭据要显示到期风险：{row}");
+        assert!(row.contains("RT 有效"), "{row}");
+        assert!(
+            row.contains("badge--info\">不限</span> 不限"),
+            "不限量要在状态和数字两处都说清楚：{row}"
+        );
+        assert!(row.contains("后重置"), "要给重置倒计时：{row}");
+
+        // 一张不剩：语义是「已耗尽」
+        let mut exhausted = account_for_row(0, false, 7200);
+        exhausted.restore_at = None;
+        let row = AccountRow::from_account(&exhausted, now).to_string();
+        assert!(row.contains("已耗尽"), "{row}");
+        assert!(!row.contains("后重置"), "没有重置时间就别显示倒计时：{row}");
+
+        // AT 过期：凭据列要说无效
+        let row = AccountRow::from_account(&account_for_row(3, false, -3600), now).to_string();
+        assert!(row.contains("AT 无效"), "{row}");
+    }
+
+    #[test]
+    fn reset_countdown_reads_like_a_sentence() {
+        use chrono::Duration;
+        assert_eq!(humanize_duration(Duration::seconds(30)), "不到 1 分钟");
+        assert_eq!(humanize_duration(Duration::minutes(45)), "45 分钟");
+        assert_eq!(humanize_duration(Duration::hours(3)), "3 小时");
+        assert_eq!(humanize_duration(Duration::minutes(200)), "3 小时 20 分");
+        assert_eq!(humanize_duration(Duration::hours(50)), "2 天 2 小时");
+    }
+
+    #[test]
+    fn batch_form_reads_scope_and_filters() {
+        let form = batch_form("action=delete&scope=filtered&status=abnormal&plan=plus&keyword=ab");
+        assert_eq!(form.action, "delete");
+        assert_eq!(form.scope, "filtered");
+        let filters = form.filters();
+        assert_eq!(filters.status, "abnormal");
+        assert_eq!(filters.plan, "plus");
+        assert_eq!(filters.keyword, "ab");
     }
 
     #[test]
@@ -896,6 +1218,7 @@ mod tests {
             page: 2,
             flash: String::new(),
             op: String::new(),
+            scope: String::new(),
         };
         assert_eq!(
             filters.page_prefix(),

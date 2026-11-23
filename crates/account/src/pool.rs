@@ -53,7 +53,7 @@ pub enum PoolError {
 /// 取号用途。决定状态与配额的准入条件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Purpose {
-    /// 生图：必须 `Normal` 且 `quota > 0`。
+    /// 生图：必须 `Normal` 且还有配额（「不限量」也算有）。
     Image,
     /// 文本：允许 `Limited`，不消耗图片配额。
     Text,
@@ -510,7 +510,7 @@ pub fn candidates(snapshot: &[Arc<Account>], filter: &SelectionFilter) -> Vec<Ar
             }
             // ① 业务准入
             let business_ok = match filter.purpose {
-                Purpose::Image => account.status.selectable_for_image() && account.quota > 0,
+                Purpose::Image => account.status.selectable_for_image() && account.has_image_quota(),
                 Purpose::Text => account.status.selectable_for_text(),
             };
             if !business_ok {
@@ -585,6 +585,7 @@ mod tests {
             status: AccountStatus::Normal,
             quota: 5,
             quota_confirmed: true,
+            quota_unlimited: false,
             restore_at: None,
             proxy: String::new(),
             success_count: 0,

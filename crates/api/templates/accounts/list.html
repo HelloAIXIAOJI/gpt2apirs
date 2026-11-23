@@ -17,6 +17,15 @@
   </details>
 
   <details class="import">
+    <summary>Session JSON 导入</summary>
+    <form method="post" action="/accounts/import">
+      <textarea name="text" rows="6" placeholder='粘贴浏览器里 https://chatgpt.com/api/auth/session 的 JSON（含 accessToken，可能还有 refreshToken）'></textarea>
+      <p class="muted">在已登录 ChatGPT 的浏览器里打开 https://chatgpt.com/api/auth/session ，复制整段 JSON 粘进来。这个接口通常只给 accessToken，不含长期 refresh；要 refresh token 请用 OAuth 导入。</p>
+      <button type="submit">导入</button>
+    </form>
+  </details>
+
+  <details class="import">
     <summary>OAuth 导入</summary>
     <form method="post" action="/accounts/oauth/start">
       <input name="email_hint" placeholder="邮箱（可选，用于预填登录）">
@@ -55,21 +64,33 @@
 
   <form id="batch-form" method="post" action="/accounts/batch">
     <div class="batch-bar">
-      <button class="btn btn--ghost" type="submit" name="action" value="sync">同步选中</button>
+      <label class="scope">作用域
+        <select name="scope" hx-get="/accounts/bulk/preview" hx-target="#scope-hint" hx-swap="outerHTML" hx-include="#batch-form">
+          <option value="selected">勾选的账号</option>
+          <option value="filtered">按当前筛选</option>
+          <option value="all">全部账号</option>
+        </select>
+      </label>
+      <span id="scope-hint" class="muted">只影响勾选的账号</span>
+      <input type="hidden" name="status" value="{{ status }}">
+      <input type="hidden" name="plan" value="{{ plan }}">
+      <input type="hidden" name="keyword" value="{{ keyword }}">
+      <button class="btn btn--ghost" type="submit" name="action" value="sync">同步</button>
+      <button class="btn btn--ghost" type="submit" name="action" value="sync_all">查询全部额度</button>
       <button class="btn btn--ghost" type="submit" name="action" value="refresh">刷新令牌</button>
       <button class="btn btn--ghost" type="submit" name="action" value="enable">启用</button>
       <button class="btn btn--ghost" type="submit" name="action" value="disable">禁用</button>
       <button class="btn btn--ghost" type="submit" name="action" value="export">导出</button>
-      <button class="btn btn--danger" type="submit" name="action" value="delete" onclick="return confirm('确定删除选中的账号？')">删除</button>
-      <span class="muted">不勾选表示「全部待处理账号」</span>
+      <button class="btn btn--danger" type="submit" name="action" value="remove_abnormal" onclick="return confirm('确定移除当前筛选里状态为异常的账号？')">移除异常账号</button>
+      <button class="btn btn--danger" type="submit" name="action" value="delete" onclick="return confirm('确定删除目标账号？')">删除</button>
     </div>
 
     <table class="table">
       <thead>
         <tr>
           <th class="pick"><input type="checkbox" onclick="document.querySelectorAll('#batch-form input[name=ids]').forEach((box) => box.checked = this.checked)"></th>
-          <th>账号</th><th>状态</th><th>套餐</th><th>配额</th>
-          <th>成功 / 失败</th><th>出口</th><th>最近错误</th><th>操作</th>
+          <th>账号</th><th>状态</th><th>套餐</th><th>凭据</th><th>配额</th>
+          <th>成功 / 失败</th><th>出口</th><th title="上游原始错误悬停查看">状态原因</th><th>操作</th>
         </tr>
       </thead>
       <tbody id="accounts-body">

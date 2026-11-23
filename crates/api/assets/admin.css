@@ -918,6 +918,8 @@ button:disabled {
 .task-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .prompt-cell { max-width: 22rem; }
 .badge--ok { background: rgba(60, 180, 110, 0.15); color: #2e9e63; }
+.badge--info { background: rgba(70, 130, 200, 0.15); color: #3d6fa8; }
+.badge--muted { background: rgba(120, 120, 120, 0.12); color: #6b6b6b; }
 .badge--danger { background: rgba(220, 80, 80, 0.15); color: #c2453f; }
 .badge--warn { background: rgba(220, 170, 60, 0.18); color: #a97a1c; }
 

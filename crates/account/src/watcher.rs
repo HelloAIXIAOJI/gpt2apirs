@@ -199,6 +199,7 @@ mod tests {
             status: AccountStatus::Normal,
             quota: 1,
             quota_confirmed: true,
+            quota_unlimited: false,
             restore_at: None,
             proxy: String::new(),
             success_count: 0,

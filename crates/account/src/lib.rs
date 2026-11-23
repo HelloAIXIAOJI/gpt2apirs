@@ -22,7 +22,7 @@ pub use credentials::{
 };
 pub use export::{ExportItem, ExportReport, build_export, build_token_txt};
 pub use import::{ImportParseError, parse_any, parse_json, parse_token_lines};
-pub use model::{Account, AccountStatus, Plan, Source};
+pub use model::{Account, AccountStatus, Plan, QuotaState, Source};
 pub use oauth::{OAuthError, OAuthSessions, OAuthStart, SharedSessions};
 pub use pool::{
     AccountLease, AccountPool, InvalidOutcome, PoolConfig, PoolError, Purpose, SelectionFilter,

@@ -231,6 +231,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/keys/{id}/edit", get(admin::keys::edit_form).post(admin::keys::edit_submit))
         .route("/accounts/import", post(admin::accounts::import_accounts))
         .route("/accounts/batch", post(admin::accounts::batch))
+        .route(
+            "/accounts/bulk/preview",
+            get(admin::accounts::bulk_preview),
+        )
         .route("/accounts/oauth/start", post(admin::accounts::oauth_start_form))
         .route("/accounts/oauth/finish", post(admin::accounts::oauth_finish_form))
         .route("/accounts/operations/{id}", get(admin::accounts::operation_fragment))

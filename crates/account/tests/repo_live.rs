@@ -81,6 +81,47 @@ fn new_account(suffix: &str, quota: i32) -> NewAccount {
     }
 }
 
+/// 「不限量」必须能在库里存住，并且不被配额扣减/状态推导搞成限流。
+#[tokio::test]
+async fn quota_unlimited_survives_round_trip_and_usage() {
+    let Some((pool, repo)) = setup().await else { return };
+    let _guard = db_guard();
+    clean_test_rows(&pool).await;
+
+    let account = repo
+        .upsert(&new_account("unlimited", 0))
+        .await
+        .expect("写入");
+    let account = match account {
+        gpt2apirs_account::repo::UpsertOutcome::Inserted(a)
+        | gpt2apirs_account::repo::UpsertOutcome::Merged(a) => a,
+    };
+    assert!(!account.quota_unlimited, "默认不是不限量");
+
+    let patched = repo
+        .patch(
+            account.id,
+            &AccountPatch {
+                quota_unlimited: Some(true),
+                quota: Some(0),
+                status: Some(AccountStatus::Normal),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("改标记");
+    assert!(patched.quota_unlimited, "标记要落库");
+    assert_eq!(patched.quota_state(), gpt2apirs_account::QuotaState::Unlimited);
+    assert!(patched.has_image_quota(), "不限量必须算有配额");
+
+    // 用掉一次：配额不扣、状态不进 limited
+    let used = repo.record_result(account.id, true).await.expect("记录使用");
+    assert_eq!(used.quota, 0, "不限量账号不该被扣成负数或变号");
+    assert_eq!(used.status, AccountStatus::Normal, "不限量账号不该判限流");
+
+    clean_test_rows(&pool).await;
+}
+
 #[tokio::test]
 async fn migration_creates_accounts_table_and_indexes() {
     let Some((pool, _repo)) = setup().await else { return };

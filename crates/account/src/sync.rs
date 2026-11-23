@@ -72,12 +72,7 @@ pub async fn sync_account(
         }
     };
 
-    // 状态推导：禁用不动；配额为 0  限流；否则正常。
-    let status = match account.status {
-        AccountStatus::Disabled => AccountStatus::Disabled,
-        _ if remote.quota == 0 => AccountStatus::Limited,
-        _ => AccountStatus::Normal,
-    };
+    let status = status_after_sync(account.status, remote.quota, remote.quota_unlimited);
 
     let updated = pool
         .repo()
@@ -89,6 +84,7 @@ pub async fn sync_account(
                 email: remote.email,
                 quota: Some(remote.quota),
                 quota_confirmed: Some(true),
+                quota_unlimited: Some(remote.quota_unlimited),
                 restore_at: Some(remote.restore_at),
                 last_error: Some(None),
                 ..Default::default()
@@ -100,6 +96,19 @@ pub async fn sync_account(
     // 同步成功后清掉失效计数（远端已确认可用）
     let updated = pool.clear_invalid(account_id).await.unwrap_or(updated);
     Ok(updated)
+}
+
+/// 同步一次之后账号该是什么状态。
+///
+/// 三条规则的唯一入口：禁用不动；**不限量**直接正常（这类账号 quota 常是 0）；
+/// 真的一张不剩才判限流。
+pub fn status_after_sync(current: AccountStatus, quota: i32, quota_unlimited: bool) -> AccountStatus {
+    match current {
+        AccountStatus::Disabled => AccountStatus::Disabled,
+        _ if quota_unlimited => AccountStatus::Normal,
+        _ if quota == 0 => AccountStatus::Limited,
+        _ => AccountStatus::Normal,
+    }
 }
 
 /// 只刷新一个账号的 access token。
@@ -299,6 +308,30 @@ mod tests {
     use super::*;
     use crate::model::Plan;
 
+    #[test]
+    fn unlimited_account_is_never_marked_limited() {
+        // 上游没给 image_gen 条目：quota 会读成 0，但这类号是「不限量」，不能判限流
+        assert_eq!(
+            status_after_sync(AccountStatus::Normal, 0, true),
+            AccountStatus::Normal
+        );
+        // 真没额度才判限流
+        assert_eq!(
+            status_after_sync(AccountStatus::Normal, 0, false),
+            AccountStatus::Limited
+        );
+        // 有额度照常正常
+        assert_eq!(
+            status_after_sync(AccountStatus::Limited, 2, false),
+            AccountStatus::Normal
+        );
+        // 手动禁用不被同步覆盖
+        assert_eq!(
+            status_after_sync(AccountStatus::Disabled, 5, true),
+            AccountStatus::Disabled
+        );
+    }
+
     fn base_account(status: AccountStatus) -> Account {
         let now = Utc::now();
         Account {
@@ -313,6 +346,7 @@ mod tests {
             status,
             quota: 3,
             quota_confirmed: true,
+            quota_unlimited: false,
             restore_at: None,
             proxy: String::new(),
             success_count: 0,

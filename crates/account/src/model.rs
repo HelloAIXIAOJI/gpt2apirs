@@ -186,6 +186,11 @@ pub struct Account {
     pub quota: i32,
     /// 配额是否被远端确认过。
     pub quota_confirmed: bool,
+    /// 上游没有图片限额（`limits_progress` 里没有 `image_gen` 条目）。
+    ///
+    /// 和「`quota = 0`（一张都不剩）」是两件事：付费号常年是这个形态，
+    /// 混成一个数字会让账号被判成限流、从此再也选不上。
+    pub quota_unlimited: bool,
     /// 限流恢复时间。
     pub restore_at: Option<DateTime<Utc>>,
 
@@ -218,7 +223,69 @@ pub struct Account {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 配额的对外语义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuotaState {
+    /// 上游没给图片限额。
+    Unlimited,
+    /// 从来没同步到过配额。
+    Unknown,
+    /// 还有余量。
+    Available,
+    /// 已耗尽。
+    Exhausted,
+}
+
+impl QuotaState {
+    /// 展示用中文。
+    pub fn label(self) -> &'static str {
+        match self {
+            QuotaState::Unlimited => "不限",
+            QuotaState::Unknown => "未知",
+            QuotaState::Available => "可用",
+            QuotaState::Exhausted => "已耗尽",
+        }
+    }
+}
+
 impl Account {
+    /// 图片配额还有没有余量（不限量也算有）。
+    pub fn has_image_quota(&self) -> bool {
+        self.quota_unlimited || self.quota > 0
+    }
+
+    /// 配额的对外语义。
+    pub fn quota_state(&self) -> QuotaState {
+        if self.quota_unlimited {
+            return QuotaState::Unlimited;
+        }
+        if !self.quota_confirmed {
+            return QuotaState::Unknown;
+        }
+        if self.quota > 0 {
+            QuotaState::Available
+        } else {
+            QuotaState::Exhausted
+        }
+    }
+
+    /// 距配额重置还剩多久；上游没给重置时间就是 `None`。
+    pub fn quota_reset_in(&self, now: DateTime<Utc>) -> Option<chrono::Duration> {
+        let left = self.restore_at? - now;
+        (left.num_seconds() > 0).then_some(left)
+    }
+
+    /// 状态原因的简短说法（列表里一列），以及上游原始错误。
+    pub fn status_reason(&self) -> (&'static str, &str) {
+        let raw = self.last_error.as_deref().unwrap_or("");
+        match self.status {
+            AccountStatus::Disabled => ("手动禁用", raw),
+            AccountStatus::Limited => ("配额用完或被限流", raw),
+            AccountStatus::Abnormal => ("上游判定异常", raw),
+            AccountStatus::Normal => ("正常", raw),
+        }
+    }
+
     /// 计算 access token 的 sha256（小写 hex），用于唯一索引与查重。
     pub fn token_sha(access_token: &str) -> String {
         use sha2::{Digest, Sha256};
@@ -233,7 +300,7 @@ impl Account {
 
     /// 是否可以作为图片请求候选（业务层面）。
     pub fn selectable_for_image(&self) -> bool {
-        self.status.selectable_for_image() && self.quota > 0
+        self.status.selectable_for_image() && self.has_image_quota()
     }
 
     /// 是否可以作为文本请求候选（业务层面）。
@@ -252,6 +319,84 @@ impl Account {
 
 #[cfg(test)]
 mod tests {
+    /// 一个只能用来测配额/状态语义的账号。
+    fn quota_account(quota: i32, confirmed: bool, unlimited: bool) -> Account {
+        Account {
+            id: uuid::Uuid::new_v4(),
+            access_token: "tok".to_string(),
+            refresh_token: Some("rt".to_string()),
+            id_token: None,
+            email: Some("q@t.local".to_string()),
+            upstream_account_id: None,
+            plan: Plan::Plus,
+            source: Source::Web,
+            status: AccountStatus::Normal,
+            quota,
+            quota_confirmed: confirmed,
+            quota_unlimited: unlimited,
+            restore_at: None,
+            proxy: String::new(),
+            success_count: 0,
+            fail_count: 0,
+            invalid_count: 0,
+            last_used_at: None,
+            last_invalid_at: None,
+            last_error: None,
+            last_error_at: None,
+            last_checked_at: None,
+            last_refresh_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn quota_state_has_four_meanings() {
+        assert_eq!(quota_account(0, true, true).quota_state(), QuotaState::Unlimited);
+        assert_eq!(quota_account(0, false, false).quota_state(), QuotaState::Unknown);
+        assert_eq!(quota_account(5, true, false).quota_state(), QuotaState::Available);
+        assert_eq!(quota_account(0, true, false).quota_state(), QuotaState::Exhausted);
+        // 不限量优先于「未知」：别让没同步过的付费号显示成未知
+        assert_eq!(quota_account(0, false, true).quota_state(), QuotaState::Unlimited);
+    }
+
+    #[test]
+    fn unlimited_counts_as_having_quota() {
+        assert!(quota_account(0, true, true).has_image_quota());
+        assert!(!quota_account(0, true, false).has_image_quota());
+        assert!(quota_account(1, true, false).has_image_quota());
+
+        // 选号的两个入口必须一致
+        assert!(quota_account(0, true, true).selectable_for_image());
+        assert!(!quota_account(0, true, false).selectable_for_image());
+    }
+
+    #[test]
+    fn reset_countdown_only_when_in_future() {
+        let now = Utc::now();
+        let mut account = quota_account(0, true, false);
+        account.restore_at = Some(now + chrono::Duration::minutes(30));
+        let left = account.quota_reset_in(now).expect("应给出剩余时间");
+        assert!((left.num_minutes() - 30).abs() <= 1, "实际 {left:?}");
+
+        account.restore_at = Some(now - chrono::Duration::minutes(1));
+        assert!(account.quota_reset_in(now).is_none(), "过期时间不该显示倒计时");
+
+        account.restore_at = None;
+        assert!(account.quota_reset_in(now).is_none());
+    }
+
+    #[test]
+    fn status_reason_names_the_cause() {
+        let mut account = quota_account(3, true, false);
+        account.status = AccountStatus::Limited;
+        account.last_error = Some("quota exceeded".to_string());
+        assert_eq!(account.status_reason(), ("配额用完或被限流", "quota exceeded"));
+
+        account.status = AccountStatus::Disabled;
+        assert_eq!(account.status_reason().0, "手动禁用");
+    }
+
     use super::*;
 
     #[test]

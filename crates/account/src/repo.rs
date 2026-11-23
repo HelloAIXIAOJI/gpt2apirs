@@ -73,6 +73,8 @@ pub struct AccountPatch {
     pub quota: Option<i32>,
     /// 配额是否已确认。
     pub quota_confirmed: Option<bool>,
+    /// 上游是否没有图片限额。
+    pub quota_unlimited: Option<bool>,
     /// 限流恢复时间。
     pub restore_at: Option<Option<DateTime<Utc>>>,
     /// 最近错误（已脱敏）。
@@ -325,6 +327,7 @@ impl AccountRepo {
                  proxy           = coalesce($5, proxy), \
                  quota           = coalesce($6, quota), \
                  quota_confirmed = coalesce($7, quota_confirmed), \
+                 quota_unlimited = coalesce($12, quota_unlimited), \
                  restore_at      = case when $8 then $9 else restore_at end, \
                  last_error      = case when $10 then $11 else last_error end \
              where id = $1 \
@@ -341,6 +344,7 @@ impl AccountRepo {
         .bind(patch.restore_at.clone().flatten())
         .bind(patch.last_error.is_some())
         .bind(patch.last_error.clone().flatten())
+        .bind(patch.quota_unlimited)
         .fetch_optional(&self.pool)
         .await?
         .ok_or(AccountError::NotFound(id))?;
@@ -359,10 +363,10 @@ impl AccountRepo {
             "update accounts set \
                  success_count = success_count + case when $2 then 1 else 0 end, \
                  fail_count    = fail_count    + case when $2 then 0 else 1 end, \
-                 quota         = case when $2 then greatest(0, quota - 1) else quota end, \
+                 quota         = case when $2 and not quota_unlimited then greatest(0, quota - 1) else quota end, \
                  status        = case \
-                                     when $2 and greatest(0, quota - 1) = 0 then 'limited' \
-                                     when $2 and status = 'limited' and quota > 0 then 'normal' \
+                                     when $2 and not quota_unlimited and greatest(0, quota - 1) = 0 then 'limited' \
+                                     when $2 and (quota_unlimited or quota > 0) and status = 'limited' then 'normal' \
                                      else status \
                                  end, \
                  last_used_at  = now() \
@@ -613,7 +617,7 @@ const MIN_TOKEN_LOOKUP_LEN: usize = 32;
 /// 列清单（保持与 [`row_to_account`] 对齐）。
 const COLUMNS: &str = "\
     id, access_token, refresh_token, id_token, email, upstream_account_id, \
-    plan, source, status, quota, quota_confirmed, restore_at, proxy, \
+    plan, source, status, quota, quota_confirmed, quota_unlimited, restore_at, proxy, \
     success_count, fail_count, invalid_count, \
     last_used_at, last_invalid_at, last_error, last_error_at, \
     last_checked_at, last_refresh_at, created_at, updated_at";
@@ -637,6 +641,7 @@ fn row_to_account(row: &PgRow) -> Account {
         }),
         quota: row.get("quota"),
         quota_confirmed: row.get("quota_confirmed"),
+        quota_unlimited: row.get("quota_unlimited"),
         restore_at: row.get("restore_at"),
         proxy: row.get("proxy"),
         success_count: row.get("success_count"),

@@ -26,6 +26,10 @@ pub struct RemoteInfo {
     pub plan: Option<Plan>,
     /// 剩余图片配额。
     pub quota: i32,
+    /// 上游没有图片限额（`limits_progress` 里没有 `image_gen` 条目）。
+    ///
+    /// 这种账号不能写 `quota = 0` —— 那等于把它判成限流、再也选不上。
+    pub quota_unlimited: bool,
     /// 限流恢复时间。
     pub restore_at: Option<DateTime<Utc>>,
     /// 账号默认模型。
@@ -137,6 +141,10 @@ pub async fn fetch_remote_info(
 
     if let Some(progress) = init.get("limits_progress").and_then(Value::as_array) {
         info.limits_progress = progress.clone();
+        // 没有 image_gen 条目 = 这个号没有图片限额（付费号常见），要单独记，不能当 0 张
+        info.quota_unlimited = !progress
+            .iter()
+            .any(|item| item.get("feature_name").and_then(Value::as_str) == Some("image_gen"));
         if let Some(item) = progress
             .iter()
             .find(|item| item.get("feature_name").and_then(Value::as_str) == Some("image_gen"))
