@@ -1,0 +1,5 @@
+{
+  "email": "you@example.com",
+  "password": "你的密码",
+  "totp": "BASE32SEED"
+}
