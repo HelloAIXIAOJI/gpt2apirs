@@ -1,57 +1,51 @@
 # 本地登录器（login-tool）
 
-在**管理员自己的电脑**上跑一次登录，输出一段 JSON，粘到后台「粘贴导入」。
-服务端不需要浏览器，也不占内存。
+在**管理员自己的电脑**上跑登录，输出可直接粘进后台「粘贴导入」的 JSON。服务端不跑浏览器。
 
-## 用哪个脚本
+## 文件
 
-- `login.py` ✅ **推荐**：undetected_chromedriver + 本地 Chrome/Chromium，实测能过 Cloudflare 并跑通完整登录。
-- `login.mjs`：Node + Chrome DevTools Protocol，**会被 CF 识别**，留作诊断用。
-
-原因：Playwright/Puppeteer/裸 CDP 的连接会被 Cloudflare 检测到；uc 用打补丁的 chromedriver 驱动，不暴露这些痕迹。同机同 IP 对照实验，只有 uc 能过。
+- `login.py` ✅ 单个账号：undetected_chromedriver + 本地 Chrome，能过 Cloudflare。
+- `batch_login.py` 批量：读 `accounts.json`，逐个登录写 `sessions.jsonl`（一行一个）。
+- `parse_accounts.mjs` 把 `邮箱----密码----TOTP种子----AT` 的文本解析成 `accounts.json`。
+- `login.mjs` Node + CDP 版，**会被 CF 识别**，仅作诊断。
 
 ## 前置
 
-- Python 3.10~3.13（3.14 上 pip 版 uc 会因 `distutils` 移除而 import 失败；可设 `UC_PATH` 指向兼容副本）
+- Python 3.10~3.13（3.14 上 pip 版 uc 因 `distutils` 移除会 import 失败；可设 `UC_PATH` 指向兼容副本）
 - `pip install undetected-chromedriver selenium`
-- 本机有 Chrome / Chromium（`CHROME_PATH` 可指定路径）
-- 账号有：邮箱、密码、TOTP 种子
+- 本机有 Chrome / Chromium（`CHROME_PATH` 可指定）
 
-## 用法
+## 单个账号
 
 ```bash
-# creds.json: {"email":"...","password":"...","totp":"BASE32SEED"}
 python login.py --file creds.json --out tokens.json
-python login.py --file creds.json --proxy 127.0.0.1:7890      # 走指定出口
-python login.py --file creds.json --headless                  # 不推荐，headless 更易被识别
+python login.py --file creds.json --proxy 127.0.0.1:7890
 ```
 
-输出：
+## 批量
 
-```json
-{"access_token":"eyJhbGciOi...","refresh_token":"rt.1.AAD...","id_token":"eyJhbGciOi...","email":"a@b.com"}
+```bash
+node parse_accounts.mjs 账号.txt accounts.json      # 解析账号文件
+python batch_login.py --file accounts.json --out sessions.jsonl --delay 3
+python batch_login.py --skip-ok --out sessions.jsonl   # 断点续跑：跳过已有 token 的
 ```
 
-粘到后台「账号池 → 粘贴导入」即可（导入器认 `access_token` / `refresh_token` / `id_token` / `email`，已存在会合并）。
+实测：单账号约 **12 秒**，100 个约 20 分钟，全程没触发 Cloudflare。
 
-## 它做了什么
+## 两个坑（都已在代码里处理）
 
-1. 起一个可见窗口的 Chrome（uc 驱动），打开我们自己的 platform OAuth 授权 URL（自带 PKCE）
-2. 邮箱 → 若出现「使用密码继续」就点它 → 密码 → 现算 TOTP 提交
-3. 从回调 URL 抠 `code`
-4. `code` + PKCE verifier → `/oauth/token` 换 AT / RT / ID token
-5. 关浏览器
+1. **窗口被遮挡会被浏览器节流**：Chromium 判定窗口不可见后会停掉定时器和渲染，React 水合不完成，点「继续」毫无反应也不报错。脚本已加 `--disable-backgrounding-occluded-windows` 等参数，并把窗口放到屏幕外，不挡你视线。
+2. **受控输入框偶尔写不进去**：`send_keys` 在 React 水合前打字会丢，提交时报「必填项」。脚本用 `fill_input()` 写后校验 value，失败改用 JS 原生 setter 兜底。
 
-AT 约 10 天有效，RT 长期有效，后台自动续期，正常不需要反复跑。
+另外「继续」按钮按**精确文本**匹配，避免误点「使用 Google 账户继续」。
 
 ## 失败与风控
 
-- **页面显示「正在进行安全验证」**：出口 IP 被 CF 拦。换出口（`--proxy`）或等几分钟到几小时；脚本直接退出，不重试。
-- **密码错误**：直接退出，**不重试**（服务端有 `max_verify_attempts`）。
-- **没到密码页 / 没到 TOTP 页**：账号可能没设密码/没开 TOTP，或页面流程变了 → 手动登录后用 Session JSON 导入。
-- 别批量循环调用；失败后至少等 10 分钟，一个号一天最多一两次。
-- 驱动版本不匹配时脚本会自动解析浏览器版本并重试一次。
+- 页面显示「正在进行安全验证」→ 出口 IP 被 CF 拦：换出口或等一会儿，脚本直接退出不重试。
+- 密码错误：直接退出，**不重试**（上游有 `max_verify_attempts`）。
+- 账号没设密码/没开 TOTP：会停在密码页或验证页 → 手动登录后用 Session JSON 导入。
+- 别在电脑上点/关那个浏览器窗口，关掉会导致 `no such window`（脚本会自动重启浏览器并重试当前账号）。
 
 ## 安全
 
-`creds.json`、`tokens.json` 都是明文凭据，用完删掉，别提交仓库、别外传。
+`creds.json`、`tokens.json`、`sessions.jsonl` 都是明文凭据，用完删掉，别提交仓库、别外传。

@@ -19,6 +19,58 @@ import argparse, base64, hashlib, hmac, json, os, re, secrets, sys, time
 from urllib.parse import urlencode
 import urllib.request
 
+def fill_input(driver, element, text, retries=3):
+    """往受控输入框写值并校验；send_keys 偶尔写不进去（React 水合时序），失败改用 JS 原生 setter。"""
+    from selenium.webdriver.common.by import By as _By
+    for _ in range(retries):
+        try:
+            element.clear()
+        except Exception:
+            pass
+        try:
+            element.click()
+            element.send_keys(text)
+        except Exception:
+            pass
+        time.sleep(0.3)
+        try:
+            if (element.get_attribute("value") or "") == text:
+                return True
+        except Exception:
+            pass
+    # 兜底：JS 原生 setter + input/change 事件（React 受控组件认这个）
+    try:
+        driver.execute_script(
+            """
+            const el = arguments[0], v = arguments[1];
+            const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set;
+            setter.call(el, v);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            """,
+            element, text)
+        time.sleep(0.3)
+        return (element.get_attribute("value") or "") == text
+    except Exception:
+        return False
+
+def click_continue(driver):
+    """点「继续」：精确匹配，避免误点「使用 Google 账户继续」这类社交按钮。"""
+    from selenium.webdriver.common.by import By as _By
+    for b in driver.find_elements(_By.CSS_SELECTOR, "button"):
+        t = (b.text or "").strip()
+        if t in ("继续", "Continue"):
+            b.click()
+            return True
+    for b in driver.find_elements(_By.CSS_SELECTOR, 'form button[type="submit"], button[type="submit"]'):
+        t = (b.text or "").strip()
+        if any(k in t for k in ("Google", "Apple", "Microsoft", "电话", "使用")):
+            continue
+        b.click()
+        return True
+    return False
+
+
 CLIENT_ID = "app_2SKx67EdpoN0G6j64rFvigXD"
 REDIRECT_URI = "https://platform.openai.com/auth/callback"
 
@@ -141,10 +193,8 @@ def main():
             body = driver.find_element(By.TAG_NAME, "body").text[:160].replace("\n", " ")
             die("登录页没出现邮箱框。页面显示：" + body + "\n（常见原因：出口 IP 被 Cloudflare 拦，换出口或稍后再试）")
 
-        box.send_keys(creds["email"]); time.sleep(0.5)
-        for b in driver.find_elements(By.CSS_SELECTOR, "button"):
-            if "继续" in b.text or "Continue" in b.text:
-                b.click(); break
+        fill_input(driver, box, creds["email"]); time.sleep(0.5)
+        click_continue(driver)
         time.sleep(3)
         print("② 已提交邮箱", flush=True)
 
@@ -162,10 +212,8 @@ def main():
         if pwd is None:
             die("没到密码页。这个账号可能没设密码，或需要邮箱验证码；请浏览器手动登录后用 Session JSON 导入")
 
-        pwd.send_keys(creds["password"]); time.sleep(0.5)
-        for b in driver.find_elements(By.CSS_SELECTOR, "button"):
-            if "继续" in b.text or "Continue" in b.text:
-                b.click(); break
+        fill_input(driver, pwd, creds["password"]); time.sleep(0.5)
+        click_continue(driver)
         time.sleep(4)
         print("③ 已提交密码", flush=True)
 
@@ -189,10 +237,8 @@ def main():
             die("没到两步验证页（账号可能没开 TOTP）")
 
         code = totp(creds["totp"])
-        code_input.send_keys(code); time.sleep(0.5)
-        for b in driver.find_elements(By.CSS_SELECTOR, "button"):
-            if "继续" in b.text or "Continue" in b.text:
-                b.click(); break
+        fill_input(driver, code_input, code); time.sleep(0.5)
+        click_continue(driver)
         print("④ 已提交 TOTP（%s）" % code, flush=True)
 
         auth_code = None
