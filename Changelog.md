@@ -7,6 +7,8 @@
 - 加入：概览页趋势图（近 N 天的调用、失败、生图任务），并新增 GET /api/dashboard 一次拿全趋势与排行（接口、账号、模型）。
 - 加入：日志详情——点开能看到调用方 IP、UA、API key 前缀和失败原因原文；日志可以单条删，也可以按当前筛选整批删。
 - 加入：导入账号后自动校验并清理无效号（设置项 account_prune_invalid_on_import，默认关；只删上游明确判 401/403 的号，网络错误一律保留）。
+- 加入：会话页——按账号列出官网上留下的会话（标题、时间、归档/临时标记），可单条删、也可勾选批量删；接口 GET /api/conversations、DELETE /api/conversations/{id}。
+- 加入：记忆页——按账号查看官网已保存的记忆条目与容量占用，可单条删或批量删；接口 GET /api/memories、DELETE /api/memories/{id}。
 
 ### 0.1.4
 

@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod backup;
+pub mod conversations;
 pub mod admin;
 pub mod image_common;
 pub mod image_flow;
@@ -9,6 +10,7 @@ pub mod image_tasks;
 pub mod images;
 pub mod dashboard;
 pub mod logs;
+pub mod memories;
 pub mod rich_text;
 pub mod proxy;
 pub mod settings;

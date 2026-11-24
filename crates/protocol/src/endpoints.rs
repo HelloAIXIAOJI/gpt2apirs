@@ -99,8 +99,28 @@ pub fn conversation(conversation_id: &str) -> String {
 }
 
 /// 删除会话。
+///
+/// 注意路径里多一段 `id`：实测 `DELETE /backend-api/conversation/{id}` 是 405，
+/// 只有 `conversation/id/{id}` 认 DELETE。写错的表现是「删除永远失败」。
 pub fn conversation_delete(conversation_id: &str) -> String {
-    format!("/backend-api/conversation/{conversation_id}")
+    format!("/backend-api/conversation/id/{conversation_id}")
+}
+
+/// 会话列表（分页，按更新时间倒序）。
+pub fn conversations_page(offset: i64, limit: i64) -> String {
+    format!(
+        "/backend-api/conversations?offset={}&limit={}&order=updated",
+        offset.max(0),
+        limit.clamp(1, 100)
+    )
+}
+
+/// 已保存的记忆（GET 列列表）。
+pub const MEMORIES: &str = "/backend-api/memories";
+
+/// 删除一条记忆。
+pub fn memory_delete(memory_id: &str) -> String {
+    format!("/backend-api/memories/{memory_id}")
 }
 
 #[cfg(test)]
@@ -120,9 +140,30 @@ mod tests {
             CONVERSATION_INIT,
             ACCOUNTS_CHECK,
             FILE_UPLOAD,
+            MEMORIES,
         ] {
             assert!(path.starts_with('/'), "路径应以 / 开头: {path}");
         }
+    }
+
+    #[test]
+    fn conversation_delete_uses_id_segment() {
+        // 上游只认 conversation/id/{id}：漏了 id 段会 405，删除永远失败
+        assert_eq!(
+            conversation_delete("abc"),
+            "/backend-api/conversation/id/abc"
+        );
+    }
+
+    #[test]
+    fn conversations_page_carries_paging() {
+        assert_eq!(
+            conversations_page(0, 28),
+            "/backend-api/conversations?offset=0&limit=28&order=updated"
+        );
+        // 负数/超限都要被兜住：上游对 limit=0 会回空列表，看着像「没数据」
+        assert!(conversations_page(-5, 0).contains("offset=0&limit=1"));
+        assert!(conversations_page(0, 500).contains("limit=100"));
     }
 
     #[test]

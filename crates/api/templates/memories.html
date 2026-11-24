@@ -1,0 +1,57 @@
+{% extends "shell.html" %}
+{% block title %}记忆 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>记忆</h1></header>
+
+<section class="panel">
+  {% if deleted > 0 %}<p class="muted">已删除 {{ deleted }} 条记忆。</p>{% endif %}
+  {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+
+  <form class="filters" method="get" action="/memories">
+    <label>账号
+      <select name="account" onchange="this.form.submit()">
+        {% for option in accounts %}
+        <option value="{{ option.id }}"{% if option.selected %} selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">查看</button>
+    <span class="muted">已用 {{ used }} / {{ capacity }} token（{{ used_percent }}%）{% if !account_label.is_empty() %} · {{ account_label }}{% endif %}</span>
+  </form>
+
+  <form method="post" action="/memories/delete"
+        onsubmit="return confirm('删除选中的记忆？删掉后官网对话里也不会再用到这些记忆。');">
+    <input type="hidden" name="account" value="{{ account }}">
+    <div class="bulk-actions">
+      <button type="submit" class="btn btn--danger">删除选中的</button>
+      <span class="muted">记忆是账号私有的，只有列表里这些。</span>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr><th></th><th>内容</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          <td>{% if entry.deletable %}<input type="checkbox" name="id" value="{{ entry.id }}">{% endif %}</td>
+          <td class="path">{{ entry.content }}</td>
+          <td class="actions">
+            {% if entry.deletable %}
+            <button type="submit" class="link link--danger"
+                    formaction="/memories/{{ entry.id }}/delete">删除</button>
+            {% else %}
+            <span class="muted">无 id</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </form>
+
+  {% if entries.is_empty() && error.is_empty() %}
+  <p class="empty">这个账号还没有保存任何记忆。</p>
+  {% endif %}
+</section>
+{% endblock %}

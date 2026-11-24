@@ -22,6 +22,7 @@ use crate::state::AppState;
 
 pub mod accounts;
 pub mod backups;
+pub mod conversations;
 pub mod gallery;
 pub mod pagination;
 pub mod proxy;
@@ -29,6 +30,7 @@ pub mod tasks;
 pub mod keys;
 pub mod toast;
 pub mod logs;
+pub mod memories;
 pub mod settings;
 mod card;
 mod nav;

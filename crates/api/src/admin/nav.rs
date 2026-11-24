@@ -24,6 +24,8 @@ const ITEMS: &[(&str, &str, bool)] = &[
     ("图片", "/gallery", true),
     ("任务", "/tasks", true),
     ("日志", "/logs", true),
+    ("会话", "/conversations", true),
+    ("记忆", "/memories", true),
     ("密钥", "/keys", true),
     ("备份", "/backups", true),
     ("设置", "/settings", true),
@@ -66,7 +68,7 @@ mod tests {
         let ready: Vec<&str> = items.iter().filter(|i| i.ready).map(|i| i.label).collect();
         assert_eq!(
             ready,
-            vec!["概览", "账号", "代理", "图片", "任务", "日志", "密钥", "备份", "设置"]
+            vec!["概览", "账号", "代理", "图片", "任务", "日志", "会话", "记忆", "密钥", "备份", "设置"]
         );
     }
 }

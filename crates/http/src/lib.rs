@@ -159,6 +159,31 @@ mod imp {
             Ok(TextResponse { status, body: text })
         }
 
+        /// DELETE，返回文本。
+        ///
+        /// 后台要删官网会话与记忆，wreq 这边得有个对应方法。
+        pub async fn delete_text(
+            &self,
+            url: &str,
+            headers: &[(&str, String)],
+            timeout: Option<Duration>,
+        ) -> Result<TextResponse> {
+            let mut request = self.inner.delete(url);
+            if let Some(limit) = timeout {
+                request = request.timeout(limit);
+            }
+            for (name, value) in headers {
+                request = request.header(*name, value.clone());
+            }
+            let response = request
+                .send()
+                .await
+                .with_context(|| format!("DELETE {url} 失败"))?;
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            Ok(TextResponse { status, body })
+        }
+
         /// PUT 原始字节，返回文本。
         ///
         /// 上游图片上传走 Azure Blob 预签名 URL，必须用 PUT + 原始字节，
@@ -410,6 +435,16 @@ mod imp {
 
         /// 总是失败。
         pub async fn get_bytes(&self, _url: &str, _h: &[(&str, String)], _t: Option<Duration>) -> Result<BytesResponse> {
+            bail!("gpt2apirs-http 未启用 tls feature")
+        }
+
+        /// 总是失败。
+        pub async fn delete_text(
+            &self,
+            _url: &str,
+            _h: &[(&str, String)],
+            _t: Option<Duration>,
+        ) -> Result<TextResponse> {
             bail!("gpt2apirs-http 未启用 tls feature")
         }
     }

@@ -15,6 +15,7 @@ pub mod image_response;
 pub mod images_download;
 pub mod image_tasks;
 pub mod admin;
+pub mod library;
 pub mod login_throttle;
 pub mod proxy_service;
 pub mod references;
@@ -115,6 +116,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/proxy/clearance", post(routes::proxy::clearance))
         .route("/api/proxy/ping", post(routes::proxy::ping))
         .route("/api/logs", get(routes::logs::list_logs))
+        .route("/api/conversations", get(routes::conversations::list))
+        .route("/api/conversations/{id}", delete(routes::conversations::remove))
+        .route("/api/memories", get(routes::memories::list))
+        .route("/api/memories/{id}", delete(routes::memories::remove))
         .route("/api/logs/{id}", get(routes::logs::get_log).delete(routes::logs::delete_log))
         .route("/api/logs/delete", post(routes::logs::delete_logs))
         .route("/api/metrics", get(routes::logs::metrics))
@@ -204,6 +209,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/accounts", get(admin::accounts::index))
         .route("/settings", get(admin::settings::index).post(admin::settings::save))
         .route("/logs", get(admin::logs::index))
+        .route("/conversations", get(admin::conversations::index))
+        .route("/conversations/delete", post(admin::conversations::remove))
+        .route(
+            "/conversations/{id}/delete",
+            post(admin::conversations::remove_one),
+        )
+        .route("/memories", get(admin::memories::index))
+        .route("/memories/delete", post(admin::memories::remove))
+        .route("/memories/{id}/delete", post(admin::memories::remove_one))
         .route("/logs/{id}", get(admin::logs::detail))
         .route("/logs/{id}/delete", post(admin::logs::remove))
         .route("/logs/delete", post(admin::logs::remove_matching))
