@@ -9,6 +9,7 @@
   </div>
 
   {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+  {% if deleted > 0 %}<p class="muted">已删除 {{ deleted }} 条记录。</p>{% endif %}
 
   <form class="filters" method="get" action="/logs">
     <label>时间
@@ -32,11 +33,21 @@
     <a class="btn btn--ghost" href="/logs">重置</a>
   </form>
 
+  <form class="bulk-actions" method="post" action="/logs/delete"
+        onsubmit="return confirm('删除当前筛选条件下的全部记录？只动本地日志，不动账号和图片。');">
+    <input type="hidden" name="hours" value="{{ hours }}">
+    <input type="hidden" name="status" value="{{ status }}">
+    <input type="hidden" name="path" value="{{ path }}">
+    <input type="hidden" name="code" value="{{ code }}">
+    <span class="muted">清掉这批噪音：</span>
+    <button type="submit" class="btn btn--danger">删除当前筛选结果</button>
+  </form>
+
   <table class="table">
     <thead>
       <tr>
         <th>时间</th><th>方法</th><th>路径</th><th>状态</th>
-        <th>耗时</th><th>账号</th><th>错误码</th><th>请求</th>
+        <th>耗时</th><th>账号</th><th>错误码</th><th>请求</th><th>操作</th>
       </tr>
     </thead>
     <tbody>

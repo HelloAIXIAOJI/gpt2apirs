@@ -1,0 +1,25 @@
+{% extends "shell.html" %}
+{% block title %}日志详情 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>日志详情</h1></header>
+
+<section class="panel">
+  <p class="muted"><a href="{{ back }}">← 返回日志</a></p>
+
+  <h2 class="detail-title">{{ title }}</h2>
+
+  <dl class="detail">
+    {% for field in fields %}
+    <dt>{{ field.name }}</dt>
+    <dd{% if field.mono %} class="mono"{% endif %}>{{ field.value }}</dd>
+    {% endfor %}
+  </dl>
+
+  <form class="edit-actions" method="post" action="{{ delete_action }}">
+    {{ hidden|safe }}
+    <button type="submit" class="btn btn--danger">删除这条记录</button>
+    <a class="btn btn--ghost" href="{{ back }}">返回</a>
+  </form>
+  <p class="muted">删除只影响本地调用日志，不动账号、图片和上游会话。</p>
+</section>
+{% endblock %}

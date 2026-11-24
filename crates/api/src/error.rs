@@ -97,9 +97,14 @@ impl From<AppError> for ApiError {
     }
 }
 
-/// 挂在响应上的错误码，供调用日志中间件读取。
+/// 挂在响应上的错误码与原因，供调用日志中间件写进日志详情。
 #[derive(Debug, Clone)]
-pub struct ErrorCodeTag(pub String);
+pub struct ErrorCodeTag {
+    /// 对外错误码（例如 `upstream_network_error`）。
+    pub code: String,
+    /// 失败原因原文（后台详情页看，不对外暴露）。
+    pub message: String,
+}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -129,8 +134,9 @@ impl IntoResponse for ApiError {
                     .insert(axum::http::header::RETRY_AFTER, value);
             }
         }
-        // 中间件据此把错误码写进调用日志
-        response.extensions_mut().insert(ErrorCodeTag(code));
+        // 中间件据此把错误码与原因写进调用日志详情
+        let message = self.error.message().to_string();
+        response.extensions_mut().insert(ErrorCodeTag { code, message });
         response
     }
 }

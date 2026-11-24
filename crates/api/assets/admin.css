@@ -283,6 +283,59 @@ button.htmx-request::after,
   background: var(--danger-bg);
 }
 
+/* 日志页：批量删除那一行 */
+.bulk-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+/* 表格里的文字按钮（详情 / 删除） */
+.link {
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--accent, #175cd3);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.link--danger {
+  color: var(--danger);
+}
+
+/* 日志详情：左名称右取值 */
+.detail-title {
+  margin: 0 0 14px;
+  font-size: 15px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 6px 14px;
+  margin: 0 0 18px;
+  font-size: 13px;
+}
+
+.detail dt {
+  color: var(--muted);
+}
+
+.detail dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.detail dd.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
 .flash {
   margin: 0 0 12px;
   padding: 10px 12px;

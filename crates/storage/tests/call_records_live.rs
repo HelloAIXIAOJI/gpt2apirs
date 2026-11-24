@@ -43,6 +43,14 @@ fn record(path: &str, status: i32, duration_ms: i32) -> NewCallRecord {
         } else {
             None
         },
+        client_ip: Some("1.2.3.4".to_string()),
+        user_agent: Some("test-agent/1.0".to_string()),
+        api_key_prefix: Some("sk-g2a-test".to_string()),
+        error_message: if status >= 400 {
+            Some("上游炸了".to_string())
+        } else {
+            None
+        },
     }
 }
 
@@ -93,6 +101,94 @@ async fn insert_list_summary_and_purge() {
 
     pool.close().await;
 }
+/// 详情能取回新写的四列；删一条只删一条。
+#[tokio::test]
+async fn get_and_delete_single_record() {
+    let Some((repo, pool)) = repo().await else { return };
+
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let prefix = format!("/v1/detail-{tag}");
+    repo.insert(&record(&format!("{prefix}/bad"), 502, 900))
+        .await
+        .expect("写");
+
+    let rows = repo
+        .list(&CallRecordQuery {
+            path_prefix: Some(prefix.clone()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("查");
+    let id = rows[0].id;
+
+    // 详情：中间件写进去的调用方信息、失败原因都要能取回
+    let detail = repo.get(id).await.expect("取详情").expect("应存在");
+    assert_eq!(detail.path, format!("{prefix}/bad"));
+    assert_eq!(detail.client_ip.as_deref(), Some("1.2.3.4"));
+    assert_eq!(detail.user_agent.as_deref(), Some("test-agent/1.0"));
+    assert_eq!(detail.api_key_prefix.as_deref(), Some("sk-g2a-test"));
+    assert_eq!(detail.error_message.as_deref(), Some("上游炸了"));
+
+    // 删一条：第二次删同一行必须返回 false
+    assert!(repo.delete(id).await.expect("删"), "第一次应删掉");
+    assert!(!repo.delete(id).await.expect("再删"), "已经删了就返回 false");
+    assert!(repo.get(id).await.expect("查").is_none());
+
+    pool.close().await;
+}
+
+/// 批量删认筛选条件，且不受 limit/offset 影响（不能只删当前页）。
+#[tokio::test]
+async fn delete_matching_removes_the_whole_filtered_set() {
+    let Some((repo, pool)) = repo().await else { return };
+
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let keep = format!("/v1/keep-{tag}");
+    let drop_prefix = format!("/v1/drop-{tag}");
+    for index in 0..5 {
+        repo.insert(&record(&format!("{drop_prefix}/{index}"), 500, 100))
+            .await
+            .expect("写");
+    }
+    repo.insert(&record(&format!("{keep}/x"), 500, 100))
+        .await
+        .expect("写");
+
+    // limit 设成 2：如果实现拿 limit 去删，只会删掉两条
+    let removed = repo
+        .delete_matching(&CallRecordQuery {
+            path_prefix: Some(drop_prefix.clone()),
+            limit: 2,
+            ..Default::default()
+        })
+        .await
+        .expect("批量删");
+    assert_eq!(removed, 5, "应按筛选整批删，只认 limit 就会漏");
+
+    let left = repo
+        .list(&CallRecordQuery {
+            path_prefix: Some(drop_prefix.clone()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("查");
+    assert!(left.is_empty(), "筛选内的记录应被删空");
+
+    let others = repo
+        .list(&CallRecordQuery {
+            path_prefix: Some(keep.clone()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("查");
+    assert_eq!(others.len(), 1, "别的路径不能被误删");
+
+    pool.close().await;
+}
+
 /// 仪表盘聚合：按天、按路径的统计要真的能从库里算出来。
 #[tokio::test]
 async fn daily_and_ranking_aggregate_real_rows() {

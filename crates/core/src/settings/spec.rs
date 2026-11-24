@@ -355,6 +355,15 @@ pub static STRING_SPECS: &[StringSpec] = &[
                       guard = 提示模型只输出纯文本；strip = 剥掉自闭合富文本组件。",
     },
     StringSpec {
+        key: "account_prune_invalid_on_import",
+        default: "off",
+        max_len: 8,
+        restart_required: false,
+        description: "导入账号后自动校验并删除无效号：off / on（默认 off）。\n\
+                      打开后每导入一个账号会多打三次上游接口；只删上游明确判 401/403 的号，\
+                      网络错误与 5xx 一律保留（删错了要用户重新导一遍）。",
+    },
+    StringSpec {
         key: "chat_blocked_keywords",
     default: "",
     max_len: 2000,

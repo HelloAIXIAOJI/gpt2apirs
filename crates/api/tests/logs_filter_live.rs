@@ -92,9 +92,32 @@ async fn send(state: &Arc<AppState>, path: &str) -> (StatusCode, Value) {
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
+async fn send_method(state: &Arc<AppState>, method: &str, path: &str) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {}", admin_key()))
+        .body(Body::empty())
+        .expect("构造请求");
+    let response = build_router(state.clone())
+        .oneshot(request)
+        .await
+        .expect("请求应成功");
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("读 body");
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
 async fn clean(pool: &PgPool) {
+    clean_prefix(pool, PATH_PREFIX).await;
+}
+
+/// 按前缀清自己那一摊：各测试并行跑，共用前缀会互删对方的行。
+async fn clean_prefix(pool: &PgPool, prefix: &str) {
     let _ = sqlx::query("delete from call_records where path like $1")
-        .bind(format!("{PATH_PREFIX}%"))
+        .bind(format!("{prefix}%"))
         .execute(pool)
         .await;
 }
@@ -114,6 +137,10 @@ async fn code_filter_returns_only_matching_rows() {
             account_id: None,
             request_id: None,
             error_code: Some(code.to_string()),
+            client_ip: None,
+            user_agent: None,
+            api_key_prefix: None,
+            error_message: None,
         })
         .await
         .expect("写日志");
@@ -146,4 +173,104 @@ async fn code_filter_returns_only_matching_rows() {
     );
 
     clean(&pool).await;
+}
+
+/// 详情接口要带回调用方信息与失败原因 —— 这几列正是「点开日志能看懂」的前提。
+#[tokio::test]
+async fn log_detail_returns_caller_and_error_message() {
+    let Some((state, pool)) = state().await else { return };
+    const DETAIL_PREFIX: &str = "/gpt2apirs-test-logdetail-";
+    clean_prefix(&pool, DETAIL_PREFIX).await;
+
+    let repo = CallRecordRepo::new(pool.clone());
+    repo.insert(&NewCallRecord {
+        method: "POST".to_string(),
+        path: format!("{DETAIL_PREFIX}detail"),
+        status: 502,
+        duration_ms: 12,
+        account_id: None,
+        request_id: None,
+        error_code: Some("upstream_network_error".to_string()),
+        client_ip: Some("203.0.113.7".to_string()),
+        user_agent: Some("dnaisland/1.0".to_string()),
+        api_key_prefix: Some("sk-g2a-d511…".to_string()),
+        error_message: Some("SSE 读取中断或超时（上限 80 秒）".to_string()),
+    })
+    .await
+    .expect("写日志");
+
+    let (_, list) = send(&state, &format!("/api/logs?path={DETAIL_PREFIX}&limit=5")).await;
+    let id = list["data"][0]["id"].as_i64().expect("应有 id");
+
+    let (status, body) = send(&state, &format!("/api/logs/{id}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["client_ip"], "203.0.113.7");
+    assert_eq!(body["user_agent"], "dnaisland/1.0");
+    assert_eq!(body["api_key_prefix"], "sk-g2a-d511…");
+    assert_eq!(body["error_message"], "SSE 读取中断或超时（上限 80 秒）");
+
+    // 不存在的 id 要 404，而不是空对象
+    let (missing, _) = send(&state, "/api/logs/999999999").await;
+    assert_eq!(missing, StatusCode::NOT_FOUND);
+
+    clean_prefix(&pool, DETAIL_PREFIX).await;
+    pool.close().await;
+}
+
+/// 单删 / 批量删：删完就查不到，且不误删别的筛选结果。
+#[tokio::test]
+async fn delete_single_and_by_filter() {
+    let Some((state, pool)) = state().await else { return };
+    const DEL_PREFIX: &str = "/gpt2apirs-test-logdel-";
+    clean_prefix(&pool, DEL_PREFIX).await;
+
+    let repo = CallRecordRepo::new(pool.clone());
+    let mut ids: Vec<(i64, String)> = Vec::new();
+    for (suffix, code) in [("a", "g2a_del_a"), ("b", "g2a_del_a"), ("c", "g2a_del_b")] {
+        repo.insert(&NewCallRecord {
+            method: "GET".to_string(),
+            path: format!("{DEL_PREFIX}{suffix}"),
+            status: 500,
+            duration_ms: 1,
+            account_id: None,
+            request_id: None,
+            error_code: Some(code.to_string()),
+            client_ip: None,
+            user_agent: None,
+            api_key_prefix: None,
+            error_message: None,
+        })
+        .await
+        .expect("写日志");
+    }
+    let (_, list) = send(&state, &format!("/api/logs?path={DEL_PREFIX}&limit=50")).await;
+    for item in list["data"].as_array().expect("data") {
+        ids.push((item["id"].as_i64().expect("id"), item["error_code"].as_str().unwrap_or("").to_string()));
+    }
+    assert_eq!(ids.len(), 3);
+
+    // 单删：挑 g2a_del_b 那条（它只有一条，删掉后批删的数才确定）
+    let single = ids.iter().find(|(_, code)| code == "g2a_del_b").expect("应有 g2a_del_b").0;
+    let (status, body) = send_method(&state, "DELETE", &format!("/api/logs/{single}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"], 1);
+    let (again, _) = send_method(&state, "DELETE", &format!("/api/logs/{single}")).await;
+    assert_eq!(again, StatusCode::NOT_FOUND, "删第二次应 404");
+
+    // 按错误码批量删：g2a_del_a 还剩两条
+    let (status, body) = send_method(
+        &state,
+        "POST",
+        &format!("/api/logs/delete?path={DEL_PREFIX}&code=g2a_del_a"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"], 2, "g2a_del_a 有两条");
+
+    let (_, left) = send(&state, &format!("/api/logs?path={DEL_PREFIX}&limit=50")).await;
+    let rows = left["data"].as_array().expect("data");
+    assert!(rows.is_empty(), "这一摊应被删空，实际还剩 {} 条", rows.len());
+
+    clean_prefix(&pool, DEL_PREFIX).await;
+    pool.close().await;
 }

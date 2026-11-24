@@ -39,6 +39,9 @@ pub struct Filters {
     /// 页码，从 1 开始。
     #[serde(default)]
     pub page: i64,
+    /// 上一动作删掉了几条（只用于回显，不参与筛选）。
+    #[serde(default)]
+    pub deleted: i64,
 }
 
 impl Default for Filters {
@@ -49,6 +52,7 @@ impl Default for Filters {
             path: String::new(),
             code: String::new(),
             page: 1,
+            deleted: 0,
         }
     }
 }
@@ -58,6 +62,36 @@ impl Filters {
         // 没带参数时 serde 给的是 0，默认窗口按 24 小时算。
         let raw = if self.hours <= 0 { 24 } else { self.hours };
         raw.clamp(1, 24 * 30)
+    }
+
+    /// 删除表单的隐藏字段：让 POST 之后还能回到同一筛选。
+    fn hidden_fields(&self) -> String {
+        [
+            ("hours", self.hours().to_string()),
+            ("status", self.status.clone()),
+            ("path", self.path.clone()),
+            ("code", self.code.clone()),
+        ]
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+                escape(name),
+                escape(value)
+            )
+        })
+        .collect()
+    }
+
+    /// 只带筛选条件的查询串（不含页码）：详情页返回、删除后跳转都用它。
+    fn back_query(&self) -> String {
+        format!(
+            "?hours={}&status={}&path={}&code={}",
+            self.hours(),
+            super::accounts::encode(&self.status),
+            super::accounts::encode(&self.path),
+            super::accounts::encode(&self.code)
+        )
     }
 
     /// 只带筛选条件的前缀，页码由分页控件追加。
@@ -91,6 +125,10 @@ impl Filters {
 
 /// 表格里的一行。
 pub struct LogRow {
+    id: i64,
+    back: String,
+    /// 删除表单的隐藏字段（把当前筛选原样带上，删完才能回到原来那页）。
+    hidden: String,
     at: String,
     method: String,
     path: String,
@@ -103,7 +141,7 @@ pub struct LogRow {
 }
 
 impl LogRow {
-    fn from_row(row: &CallRecordRow) -> Self {
+    fn from_row(row: &CallRecordRow, filters: &Filters) -> Self {
         let status_class = if row.status >= 500 {
             "status status--bad"
         } else if row.status >= 400 {
@@ -112,6 +150,9 @@ impl LogRow {
             "status status--ok"
         };
         Self {
+            id: row.id,
+            back: filters.back_query(),
+            hidden: filters.hidden_fields(),
             at: row.created_at.format("%m-%d %H:%M:%S").to_string(),
             method: row.method.clone(),
             path: row.path.clone(),
@@ -145,9 +186,23 @@ impl fmt::Display for LogRow {
         write!(f, "<td class=\"num\">{}</td>", escape(&self.duration))?;
         write!(f, "<td class=\"muted\">{}</td>", escape(&self.account))?;
         write!(f, "<td class=\"muted\">{}</td>", escape(&self.code))?;
-        write!(f, "<td class=\"muted\">{}</td></tr>", escape(&self.request))
+        write!(f, "<td class=\"muted\">{}</td>", escape(&self.request))?;
+        // 详情带筛选条件回跳；删除就地提交，删完回到同一筛选下
+        write!(
+            f,
+            "<td class=\"actions\"><a href=\"/logs/{}{}\">详情</a>",
+            self.id, self.back
+        )?;
+        write!(
+            f,
+            "<form method=\"post\" action=\"/logs/{}/delete\">{}<button type=\"submit\" class=\"link link--danger\">删除</button></form></td></tr>",
+            self.id,
+            self.hidden
+        )
     }
 }
+
+
 
 /// 日志页。
 #[derive(Template)]
@@ -163,6 +218,8 @@ struct LogsPage {
     code: String,
     pager: super::pagination::PageWindow,
     window_label: String,
+    /// 上一次操作删掉了几条（>0 时页面顶部给一句回执）。
+    deleted: i64,
 }
 
 /// `GET /logs`
@@ -233,7 +290,10 @@ pub async fn index(
         }
     };
     let rows = match repo.list(&query).await {
-        Ok(rows) => rows.iter().map(LogRow::from_row).collect::<Vec<_>>(),
+        Ok(rows) => rows
+            .iter()
+            .map(|row| LogRow::from_row(row, &filters))
+            .collect::<Vec<_>>(),
         Err(failure) => {
             error = format!("明细读取失败（{failure}）");
             Vec::new()
@@ -250,7 +310,169 @@ pub async fn index(
         code: filters.code.clone(),
         pager: super::pagination::window(total, page, size, &filters.page_prefix()),
         window_label: format!("近 {hours} 小时"),
+        deleted: filters.deleted,
     })
+}
+
+/// 详情页的一行字段。
+pub struct DetailField {
+    name: &'static str,
+    value: String,
+    /// 路径、UA 这类长文本用等宽字体方便核对。
+    mono: bool,
+}
+
+impl DetailField {
+    fn new(name: &'static str, value: impl Into<String>) -> Self {
+        Self {
+            name,
+            value: value.into(),
+            mono: false,
+        }
+    }
+
+    fn mono(mut self) -> Self {
+        self.mono = true;
+        self
+    }
+
+    /// 空值显示成占位符，不留空白格。
+    fn or_dash(mut self) -> Self {
+        if self.value.trim().is_empty() {
+            self.value = "-".to_string();
+        }
+        self
+    }
+}
+
+/// 日志详情页。
+#[derive(Template)]
+#[template(path = "log_detail.html")]
+struct LogDetailPage {
+    nav: Vec<nav::NavItem>,
+    title: String,
+    fields: Vec<DetailField>,
+    /// 删除本条的接口路径。
+    delete_action: String,
+    /// 返回列表的链接（带原筛选）。
+    back: String,
+    /// 删除表单的隐藏字段。
+    hidden: String,
+}
+
+/// `GET /logs/{id}`
+pub async fn detail(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Query(filters): Query<Filters>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let repo = CallRecordRepo::new(state.db.clone());
+    let row = match repo.get(id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return (StatusCode::NOT_FOUND, "没有这条调用记录").into_response(),
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("读取日志详情失败（{error}）"),
+            )
+                .into_response()
+        }
+    };
+
+    let fields = vec![
+        DetailField::new("时间", row.created_at.format("%Y-%m-%d %H:%M:%S%.3f UTC").to_string()),
+        DetailField::new("方法", row.method.clone()),
+        DetailField::new("路径", row.path.clone()).mono(),
+        DetailField::new("状态", row.status.to_string()),
+        DetailField::new("耗时", format!("{} ms", row.duration_ms)),
+        DetailField::new(
+            "账号",
+            row.account_id.map(|id| id.to_string()).unwrap_or_default(),
+        )
+        .or_dash(),
+        DetailField::new(
+            "请求 ID",
+            row.request_id.map(|id| id.to_string()).unwrap_or_default(),
+        )
+        .or_dash(),
+        DetailField::new("调用方 IP", row.client_ip.clone().unwrap_or_default())
+            .mono()
+            .or_dash(),
+        DetailField::new("API key", row.api_key_prefix.clone().unwrap_or_default())
+            .mono()
+            .or_dash(),
+        DetailField::new("User-Agent", row.user_agent.clone().unwrap_or_default())
+            .mono()
+            .or_dash(),
+        DetailField::new("错误码", row.error_code.clone().unwrap_or_default())
+            .mono()
+            .or_dash(),
+        DetailField::new("失败原因", row.error_message.clone().unwrap_or_default())
+            .mono()
+            .or_dash(),
+    ];
+
+    render(LogDetailPage {
+        nav: nav::items("/logs"),
+        title: format!("{} {}（#{id}）", row.method, truncate(&row.path, 60)),
+        fields,
+        delete_action: format!("/logs/{id}/delete"),
+        back: format!("/logs{}", filters.back_query()),
+        hidden: filters.hidden_fields(),
+    })
+}
+
+/// `POST /logs/{id}/delete` —— 删掉一条，回到原筛选的列表。
+pub async fn remove(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    axum::Form(filters): axum::Form<Filters>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let repo = CallRecordRepo::new(state.db.clone());
+    let removed = match repo.delete(id).await {
+        Ok(removed) => removed,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("删除日志失败（{error}）"),
+            )
+                .into_response()
+        }
+    };
+    let deleted = if removed { 1 } else { 0 };
+    Redirect::to(&format!("/logs{}&deleted={deleted}", filters.back_query())).into_response()
+}
+
+/// `POST /logs/delete` —— 把当前筛选下的记录整批删掉。
+pub async fn remove_matching(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::Form(filters): axum::Form<Filters>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let repo = CallRecordRepo::new(state.db.clone());
+    let removed = match repo.delete_matching(&filters.to_query()).await {
+        Ok(removed) => removed,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("批量删除日志失败（{error}）"),
+            )
+                .into_response()
+        }
+    };
+    Redirect::to(&format!("/logs{}&deleted={removed}", filters.back_query()))
+        .into_response()
 }
 
 fn escape(text: &str) -> String {
@@ -299,6 +521,7 @@ mod tests {
             path: "/v1/images".to_string(),
             code: "upstream_error".to_string(),
             page: 2,
+            deleted: 0,
         };
         let query = filters.to_query();
         assert_eq!(filters.hours(), 720, "小时数应被钳制");
@@ -312,6 +535,27 @@ mod tests {
         );    }
 
     #[test]
+    fn delete_form_carries_current_filters() {
+        let filters = Filters {
+            hours: 6,
+            status: "fail".to_string(),
+            path: "/v1/images".to_string(),
+            code: "upstream_error".to_string(),
+            page: 3,
+            deleted: 0,
+        };
+        // 删除后要回到同一筛选，页码不能带（回到第一页才看得到结果）
+        assert_eq!(
+            filters.back_query(),
+            "?hours=6&status=fail&path=%2Fv1%2Fimages&code=upstream_error"
+        );
+        let hidden = filters.hidden_fields();
+        assert!(hidden.contains("name=\"hours\" value=\"6\""), "{hidden}");
+        assert!(hidden.contains("name=\"code\" value=\"upstream_error\""), "{hidden}");
+        assert!(!hidden.contains("page"), "筛选表单不该带页码");
+    }
+
+    #[test]
     fn ok_status_maps_to_2xx() {
         let filters = Filters {
             status: "ok".to_string(),
@@ -322,7 +566,11 @@ mod tests {
 
     #[test]
     fn row_marks_status_and_escapes_path() {
+        let filters = Filters::default();
         let row = LogRow {
+            id: 42,
+            back: filters.back_query(),
+            hidden: filters.hidden_fields(),
             at: "01-01 00:00:00".to_string(),
             method: "POST".to_string(),
             path: "/v1/a<script>".to_string(),
@@ -337,5 +585,8 @@ mod tests {
         assert!(html.contains("status--bad"), "{html}");
         assert!(!html.contains("<script>"), "路径应被转义：{html}");
         assert!(html.contains("120 ms"), "{html}");
+        // 每行都要能点进详情、也能就地删
+        assert!(html.contains("href=\"/logs/42"), "{html}");
+        assert!(html.contains("action=\"/logs/42/delete\""), "{html}");
     }
 }

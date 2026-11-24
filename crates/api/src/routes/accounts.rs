@@ -310,6 +310,8 @@ pub struct ImportResponse {
     pub skipped: usize,
     /// 逐条结果。
     pub items: Vec<ImportItem>,
+    /// 导入后自动清理掉的无效号数量（设置项 account_prune_invalid_on_import 打开时才可能非 0）。
+    pub pruned: usize,
     /// OAuth 流程自动触发的配额同步操作 ID（只有 OAuth 会带）。
     ///
     /// 单账号导入顺手同步一次很便宜；批量导入不自动做，
@@ -350,14 +352,7 @@ pub async fn create_accounts(
         )));
     }
 
-    let report = state
-        .pool
-        .repo()
-        .upsert_many(&new_accounts)
-        .await
-        .map_err(internal)?;
-    // 导入后立刻重载快照，让新账号马上可被选中
-    let _ = state.pool.reload().await;
+    let (report, pruned) = upsert_and_prune(&state, &new_accounts).await?;
 
     let mut items: Vec<ImportItem> = report
         .inserted
@@ -379,9 +374,120 @@ pub async fn create_accounts(
         merged: report.merged_count(),
         skipped: report.skipped_blank,
         items,
+        pruned,
         // 批量导入不自动同步配额：账号多时会瞬间打出大量上游请求
         sync_operation_id: None,
     }))
+}
+
+/// 导入的唯一入口：写库 → 重载快照 → 按设置清理无效号。
+///
+/// API 与后台导入表单都走这里 —— 两条路径各写一遍会让「导入后清理」
+/// 只在其中一条生效，用户从页面导入时看着像是设置没起作用。
+pub async fn upsert_and_prune(
+    state: &Arc<AppState>,
+    accounts: &[gpt2apirs_account::NewAccount],
+) -> Result<(gpt2apirs_account::UpsertReport, usize), ApiError> {
+    let report = state
+        .pool
+        .repo()
+        .upsert_many(accounts)
+        .await
+        .map_err(internal)?;
+    // 导入后立刻重载快照，让新账号马上可被选中
+    let _ = state.pool.reload().await;
+
+    // 导入后清理无效号（默认关）：开了就顺手校验一遍，把上游明确判废的删掉
+    let pruned = if prune_invalid_on_import_enabled(&state.settings) {
+        let mut candidates: Vec<Account> = report.inserted.clone();
+        candidates.extend(report.merged.iter().cloned());
+        prune_invalid_accounts(state, &candidates).await
+    } else {
+        0
+    };
+    Ok((report, pruned))
+}
+
+/// 「导入后清理无效号」的设置项键名。
+const PRUNE_SETTING_KEY: &str = "account_prune_invalid_on_import";
+
+/// 单个账号校验的总时限（上游要打三次接口）。
+const PRUNE_DEADLINE_SECS: f64 = 30.0;
+
+/// 同时校验几个账号：每个号要打三次上游，并发太高会被限流误判。
+const PRUNE_CONCURRENCY: usize = 4;
+
+/// 设置项是否打开。
+///
+/// `on` 之外也认 true/1/yes：用户在设置框里手打时不会照着文档填。
+fn prune_invalid_on_import_enabled(settings: &gpt2apirs_core::RuntimeSettings) -> bool {
+    let value = settings.get_string(PRUNE_SETTING_KEY);
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "on" | "true" | "1" | "yes"
+    )
+}
+
+/// 校验刚导入的账号，删掉上游明确判无效（401/403）的，返回删掉几个。
+///
+/// **只删 401/403**：网络错误、5xx 只是「这次没打通」，不等于号废了。
+/// 删号不可逆，误删的代价是用户得重新导一遍，所以宁可留着。
+async fn prune_invalid_accounts(state: &Arc<AppState>, accounts: &[Account]) -> usize {
+    if accounts.is_empty() {
+        return 0;
+    }
+    let mut invalid: Vec<Uuid> = Vec::new();
+    for chunk in accounts.chunks(PRUNE_CONCURRENCY) {
+        let mut set = tokio::task::JoinSet::new();
+        for account in chunk {
+            let state = state.clone();
+            let account = account.clone();
+            set.spawn(async move {
+                let client = match state.client_for(&account.proxy) {
+                    Ok(client) => client,
+                    Err(error) => {
+                        tracing::warn!(%error, account = %account.id, "建客户端失败，跳过校验");
+                        return None;
+                    }
+                };
+                let deadline = Deadline::in_secs(PRUNE_DEADLINE_SECS);
+                match gpt2apirs_account::fetch_remote_info(
+                    &client,
+                    &account.access_token,
+                    gpt2apirs_http::DEFAULT_USER_AGENT,
+                    deadline,
+                )
+                .await
+                {
+                    Ok(_) => None,
+                    Err(error) if error.is_unauthorized() => Some(account.id),
+                    Err(error) => {
+                        tracing::warn!(account = %account.id, %error, "校验失败但不是账号失效，保留");
+                        None
+                    }
+                }
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            if let Ok(Some(id)) = joined {
+                invalid.push(id);
+            }
+        }
+    }
+    if invalid.is_empty() {
+        return 0;
+    }
+    match state.pool.repo().delete_many(&invalid).await {
+        Ok(removed) => {
+            let _ = state.pool.reload().await;
+            tracing::info!(removed, "导入后清理无效号");
+            removed as usize
+        }
+        Err(error) => {
+            tracing::warn!(%error, "删除无效号失败");
+            0
+        }
+    }
 }
 
 fn parse_import_body(bytes: &[u8]) -> Result<Vec<gpt2apirs_account::NewAccount>, ApiError> {
@@ -835,6 +941,9 @@ pub async fn oauth_finish(
             outcome,
             reason,
         }],
+        // OAuth 这条路刚拿到的新凭据，且下面就会同步配额——同步本身就能发现失效，
+        // 不用再叠一层「导入后清理」。
+        pruned: 0,
         sync_operation_id,
     }))
 }
@@ -896,3 +1005,44 @@ pub const _KINDS: &[OperationKind] = &[
     OperationKind::Test,
     OperationKind::Import,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn settings(values: &[(&str, Value)]) -> gpt2apirs_core::RuntimeSettings {
+        let mut map = HashMap::new();
+        for (key, value) in values {
+            map.insert((*key).to_string(), value.clone());
+        }
+        gpt2apirs_core::RuntimeSettings::new(map)
+    }
+
+    #[test]
+    fn prune_is_off_by_default() {
+        // 默认关：导入不该偷偷校验并删号（每个号多打三次上游）
+        let empty = settings(&[]);
+        assert!(!prune_invalid_on_import_enabled(&empty));
+        let explicit_off = settings(&[(PRUNE_SETTING_KEY, json!("off"))]);
+        assert!(!prune_invalid_on_import_enabled(&explicit_off));
+    }
+
+    #[test]
+    fn prune_accepts_common_on_spellings() {
+        // 用户在设置框里手打时不会照着文档写，常见写法都要认
+        for value in ["on", "ON", " true ", "1", "yes"] {
+            let tuned = settings(&[(PRUNE_SETTING_KEY, json!(value))]);
+            assert!(
+                prune_invalid_on_import_enabled(&tuned),
+                "{value} 应被当成打开"
+            );
+        }
+        // 乱七八糟的值不当打开：宁可不动，也别误删账号
+        for value in ["", "off", "maybe", "2"] {
+            let tuned = settings(&[(PRUNE_SETTING_KEY, json!(value))]);
+            assert!(!prune_invalid_on_import_enabled(&tuned), "{value} 不该打开");
+        }
+    }
+}

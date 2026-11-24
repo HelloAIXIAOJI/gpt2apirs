@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use gpt2apirs_core::AppError;
 use gpt2apirs_storage::repo::{CallRecordQuery, CallRecordRepo};
 use serde::Deserialize;
@@ -71,27 +71,82 @@ pub async fn list_logs(
         offset: params.offset.unwrap_or(0),
     };
     let rows = repo.list(&query).await.map_err(internal)?;
-    let items: Vec<Value> = rows
-        .into_iter()
-        .map(|row| {
-            json!({
-                "id": row.id,
-                "created_at": row.created_at,
-                "method": row.method,
-                "path": row.path,
-                "status": row.status,
-                "duration_ms": row.duration_ms,
-                "account_id": row.account_id,
-                "request_id": row.request_id,
-                "error_code": row.error_code,
-            })
-        })
-        .collect();
+    let items: Vec<Value> = rows.iter().map(row_json).collect();
     Ok(Json(json!({
         "data": items,
         "limit": query.limit,
         "offset": query.offset,
     })))
+}
+
+fn row_json(row: &gpt2apirs_storage::repo::CallRecordRow) -> Value {
+    json!({
+        "id": row.id,
+        "created_at": row.created_at,
+        "method": row.method,
+        "path": row.path,
+        "status": row.status,
+        "duration_ms": row.duration_ms,
+        "account_id": row.account_id,
+        "request_id": row.request_id,
+        "error_code": row.error_code,
+        "client_ip": row.client_ip,
+        "user_agent": row.user_agent,
+        "api_key_prefix": row.api_key_prefix,
+        "error_message": row.error_message,
+    })
+}
+
+/// `GET /api/logs/{id}`
+pub async fn get_log(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let repo = CallRecordRepo::new(state.db.clone());
+    match repo.get(id).await.map_err(internal)? {
+        Some(row) => Ok(Json(row_json(&row))),
+        None => Err(ApiError::openai(AppError::NotFound {
+            message: format!("没有 id 为 {id} 的调用记录"),
+            code: Some("log_not_found".to_string()),
+        })),
+    }
+}
+
+/// `DELETE /api/logs/{id}`
+pub async fn delete_log(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let repo = CallRecordRepo::new(state.db.clone());
+    let removed = repo.delete(id).await.map_err(internal)?;
+    if !removed {
+        return Err(ApiError::openai(AppError::NotFound {
+            message: format!("没有 id 为 {id} 的调用记录"),
+            code: Some("log_not_found".to_string()),
+        }));
+    }
+    Ok(Json(json!({ "deleted": 1, "id": id })))
+}
+
+/// `POST /api/logs/delete` —— 按与 `GET /api/logs` 相同的筛选整批删。
+pub async fn delete_logs(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<LogQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let repo = CallRecordRepo::new(state.db.clone());
+    let query = CallRecordQuery {
+        status_range: status_range(params.status.as_deref()),
+        path_prefix: params.path.filter(|value| !value.trim().is_empty()),
+        account_id: params.account,
+        error_code: params.code.filter(|value| !value.trim().is_empty()),
+        since: params
+            .hours
+            .map(|hours| chrono::Utc::now() - chrono::Duration::hours(hours.clamp(1, 24 * 30))),
+        limit: 0,
+        offset: 0,
+    };
+    let removed = repo.delete_matching(&query).await.map_err(internal)?;
+    Ok(Json(json!({ "deleted": removed })))
 }
 
 /// 监控汇总参数。

@@ -25,6 +25,14 @@ pub struct NewCallRecord {
     pub request_id: Option<Uuid>,
     /// 错误码（可为空）。
     pub error_code: Option<String>,
+    /// 调用方 IP（取 X-Forwarded-For 第一跳，退 X-Real-IP）。
+    pub client_ip: Option<String>,
+    /// 调用方 UA。
+    pub user_agent: Option<String>,
+    /// 调用用的 API key 前缀（只留前缀，不落明文）。
+    pub api_key_prefix: Option<String>,
+    /// 这次失败的原因原文（详情页用；成功时为空）。
+    pub error_message: Option<String>,
 }
 
 /// 查询到的一条记录。
@@ -48,6 +56,14 @@ pub struct CallRecordRow {
     pub request_id: Option<Uuid>,
     /// 错误码。
     pub error_code: Option<String>,
+    /// 调用方 IP。
+    pub client_ip: Option<String>,
+    /// 调用方 UA。
+    pub user_agent: Option<String>,
+    /// 调用用的 API key 前缀。
+    pub api_key_prefix: Option<String>,
+    /// 失败原因原文。
+    pub error_message: Option<String>,
 }
 
 /// 日志查询条件。
@@ -132,6 +148,10 @@ impl CallRecordRepo {
             .bind(record.account_id)
             .bind(record.request_id)
             .bind(&record.error_code)
+            .bind(&record.client_ip)
+            .bind(&record.user_agent)
+            .bind(&record.api_key_prefix)
+            .bind(&record.error_message)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -192,6 +212,39 @@ impl CallRecordRepo {
         })
     }
 
+    /// 按主键取一条（详情页用）。
+    pub async fn get(&self, id: i64) -> Result<Option<CallRecordRow>, StorageError> {
+        let row = sqlx::query_as::<_, CallRecordRow>(SQL_GET)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row)
+    }
+
+    /// 删一条，返回是否真的删掉了（不存在时是 false，路由据此回 404）。
+    pub async fn delete(&self, id: i64) -> Result<bool, StorageError> {
+        let result = sqlx::query(SQL_DELETE).bind(id).execute(&self.pool).await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// 删掉当前筛选条件下的全部记录，返回删除条数。
+    ///
+    /// 只认 `count` 用的那套筛选，`limit/offset` 不参与 —— 「删掉筛选结果」
+    /// 必须是整批，不能删着删着只删掉当前页。
+    pub async fn delete_matching(&self, query: &CallRecordQuery) -> Result<u64, StorageError> {
+        let (min_status, max_status) = query.status_range.unwrap_or((0, 999));
+        let result = sqlx::query(SQL_DELETE_MATCHED)
+            .bind(min_status)
+            .bind(max_status)
+            .bind(query.path_prefix.as_deref())
+            .bind(query.account_id)
+            .bind(query.since)
+            .bind(query.error_code.clone())
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     /// 删除早于 N 小时的记录，返回删除条数。
     pub async fn purge_older_than(&self, hours: i64) -> Result<u64, StorageError> {
         let window = format!("{} hours", hours.max(1));
@@ -241,9 +294,13 @@ const SQL_COUNT: &str = r#"select count(*)
      and ($5::timestamptz is null or created_at >= $5)
      and ($6::text is null or error_code = $6)"#;
 
-const SQL_INSERT: &str = "insert into call_records (method, path, status, duration_ms, account_id, request_id, error_code) values ($1, $2, $3, $4, $5, $6, $7)";
+const SQL_INSERT: &str = r#"insert into call_records
+   (method, path, status, duration_ms, account_id, request_id, error_code,
+    client_ip, user_agent, api_key_prefix, error_message)
+   values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)"#;
 
-const SQL_LIST: &str = r#"select id, created_at, method, path, status, duration_ms, account_id, request_id, error_code
+const SQL_LIST: &str = r#"select id, created_at, method, path, status, duration_ms, account_id, request_id, error_code,
+          client_ip, user_agent, api_key_prefix, error_message
    from call_records
    where status between $1 and $2
      and ($3::text is null or path like $3 || '%')
@@ -267,6 +324,22 @@ const SQL_TOP_ERRORS: &str = r#"select coalesce(error_code, status::text) as cod
    group by code order by hits desc limit 5"#;
 
 const SQL_PURGE: &str = r#"delete from call_records where created_at < now() - $1::interval"#;
+
+/// 单条详情。
+const SQL_GET: &str = r#"select id, created_at, method, path, status, duration_ms, account_id, request_id, error_code,
+          client_ip, user_agent, api_key_prefix, error_message
+   from call_records where id = $1"#;
+
+/// 删单条。
+const SQL_DELETE: &str = "delete from call_records where id = $1";
+
+/// 按筛选批量删（与 SQL_COUNT 同一套条件，参数顺序也要一致）。
+const SQL_DELETE_MATCHED: &str = r#"delete from call_records
+   where status between $1 and $2
+     and ($3::text is null or path like $3 || '%')
+     and ($4::uuid is null or account_id = $4)
+     and ($5::timestamptz is null or created_at >= $5)
+     and ($6::text is null or error_code = $6)"#;
 /// 按天聚合。
 const SQL_DAILY: &str = r#"
     select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as day,

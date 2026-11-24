@@ -123,18 +123,21 @@ pub async fn import_accounts(
         Ok(_) => return redirect_with_flash("/accounts", "没有解析出账号，请检查 access_token"),
         Err(error) => return redirect_with_flash("/accounts", &format!("解析失败：{error}")),
     };
-    match state.pool.repo().upsert_many(&accounts).await {
-        Ok(report) => {
-            let _ = state.pool.reload().await;
-            let message = format!(
+    // 与 API 导入共用一个入口：否则「导入后清理无效号」只在 API 那条路生效
+    match crate::routes::accounts::upsert_and_prune(&state, &accounts).await {
+        Ok((report, pruned)) => {
+            let mut message = format!(
                 "导入完成：新增 {} 个，合并 {} 个，空行跳过 {} 个",
                 report.inserted.len(),
                 report.merged.len(),
                 report.skipped_blank
             );
+            if pruned > 0 {
+                message.push_str(&format!("，已清理无效号 {pruned} 个"));
+            }
             redirect_with_flash("/accounts", &message)
         }
-        Err(error) => redirect_with_flash("/accounts", &format!("写入失败：{error}")),
+        Err(error) => redirect_with_flash("/accounts", &format!("写入失败：{}", error.error)),
     }
 }
 
