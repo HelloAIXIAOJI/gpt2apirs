@@ -19,6 +19,23 @@ import argparse, base64, hashlib, hmac, json, os, re, secrets, sys, time
 from urllib.parse import urlencode
 import urllib.request
 
+def wait_next_totp_window():
+    """等到下一个 30 秒窗口：MFA 重试时不能复用刚刚被拒的同一个码。"""
+    cur = int(time.time()) // 30
+    while int(time.time()) // 30 == cur:
+        time.sleep(1)
+
+def dump_page(driver, tag):
+    """失败时把页面存一份：看不清页面就只能猜，猜是最贵的。"""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fail-%s.html" % tag)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("<!-- %s -->\n" % driver.current_url)
+            f.write(driver.page_source)
+        print("（页面已存 %s）" % path, flush=True)
+    except Exception:
+        pass
+
 def fill_input(driver, element, text, retries=3):
     """往受控输入框写值并校验；send_keys 偶尔写不进去（React 水合时序），失败改用 JS 原生 setter。"""
     from selenium.webdriver.common.by import By as _By
@@ -166,10 +183,15 @@ def main():
             o.add_argument("--proxy-server=" + a.proxy)
         return o
 
-    # 驱动版本要和浏览器大版本匹配；取不到版本号时，从报错里解析后重试一次
+    # 驱动版本要和浏览器大版本匹配；取不到版本号时，从报错里解析后重试一次。
+    # driver_executable_path 给了就直接用本机那一份：默认行为要联网确认驱动版本，
+    # 那台机器下载被挡时会报 SSL EOF（实测），而缓存里往往已经有匹配的驱动。
+    driver_path = os.environ.get("CHROMEDRIVER_PATH") or None
+
     def launch(vm):
         return uc.Chrome(options=make_options(), headless=bool(a.headless),
-                         use_subprocess=True, version_main=vm)
+                         use_subprocess=True, version_main=vm,
+                         driver_executable_path=driver_path)
 
     try:
         driver = launch(chrome_major(chrome))
@@ -242,12 +264,33 @@ def main():
         print("④ 已提交 TOTP（%s）" % code, flush=True)
 
         auth_code = None
+        # 有些号在 TOTP 之后还会再弹一道 MFA（mfa-challenge）：再填一次即可。
+        # 必须等下一个 30 秒窗口，否则填进去的还是刚用过的那 6 位，必然再被拒。
+        extra_mfa = 0
         for _ in range(90):
             time.sleep(1)
             m = re.search(r"[?&]code=([^&]+)", driver.current_url)
             if m:
                 auth_code = m.group(1); break
+            if "mfa-challenge" in driver.current_url and extra_mfa < 3:
+                extra_mfa += 1
+                wait_next_totp_window()
+                box = None
+                for sel in ['input[autocomplete*="one-time-code"]', 'input[inputmode="numeric"]',
+                            'input[name="code"]', 'input[type="tel"]']:
+                    try:
+                        box = driver.find_element(By.CSS_SELECTOR, sel)
+                        break
+                    except Exception:
+                        pass
+                if box is not None:
+                    fresh = totp(creds["totp"])
+                    fill_input(driver, box, fresh); time.sleep(0.5)
+                    click_continue(driver)
+                    print("④+ 又一道 MFA，已再提交 TOTP（%s）" % fresh, flush=True)
+                continue
         if not auth_code:
+            dump_page(driver, "mfa_or_code_failed")
             die("没拿到授权 code，当前页面：" + driver.current_url[:120])
         print("⑤ 拿到授权 code，换 token…", flush=True)
 

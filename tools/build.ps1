@@ -7,6 +7,7 @@
 # 用法：
 #   powershell -File tools/build.ps1 -Release
 #   powershell -File tools/build.ps1 -CargoArgs build,--workspace,--all-features
+#   powershell -File tools/build.ps1 -CargoArgs test,-j,2,--workspace
 #
 # 额外参数原样交给 cargo；脚本只往 target/ 写一个工具链文件，不动仓库其他文件。
 
@@ -85,6 +86,12 @@ if ($existing -ne $content) {
 $env:CMAKE_GENERATOR = 'Ninja'
 $env:CMAKE_TOOLCHAIN_FILE = $toolchain
 
+# 测试二进制不带调试符号。
+# 每个集成测试目标都会留一份 .pdb（单个几百 MB），cargo 从不回收旧的哈希目录：
+# 跑十几次 cargo test 就能把 target 撑到几十 GB（实测一次 80GB，删掉后释放 69.8GB）。
+# 要调测试时临时把它改回来：$env:CARGO_PROFILE_TEST_DEBUG = 'line-tables-only'
+$env:CARGO_PROFILE_TEST_DEBUG = '0'
+
 # powershell -File 把 "a,b,c" 整体塞进一个元素，这里拆开
 $cargo = @($CargoArgs | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne '' })
 if ($Release -and $cargo -notcontains '--release') { $cargo += '--release' }
@@ -92,5 +99,6 @@ if ($Release -and $cargo -notcontains '--release') { $cargo += '--release' }
 Write-Host "cargo $($cargo -join ' ')"
 Write-Host "  CMAKE_GENERATOR      = $env:CMAKE_GENERATOR"
 Write-Host "  CMAKE_TOOLCHAIN_FILE = $env:CMAKE_TOOLCHAIN_FILE"
+Write-Host "  CARGO_PROFILE_TEST_DEBUG = $($env:CARGO_PROFILE_TEST_DEBUG)"
 & cargo @cargo
 exit $LASTEXITCODE
