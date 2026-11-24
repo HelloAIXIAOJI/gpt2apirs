@@ -93,3 +93,35 @@ async fn insert_list_summary_and_purge() {
 
     pool.close().await;
 }
+/// 仪表盘聚合：按天、按路径的统计要真的能从库里算出来。
+#[tokio::test]
+async fn daily_and_ranking_aggregate_real_rows() {
+    let Some((repo, pool)) = repo().await else { return };
+
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let prefix = format!("/v1/dash-{tag}");
+    for _ in 0..3 {
+        repo.insert(&record(&format!("{prefix}/a"), 200, 100)).await.expect("写");
+    }
+    for _ in 0..2 {
+        repo.insert(&record(&format!("{prefix}/b"), 500, 800)).await.expect("写");
+    }
+
+    // 按天：今天的点必须存在，且总数 >= 5（库里还有其他记录，只断言下界）
+    let daily = repo.daily(2).await.expect("按天聚合");
+    assert!(!daily.is_empty(), "近两天应有数据");
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let point = daily.iter().find(|row| row.day == today).expect("今天应有聚合点");
+    assert!(point.total >= 5, "今天至少 5 次，实际 {}", point.total);
+    assert!(point.failed >= 2, "失败数至少 2，实际 {}", point.failed);
+    assert!(point.avg_ms > 0.0, "平均耗时应有值");
+
+    // 按路径排行：我们刚写的路径要出现在前若干名
+    let by_path = repo.by_path(1, 50).await.expect("按路径排行");
+    assert!(
+        by_path.iter().any(|row| row.key.starts_with(&prefix)),
+        "刚写的路径应出现在排行里"
+    );
+    assert!(by_path.iter().all(|row| row.count > 0));
+    let _ = pool;
+}

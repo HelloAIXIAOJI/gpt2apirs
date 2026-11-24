@@ -66,6 +66,34 @@ pub struct ImageTaskRow {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+/// 图片任务按天聚合的一点。
+#[derive(Debug, Clone, Default, serde::Serialize, sqlx::FromRow)]
+pub struct ImageDailyStat {
+    /// 日期（YYYY-MM-DD）。
+    pub day: String,
+    /// 新建任务数。
+    pub tasks: i64,
+    /// 成功数。
+    pub done: i64,
+    /// 失败数。
+    pub failed: i64,
+    /// 产出的图片张数。
+    pub images: i64,
+    /// 总 token。
+    pub tokens: i64,
+}
+
+/// 按模型的排行项。
+#[derive(Debug, Clone, Default, serde::Serialize, sqlx::FromRow)]
+pub struct ModelStat {
+    /// 模型名。
+    pub model: String,
+    /// 任务数。
+    pub tasks: i64,
+    /// 图片张数。
+    pub images: i64,
+}
+
 /// 新任务。
 #[derive(Debug, Clone)]
 pub struct NewImageTask {
@@ -218,11 +246,55 @@ impl ImageTaskRepo {
     /// 清掉过期的终态任务，返回删除行数。
     pub async fn purge_terminal_older_than(&self, hours: i64) -> Result<u64, StorageError> {
         let result = sqlx::query(
-            "delete from image_tasks where status in ('succeeded', 'failed') and created_at < now() - make_interval(hours => $1)",
+            "delete from image_tasks where status in ('succeeded', 'failed') and created_at < now() - make_interval(hours => $1::int)",
         )
         .bind(hours.clamp(1, 24 * 365) as i32)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
     }
+
+    /// 近 `days` 天按天聚合。
+    pub async fn daily(&self, days: i64) -> Result<Vec<ImageDailyStat>, StorageError> {
+        let rows = sqlx::query_as::<_, ImageDailyStat>(SQL_DAILY)
+            .bind(days.clamp(1, 90))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    /// 近 `days` 天按模型排行。
+    pub async fn by_model(&self, days: i64, limit: i64) -> Result<Vec<ModelStat>, StorageError> {
+        let rows = sqlx::query_as::<_, ModelStat>(SQL_BY_MODEL)
+            .bind(days.clamp(1, 90))
+            .bind(limit.clamp(1, 50))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
 }
+
+/// 按天聚合。
+const SQL_DAILY: &str = r#"
+    select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as day,
+           count(*) as tasks,
+           count(*) filter (where status = 'succeeded') as done,
+           count(*) filter (where status = 'failed') as failed,
+           coalesce(sum(jsonb_array_length(images)), 0)::bigint as images,
+           coalesce(sum(total_tokens), 0)::bigint as tokens
+    from image_tasks
+    where created_at >= now() - make_interval(days => $1::int)
+    group by 1
+    order by 1
+"#;
+
+/// 按模型排行。
+const SQL_BY_MODEL: &str = r#"
+    select model, count(*) as tasks,
+           coalesce(sum(jsonb_array_length(images)), 0)::bigint as images
+    from image_tasks
+    where created_at >= now() - make_interval(days => $1::int)
+    group by 1
+    order by 2 desc
+    limit $2
+"#;

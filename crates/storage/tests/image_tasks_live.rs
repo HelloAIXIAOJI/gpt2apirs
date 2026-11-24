@@ -109,3 +109,47 @@ async fn fail_unfinished_marks_orphans() {
     assert_eq!(row.error.as_deref(), Some("测试：服务重启"));
     repo.delete(id).await.expect("清理");
 }
+/// 仪表盘：图片任务按天 + 按模型的聚合要能算出来。
+#[tokio::test]
+async fn daily_and_by_model_aggregate_real_rows() {
+    let Some(url) = database_url() else {
+        eprintln!("跳过：未设置 DATABASE_URL");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .expect("连库");
+    let repo = ImageTaskRepo::new(pool.clone());
+    let id = Uuid::new_v4();
+    repo.insert(&NewImageTask {
+        id,
+        prompt: "聚合测试".to_string(),
+        model: "image-dash-test".to_string(),
+        n: 1,
+        response_format: "url".to_string(),
+        output_format: None,
+        frame_count: None,
+        frame_duration_ms: None,
+        base_url: "http://localhost:8000".to_string(),
+    })
+    .await
+    .expect("写库");
+    repo.finish(id, true, &[], None, 100, 0, 0).await.expect("结算");
+
+    let daily = repo.daily(2).await.expect("按天聚合");
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let point = daily.iter().find(|row| row.day == today).expect("今天应有聚合点");
+    assert!(point.tasks >= 1, "今天至少 1 个任务，实际 {}", point.tasks);
+    assert!(point.done >= 1, "成功数至少 1，实际 {}", point.done);
+
+    let by_model = repo.by_model(2, 50).await.expect("按模型排行");
+    assert!(
+        by_model.iter().any(|row| row.model == "image-dash-test"),
+        "刚写的模型应出现在排行里"
+    );
+
+    repo.delete(id).await.expect("清理");
+    let _ = pool;
+}

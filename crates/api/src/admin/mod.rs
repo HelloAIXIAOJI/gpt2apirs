@@ -11,7 +11,9 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use chrono::Utc;
-use gpt2apirs_storage::repo::ImageAssetRepo;
+use gpt2apirs_storage::repo::{
+    CallRecordRepo, DailyStat, ImageAssetRepo, ImageDailyStat, ImageTaskRepo,
+};
 use serde::Deserialize;
 
 use crate::auth::is_admin_token;
@@ -59,6 +61,28 @@ struct StatGroup {
 struct OverviewPage {
     groups: Vec<StatGroup>,
     nav: Vec<NavItem>,
+    trend: Vec<TrendBar>,
+    trend_days: i64,
+    trend_total_calls: i64,
+    trend_total_images: i64,
+}
+
+/// 概览页上的一根柱子（一天）。
+struct TrendBar {
+    /// 日期（MM-DD）。
+    label: String,
+    /// 当天调用数。
+    calls: i64,
+    /// 当天失败数。
+    failed: i64,
+    /// 当天生图任务数。
+    tasks: i64,
+    /// 柱子高度百分比（按两种指标里的最大值归一）。
+    calls_pct: u32,
+    /// 失败率百分比。
+    failed_pct: u32,
+    /// 生图柱子高度百分比。
+    tasks_pct: u32,
 }
 /// 登录表单。
 #[derive(Debug, Deserialize)]
@@ -191,10 +215,62 @@ async fn build_overview(state: &AppState) -> OverviewPage {
         ],
     });
 
+    let (trend, trend_total_calls, trend_total_images) = build_trend(state, 7).await;
     OverviewPage {
         groups,
         nav: nav::items("/overview"),
+        trend,
+        trend_days: 7,
+        trend_total_calls,
+        trend_total_images,
     }
+}
+
+/// 近 N 天的趋势柱，供概览页画图。
+async fn build_trend(state: &AppState, days: i64) -> (Vec<TrendBar>, i64, i64) {
+    let today = Utc::now().date_naive();
+    let calls = CallRecordRepo::new(state.db.clone())
+        .daily(days)
+        .await
+        .unwrap_or_default();
+    let images = ImageTaskRepo::new(state.db.clone())
+        .daily(days)
+        .await
+        .unwrap_or_default();
+    let bars = build_trend_bars(calls, images, days, today);
+    let total_calls = bars.iter().map(|bar| bar.calls).sum();
+    let total_images = bars.iter().map(|bar| bar.tasks).sum();
+    (bars, total_calls, total_images)
+}
+
+/// 把两张按天表合成柱子序列（缺天补零、按最大值归一）。纯函数，便于单测。
+fn build_trend_bars(
+    mut calls: Vec<DailyStat>,
+    mut images: Vec<ImageDailyStat>,
+    days: i64,
+    today: chrono::NaiveDate,
+) -> Vec<TrendBar> {
+    let calls = crate::routes::dashboard::fill_days(calls.drain(..).collect(), days, today);
+    let images = crate::routes::dashboard::fill_image_days(images.drain(..).collect(), days, today);
+    let max_calls = calls.iter().map(|row| row.total).max().unwrap_or(0).max(1);
+    let max_tasks = images.iter().map(|row| row.tasks).max().unwrap_or(0).max(1);
+    calls
+        .iter()
+        .zip(images.iter())
+        .map(|(call, image)| TrendBar {
+            label: call.day.get(5..).unwrap_or(&call.day).to_string(),
+            calls: call.total,
+            failed: call.failed,
+            tasks: image.tasks,
+            calls_pct: ((call.total * 100 / max_calls).clamp(0, 100)) as u32,
+            failed_pct: if call.total == 0 {
+                0
+            } else {
+                ((call.failed * 100 / call.total).clamp(0, 100)) as u32
+            },
+            tasks_pct: ((image.tasks * 100 / max_tasks).clamp(0, 100)) as u32,
+        })
+        .collect()
 }
 
 /// 秒数转「N 天 N 小时 N 分」，只保留两级，避免一行太长。
@@ -331,6 +407,29 @@ mod tests {
                     cards: vec![StatCard::failed("数据库", "不可用（超时）")],
                 },
             ],
+            trend: vec![
+                TrendBar {
+                    label: "11-24".to_string(),
+                    calls: 12,
+                    failed: 1,
+                    tasks: 3,
+                    calls_pct: 100,
+                    failed_pct: 8,
+                    tasks_pct: 60,
+                },
+                TrendBar {
+                    label: "11-25".to_string(),
+                    calls: 6,
+                    failed: 0,
+                    tasks: 5,
+                    calls_pct: 50,
+                    failed_pct: 0,
+                    tasks_pct: 100,
+                },
+            ],
+            trend_days: 2,
+            trend_total_calls: 18,
+            trend_total_images: 8,
         };
         let html = page.render().expect("渲染概览页");
         for expected in [
@@ -344,6 +443,13 @@ mod tests {
             "数据库",
             "stat--danger",
             "is-active",
+            "近 2 天",
+            "trend-bar--calls",
+            "trend-bar--tasks",
+            "11-24",
+            "height: 100%",
+            "18",
+            "8",
         ] {
             assert!(html.contains(expected), "缺少 {expected}：{html}");
         }

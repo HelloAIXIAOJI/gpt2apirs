@@ -116,6 +116,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/proxy/ping", post(routes::proxy::ping))
         .route("/api/logs", get(routes::logs::list_logs))
         .route("/api/metrics", get(routes::logs::metrics))
+        .route("/api/dashboard", get(routes::dashboard::dashboard))
         .route("/api/settings", get(routes::settings::get_settings))
         .route("/api/settings", put(routes::settings::update_settings))
         .route(

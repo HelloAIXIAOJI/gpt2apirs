@@ -86,6 +86,30 @@ pub struct CallSummary {
     pub top_errors: Vec<(String, i64)>,
 }
 
+/// 按天聚合的一个点。
+#[derive(Debug, Clone, Default, serde::Serialize, sqlx::FromRow)]
+pub struct DailyStat {
+    /// 日期（YYYY-MM-DD，按服务器时区）。
+    pub day: String,
+    /// 请求总数。
+    pub total: i64,
+    /// 成功数（2xx）。
+    pub ok: i64,
+    /// 失败数（非 2xx）。
+    pub failed: i64,
+    /// 平均耗时（毫秒）。
+    pub avg_ms: f64,
+}
+
+/// 排行榜的一项（路径 / 账号）。
+#[derive(Debug, Clone, Default, serde::Serialize, sqlx::FromRow)]
+pub struct RankedEntry {
+    /// 分组键。
+    pub key: String,
+    /// 次数。
+    pub count: i64,
+}
+
 /// 调用日志仓储。
 #[derive(Debug, Clone)]
 pub struct CallRecordRepo {
@@ -177,6 +201,36 @@ impl CallRecordRepo {
             .await?;
         Ok(result.rows_affected())
     }
+
+    /// 近 `days` 天按天聚合（缺失的天由调用方补齐）。
+    pub async fn daily(&self, days: i64) -> Result<Vec<DailyStat>, StorageError> {
+        let rows = sqlx::query_as::<_, DailyStat>(SQL_DAILY)
+            .bind(days.clamp(1, 90))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    /// 近 `hours` 小时按路径排行。
+    pub async fn by_path(&self, hours: i64, limit: i64) -> Result<Vec<RankedEntry>, StorageError> {
+        let rows = sqlx::query_as::<_, RankedEntry>(SQL_BY_PATH)
+            .bind(hours.clamp(1, 24 * 30))
+            .bind(limit.clamp(1, 50))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    /// 近 `hours` 小时按账号排行。
+    pub async fn by_account(&self, hours: i64, limit: i64) -> Result<Vec<RankedEntry>, StorageError> {
+        let rows = sqlx::query_as::<_, RankedEntry>(SQL_BY_ACCOUNT)
+            .bind(hours.clamp(1, 24 * 30))
+            .bind(limit.clamp(1, 50))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
 }
 
 const SQL_COUNT: &str = r#"select count(*)
@@ -213,3 +267,36 @@ const SQL_TOP_ERRORS: &str = r#"select coalesce(error_code, status::text) as cod
    group by code order by hits desc limit 5"#;
 
 const SQL_PURGE: &str = r#"delete from call_records where created_at < now() - $1::interval"#;
+/// 按天聚合。
+const SQL_DAILY: &str = r#"
+    select to_char(date_trunc('day', created_at), 'YYYY-MM-DD') as day,
+           count(*) as total,
+           count(*) filter (where status between 200 and 299) as ok,
+           count(*) filter (where status not between 200 and 299) as failed,
+           coalesce(avg(duration_ms), 0)::float8 as avg_ms
+    from call_records
+    where created_at >= now() - make_interval(days => $1::int)
+    group by 1
+    order by 1
+"#;
+
+/// 按路径排行。
+const SQL_BY_PATH: &str = r#"
+    select path as key, count(*) as count
+    from call_records
+    where created_at >= now() - make_interval(hours => $1::int)
+    group by 1
+    order by 2 desc
+    limit $2
+"#;
+
+/// 按账号排行。
+const SQL_BY_ACCOUNT: &str = r#"
+    select account_id::text as key, count(*) as count
+    from call_records
+    where account_id is not null
+      and created_at >= now() - make_interval(hours => $1::int)
+    group by 1
+    order by 2 desc
+    limit $2
+"#;

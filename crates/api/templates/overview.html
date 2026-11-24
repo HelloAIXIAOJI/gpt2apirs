@@ -6,6 +6,32 @@
 </header>
 
 <section id="overview" class="stats">
+  <h2 class="section-title">近 {{ trend_days }} 天</h2>
+  <div class="trend">
+    <div class="trend-legend">
+      <span>调用 <strong>{{ trend_total_calls }}</strong> 次</span>
+      <span>生图任务 <strong>{{ trend_total_images }}</strong> 个</span>
+      <span class="muted">柱高按各自最大值归一</span>
+    </div>
+    <div class="trend-chart">
+      {% for bar in trend %}
+      <div class="trend-col" title="{{ bar.label }}：调用 {{ bar.calls }}（失败 {{ bar.failed }}），生图 {{ bar.tasks }}">
+        <div class="trend-bars">
+          <span class="trend-bar trend-bar--calls" style="height: {{ bar.calls_pct }}%"></span>
+          <span class="trend-bar trend-bar--tasks" style="height: {{ bar.tasks_pct }}%"></span>
+          <span class="trend-bar trend-bar--failed" style="height: {{ bar.failed_pct }}%"></span>
+        </div>
+        <span class="trend-x">{{ bar.label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="trend-legend">
+      <span><i class="dot dot--calls"></i>调用</span>
+      <span><i class="dot dot--tasks"></i>生图任务</span>
+      <span><i class="dot dot--failed"></i>失败占比</span>
+    </div>
+  </div>
+
   {% for group in groups %}
   <h2 class="section-title">{{ group.title }}</h2>
   <div class="stat-grid">
