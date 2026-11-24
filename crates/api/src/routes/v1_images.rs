@@ -171,18 +171,25 @@ pub async fn generate(
         crate::routes::image_flow::ensure_disk_space()?;
     let mut slots = run_generation(&state, image_request, deadline).await?;
 
+    let key = identity.map(|axum::Extension(value)| value);
+    // 资产表按全量记（多给的那张也进图库，数据不丢）……
+    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[], key.as_ref()).await;
+    // ……但响应严格守 n 的契约：n=1 就只回 1 张。
+    let dropped = crate::routes::image_flow::clamp_images(&mut slots, n);
+    if dropped > 0 {
+        tracing::info!(
+            requested = n,
+            dropped,
+            "上游多返回了图片，按 n 截断（多出的已进资产表）"
+        );
+    }
+
     let mut images: Vec<&gpt2apirs_generate::GeneratedImage> = Vec::new();
     for slot in &slots {
         for image in &slot.images {
             images.push(image);
         }
     }
-    if images.len() > n as usize {
-        // 上游偶尔会多给一张：不裁剪，全部返回（数据留全）。
-        tracing::info!(requested = n, got = images.len(), "上游多返回了图片");
-    }
-    let key = identity.map(|axum::Extension(value)| value);
-    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[], key.as_ref()).await;
 
     tracing::info!(
         slots = slots.len(),

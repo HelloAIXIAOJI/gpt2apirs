@@ -40,8 +40,13 @@ use gpt2apirs_protocol::sentinel::{
 };
 use gpt2apirs_protocol::sse::{extract_conversation_ids, parse_conversation_stream};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 /// 各阶段的**上限**（实际取 min(上限, 剩余总时间)）。
+///
+/// 只有 SSE 这一项能被设置项覆盖：它跟提示词复杂度直接相关，
+/// 解习题这类重推理提示词常常要跑几分钟。取实际上限请用 [`sse_timeout_for`]，
+/// 别直接读这里的常量。
 pub mod stage_caps {
     use std::time::Duration;
     /// bootstrap 取首页。
@@ -50,7 +55,7 @@ pub mod stage_caps {
     pub const SENTINEL: Duration = Duration::from_secs(30);
     /// conversation/prepare。
     pub const CONVERSATION_PREPARE: Duration = Duration::from_secs(60);
-    /// SSE 流。
+    /// SSE 流的**默认**上限（设置项 image_stream_timeout_secs 可覆盖）。
     pub const SSE: Duration = Duration::from_secs(80);
     /// 解析下载地址。
     pub const RESOLVE_URL: Duration = Duration::from_secs(60);
@@ -58,10 +63,18 @@ pub mod stage_caps {
     pub const DOWNLOAD: Duration = Duration::from_secs(120);
 }
 
-/// 一次请求的总时限：`stream(80) + poll(60) + 30 = 170s`。
+/// SSE 阶段的实际上限：与总时限读同一个设置项，两者不会各说各话。
+///
+/// 这里是「流还能读多久」的唯一定义处 —— 以前上限写死 80 秒，
+/// 改 image_stream_timeout_secs 只放大了总时限，SSE 该断还是断。
+pub fn sse_timeout_for(settings: &gpt2apirs_core::RuntimeSettings) -> std::time::Duration {
+    std::time::Duration::from_secs(settings.get_i64("image_stream_timeout_secs").max(1) as u64)
+}
+
+/// 一次请求的总时限：`stream + poll + 30`（默认 `80 + 60 + 30 = 170s`）。
 pub fn default_request_deadline(settings: &gpt2apirs_core::RuntimeSettings) -> Deadline {
-    let stream = settings.get_i64("image_stream_timeout_secs").max(1);
-    let poll = settings.get_i64("image_poll_timeout_secs").max(1);
+    let stream = sse_timeout_for(settings).as_secs();
+    let poll = settings.get_i64("image_poll_timeout_secs").max(1) as u64;
     Deadline::in_secs((stream + poll + 30) as f64)
 }
 
@@ -153,6 +166,9 @@ pub struct ImageRequest {
     /// `response_format=url` 时不需要：图已落盘，字节留着纯属白占内存
     /// （一张 2 MB 的图，n=4 就白占 8 MB）。只有要回 b64 时才置 true。
     pub keep_bytes: bool,
+    /// SSE 阶段的上限。默认 `stage_caps::SSE`，由 [`ImageRequest::with_runtime_settings`]
+    /// 按设置项 `image_stream_timeout_secs` 覆盖。
+    pub stream_timeout: std::time::Duration,
 }
 
 impl ImageRequest {
@@ -172,7 +188,18 @@ impl ImageRequest {
             images: Vec::new(),
             poll: PollPolicy::default(),
             keep_bytes: false,
+            stream_timeout: stage_caps::SSE,
         }
+    }
+
+    /// 按运行层设置装配「与时间有关」的部分：SSE 窗口 + 结果轮询。
+    ///
+    /// 图片路由只有这一个装配点：两处（文生图 / 图生图）都走它，
+    /// 免得一边读了设置、另一边还是写死的默认值。
+    pub fn with_runtime_settings(mut self, settings: &gpt2apirs_core::RuntimeSettings) -> Self {
+        self.poll = PollPolicy::from_settings(settings);
+        self.stream_timeout = sse_timeout_for(settings);
+        self
     }
 
     /// 带上参考图（图生图）。
@@ -228,6 +255,16 @@ impl ImageRequest {
     }
 }
 
+/// 图片内容哈希（sha256 小写 hex）。
+///
+/// 用途只有一个：上游偶尔把**同一张图**登记成两个不同的文件 id（两条下载地址、
+/// 内容一模一样），按 id/URL 去重挡不住，只能按内容去重。
+pub fn content_hash(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
 /// 已落盘的一张图片。
 #[derive(Debug, Clone)]
 pub struct GeneratedImage {
@@ -243,6 +280,8 @@ pub struct GeneratedImage {
     pub width: u32,
     /// 高。
     pub height: u32,
+    /// 原始下载字节的 sha256（小写 hex）：用于「同一张图被登记成多个 id」的内容去重。
+    pub content_hash: String,
 }
 
 impl GeneratedImage {
@@ -547,7 +586,8 @@ async fn generate_one(
     };
 
     // ---- 5. SSE ----
-    let budget = stage_budget(deadline, "sse", stage_caps::SSE)?;
+    // 上限取请求上带来的值（设置项 image_stream_timeout_secs），不再写死。
+    let budget = stage_budget(deadline, "sse", request.stream_timeout)?;
     let sse = client
         .post_sse(
             &upstream_url(CONVERSATION),
@@ -568,7 +608,18 @@ async fn generate_one(
             ),
             Some(budget),
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            // 读流被掐断绝大多数是本地超时（reqwest 的 timeout 罩着整个响应体），
+            // 以前这里只说「读取 SSE 分块失败」，调用方会当成网络抖动去重试。
+            GenerateError::new(
+                FailureKind::Network,
+                format!(
+                    "SSE 读取中断或超时（上限 {} 秒）：{error}",
+                    budget.as_secs_f64()
+                ),
+            )
+        })?;
     diag.sse_status = sse.status;
     diag.sse_bytes = sse.body.len();
     if sse.status != 200 {
@@ -774,6 +825,13 @@ async fn download_urls(
         if response.status != 200 {
             continue;
         }
+        // 上游有时把同一张图登记成两个不同的文件 id：两条地址、内容一模一样。
+        // 按 URL 去重挡不住这种情况（URL 由 id 决定），只能按内容去重。
+        let hash = content_hash(&response.body);
+        if has_content(images, &hash) {
+            tracing::info!(%url, "上游把同一张图登记成多个 id，已按内容去重");
+            continue;
+        }
         match save_image_as(&response.body, target_format, keep_bytes) {
             Ok(Some(saved)) => images.push(saved),
             Ok(None) => {}
@@ -789,6 +847,13 @@ async fn download_urls(
         }
     }
     Ok(())
+}
+
+/// 结果里是否已经有这份内容的图。
+///
+/// 单独抽出来是为了能直接测：这条判据是「两张一模一样的图」的唯一防线。
+fn has_content(images: &[GeneratedImage], hash: &str) -> bool {
+    images.iter().any(|image| image.content_hash == hash)
 }
 
 /// 轮询会话详情补齐后到的图片 id。
@@ -937,6 +1002,7 @@ pub fn save_image_as(
         mime,
         width,
         height,
+        content_hash: content_hash(bytes),
     }))
 }
 
@@ -957,6 +1023,7 @@ fn unpersisted_image(
         mime,
         width,
         height,
+        content_hash: content_hash(bytes),
     })
 }
 
@@ -1246,6 +1313,54 @@ mod tests {
     fn poll_policy_disabled_when_budget_below_interval() {
         let policy = PollPolicy { initial_wait_secs: 5.0, interval_secs: 10.0, timeout_secs: 5.0 };
         assert!(!policy.is_enabled());
+    }
+
+
+    #[test]
+    fn content_hash_identifies_same_bytes() {
+        // 同一份字节必须同哈希、不同字节必须不同哈希：这是内容去重的前提。
+        let a = content_hash(b"same-image-bytes");
+        let b = content_hash(b"same-image-bytes");
+        let c = content_hash(b"another-image");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(a.len(), 64, "sha256 小写 hex 应为 64 位");
+    }
+
+    #[test]
+    fn has_content_detects_duplicate_download() {
+        // 上游把同一张图登记成两个 id 时，第二条下载必须被认出来（不是再存一份）。
+        let saved = GeneratedImage {
+            bytes: Vec::new(),
+            size: 3,
+            rel_path: "images/2026/11/24/x.png".to_string(),
+            mime: "image/png",
+            width: 1,
+            height: 1,
+            content_hash: content_hash(b"abc"),
+        };
+        let images = vec![saved];
+        assert!(has_content(&images, &content_hash(b"abc")), "同内容应判重");
+        assert!(!has_content(&images, &content_hash(b"abd")), "不同内容不该判重");
+        assert!(!has_content(&[], &content_hash(b"abc")), "空结果不该判重");
+    }
+
+    #[test]
+    fn sse_timeout_follows_setting_and_moves_deadline() {
+        use serde_json::json;
+        let mut values = std::collections::HashMap::new();
+        let default_settings = gpt2apirs_core::RuntimeSettings::new(values.clone());
+        assert_eq!(sse_timeout_for(&default_settings), stage_caps::SSE);
+
+        // 调大到 240 秒：SSE 上限必须跟着变，总时限也要跟着涨（两者同源）。
+        values.insert("image_stream_timeout_secs".to_string(), json!(240));
+        let tuned = gpt2apirs_core::RuntimeSettings::new(values);
+        assert_eq!(sse_timeout_for(&tuned).as_secs(), 240);
+        let request = ImageRequest::new("x").with_runtime_settings(&tuned);
+        assert_eq!(request.stream_timeout.as_secs(), 240, "请求要带上新的 SSE 上限");
+        let deadline = default_request_deadline(&tuned);
+        let left = deadline.remaining().expect("应有剩余时间").as_secs_f64();
+        assert!(left > 250.0, "总时限应大于 SSE 上限，实际 {left}");
     }
 
     #[test]

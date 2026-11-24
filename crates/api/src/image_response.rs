@@ -141,83 +141,81 @@ struct State {
 
 impl State {
     fn next_chunk(&mut self) -> Option<Bytes> {
-        loop {
-            match self.stage {
-                Stage::Head => {
-                    self.stage = if self.items.is_empty() {
-                        Stage::Tail
-                    } else {
-                        Stage::Item(0)
-                    };
-                    return Some(Bytes::from(self.prefix.clone()));
+        match self.stage {
+            Stage::Head => {
+                self.stage = if self.items.is_empty() {
+                    Stage::Tail
+                } else {
+                    Stage::Item(0)
+                };
+                Some(Bytes::from(self.prefix.clone()))
+            }
+            Stage::Item(index) => {
+                let item = &self.items[index];
+                let mut out = String::new();
+                if index > 0 {
+                    out.push(',');
                 }
-                Stage::Item(index) => {
-                    let item = &self.items[index];
-                    let mut out = String::new();
-                    if index > 0 {
+                out.push('{');
+                let mut wrote = false;
+                if let ItemSource::Url(url) = &item.source {
+                    out.push_str(&format!("\"url\":{}", json_string(url)));
+                    wrote = true;
+                }
+                if let Some(prompt) = &item.prompt {
+                    if wrote {
                         out.push(',');
                     }
-                    out.push('{');
-                    let mut wrote = false;
-                    if let ItemSource::Url(url) = &item.source {
-                        out.push_str(&format!("\"url\":{}", json_string(url)));
-                        wrote = true;
-                    }
-                    if let Some(prompt) = &item.prompt {
-                        if wrote {
-                            out.push(',');
+                    out.push_str(&format!("\"revised_prompt\":{}", json_string(prompt)));
+                    wrote = true;
+                }
+                // 文件源按需读一张；读完只留在 `loaded` 里，下一张就换掉。
+                let has_bytes = match &item.source {
+                    ItemSource::Url(_) => false,
+                    ItemSource::Bytes(bytes) => !bytes.is_empty(),
+                    ItemSource::File(path) => match std::fs::read(path) {
+                        Ok(bytes) => {
+                            self.loaded = Some(bytes);
+                            true
                         }
-                        out.push_str(&format!("\"revised_prompt\":{}", json_string(prompt)));
-                        wrote = true;
-                    }
-                    // 文件源按需读一张；读完只留在 `loaded` 里，下一张就换掉。
-                    let has_bytes = match &item.source {
-                        ItemSource::Url(_) => false,
-                        ItemSource::Bytes(bytes) => !bytes.is_empty(),
-                        ItemSource::File(path) => match std::fs::read(path) {
-                            Ok(bytes) => {
-                                self.loaded = Some(bytes);
-                                true
-                            }
-                            Err(error) => {
-                                tracing::warn!(%error, path = %path.display(), "读取结果图片失败");
-                                false
-                            }
-                        },
-                    };
-                    if has_bytes {
-                        if wrote {
-                            out.push(',');
+                        Err(error) => {
+                            tracing::warn!(%error, path = %path.display(), "读取结果图片失败");
+                            false
                         }
-                        out.push_str("\"b64_json\":\"");
-                        self.stage = Stage::Body { index, offset: 0 };
-                    } else {
-                        out.push('}');
-                        self.stage = next_stage(&self.items, index);
+                    },
+                };
+                if has_bytes {
+                    if wrote {
+                        out.push(',');
                     }
-                    return Some(Bytes::from(out));
+                    out.push_str("\"b64_json\":\"");
+                    self.stage = Stage::Body { index, offset: 0 };
+                } else {
+                    out.push('}');
+                    self.stage = next_stage(&self.items, index);
                 }
-                Stage::Body { index, offset } => {
-                    let total = self.current_len(index);
-                    if offset >= total {
-                        self.loaded = None;
-                        self.stage = next_stage(&self.items, index);
-                        return Some(Bytes::from_static(b"\"}"));
-                    }
-                    let end = (offset + CHUNK).min(total);
-                    let encoded = {
-                        let bytes = self.current_bytes(index);
-                        base64::engine::general_purpose::STANDARD.encode(&bytes[offset..end])
-                    };
-                    self.stage = Stage::Body { index, offset: end };
-                    return Some(Bytes::from(encoded));
-                }
-                Stage::Tail => {
-                    self.stage = Stage::Done;
-                    return Some(Bytes::from(self.suffix.clone()));
-                }
-                Stage::Done => return None,
+                Some(Bytes::from(out))
             }
+            Stage::Body { index, offset } => {
+                let total = self.current_len(index);
+                if offset >= total {
+                    self.loaded = None;
+                    self.stage = next_stage(&self.items, index);
+                    return Some(Bytes::from_static(b"\"}"));
+                }
+                let end = (offset + CHUNK).min(total);
+                let encoded = {
+                    let bytes = self.current_bytes(index);
+                    base64::engine::general_purpose::STANDARD.encode(&bytes[offset..end])
+                };
+                self.stage = Stage::Body { index, offset: end };
+                Some(Bytes::from(encoded))
+            }
+            Stage::Tail => {
+                self.stage = Stage::Done;
+                Some(Bytes::from(self.suffix.clone()))
+            }
+            Stage::Done => None,
         }
     }
 

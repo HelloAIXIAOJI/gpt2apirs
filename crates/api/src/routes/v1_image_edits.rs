@@ -251,23 +251,26 @@ pub async fn edit_images(
     )
     .await?;
 
+    // 生成成功才落盘参考图：失败时不在磁盘上留孤儿。
+    let references = crate::references::persist_all(&prepared_edit.prepared);
+    let key = identity.map(|axum::Extension(value)| value);
+    // 资产表按全量记（多给的那张也进图库），响应再按 n 裁剪。
+    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &references, key.as_ref()).await;
+    let dropped = crate::routes::image_flow::clamp_images(&mut slots, requested_n);
+    if dropped > 0 {
+        tracing::info!(
+            requested = requested_n,
+            dropped,
+            "上游多返回了图片，按 n 截断（多出的已进资产表）"
+        );
+    }
+
     let mut images: Vec<&gpt2apirs_generate::GeneratedImage> = Vec::new();
     for slot in &slots {
         for image in &slot.images {
             images.push(image);
         }
     }
-    if images.len() > requested_n as usize {
-        tracing::info!(
-            requested = requested_n,
-            got = images.len(),
-            "上游多返回了图片"
-        );
-    }
-    // 生成成功才落盘参考图：失败时不在磁盘上留孤儿。
-    let references = crate::references::persist_all(&prepared_edit.prepared);
-    let key = identity.map(|axum::Extension(value)| value);
-    crate::routes::image_flow::record_assets(&state, &slots, &prompt, &references, key.as_ref()).await;
 
     tracing::info!(
         slots = slots.len(),

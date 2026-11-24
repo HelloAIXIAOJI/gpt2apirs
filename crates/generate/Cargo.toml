@@ -25,6 +25,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
+# 图片内容哈希（去重「同一张图被登记成多个 id」）
+sha2 = { workspace = true }
 tokio = { workspace = true }
 futures-util = { workspace = true }
 # mask 合成（alpha 通道合并）需要图像编解码

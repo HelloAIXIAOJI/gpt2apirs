@@ -131,7 +131,7 @@ pub static NUMERIC_SPECS: &[NumericSpec] = &[
         kind: NumericKind::Integer,
         unit: Some("seconds"),
         restart_required: false,
-        description: "SSE 流读取超时",
+        description: "SSE 阶段的上限；调大后单次请求的总时限同步变大",
     },
     NumericSpec {
         key: "image_poll_initial_wait_secs",

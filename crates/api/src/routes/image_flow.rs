@@ -12,7 +12,7 @@ use gpt2apirs_account::{PoolError, SelectionFilter};
 use gpt2apirs_core::{AppError, Deadline};
 use gpt2apirs_generate::error::{FailureKind, GenerateError};
 use gpt2apirs_generate::upload::UploadedFile;
-use gpt2apirs_generate::{FlowDiagnostics, ImageRequest, PollPolicy, generate_images};
+use gpt2apirs_generate::{FlowDiagnostics, ImageRequest, generate_images};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -29,6 +29,31 @@ pub struct SlotOutcome {
     pub account_id: Uuid,
     /// 诊断。
     pub diag: FlowDiagnostics,
+}
+
+/// 按请求张数裁剪：上游偶尔多给图，多出来的不返回给调用方。
+///
+/// 裁剪发生在**落资产表之后**：多给的图仍然留在图库/资产表里（数据不丢），
+/// 只是响应严格守 n 的契约 —— 否则 n=1 的调用方会莫名其妙收到两张。
+/// 返回被裁掉的张数。
+pub fn clamp_images(slots: &mut [SlotOutcome], n: u32) -> usize {
+    let limit = n.clamp(1, 32) as usize;
+    let mut taken = 0usize;
+    let mut dropped = 0usize;
+    for slot in slots.iter_mut() {
+        if taken >= limit {
+            dropped += slot.images.len();
+            slot.images.clear();
+            continue;
+        }
+        let room = limit - taken;
+        if slot.images.len() > room {
+            dropped += slot.images.len() - room;
+            slot.images.truncate(room);
+        }
+        taken += slot.images.len();
+    }
+    dropped
 }
 
 /// 槽位失败的原因。
@@ -49,18 +74,30 @@ struct SlotResult {
     error: Option<SlotFailure>,
 }
 
-/// 换号重试至少还要有这么多剩余预算。
-///
-/// 一轮最少要 bootstrap + sentinel + conversation/prepare + SSE 才算跑得完；
-/// 只剩十几秒就换号，等于拿空预算撞 bootstrap，把上一次的真实错误盖掉。
-const MIN_RETRY_BUDGET: Duration = Duration::from_secs(30);
+/// 一次握手的开销（bootstrap → sentinel → conversation/prepare）的估算秒数。
+const RETRY_HANDSHAKE_BUDGET: Duration = Duration::from_secs(40);
 
-/// 剩余预算还够不够再跑一轮。
-fn retry_budget_ok(deadline: Deadline) -> bool {
+/// 跑完一整轮最少要多少预算：握手 + 一个完整的 SSE 窗口。
+///
+/// 只按握手算（以前是固定的 30 秒）会这样：SSE 上限 80 秒时第一轮跑掉 84 秒，
+/// 剩 86 秒就换了号，第二轮又撞 80 秒上限 —— 注定失败，还把另一个账号和一次
+/// 上游配额白烧掉，最后报给用户的是一条假网络错误。
+fn round_budget(sse: Duration) -> Duration {
+    sse + RETRY_HANDSHAKE_BUDGET
+}
+
+/// 剩余预算够不够再跑一整轮。
+fn budget_allows_round(deadline: Deadline, need: Duration) -> bool {
     match deadline.remaining() {
         None => deadline.is_unlimited(),
-        Some(left) => left >= MIN_RETRY_BUDGET,
+        Some(left) => left >= need,
     }
+}
+
+/// 剩余预算够不够再换一次号（按当前设置项的 SSE 窗口算）。
+fn retry_budget_ok(state: &AppState, deadline: Deadline) -> bool {
+    let need = round_budget(gpt2apirs_generate::sse_timeout_for(&state.settings));
+    budget_allows_round(deadline, need)
 }
 
 fn attempts_limit(state: &AppState) -> usize {
@@ -98,7 +135,7 @@ where
 
     for attempt in 0..max_attempts {
         // 首次尝试照常；换号之前先看预算，不够就把上一次的真实失败带出去
-        if attempt > 0 && !retry_budget_ok(deadline) {
+        if attempt > 0 && !retry_budget_ok(state, deadline) {
             break;
         }
         let filter = SelectionFilter {
@@ -180,8 +217,8 @@ pub async fn run_generation(
     mut request: ImageRequest,
     deadline: Deadline,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
-    // SSE 没带回图片时的兜底轮询，读三个 image_poll_* 设置。
-    request.poll = PollPolicy::from_settings(&state.settings);
+    // SSE 窗口与兜底轮询都从设置项装配（SSE 上限不再是写死的 80 秒）。
+    request = request.with_runtime_settings(&state.settings);
     let total = request.n.clamp(1, 32) as usize;
     let mut set: JoinSet<SlotResult> = JoinSet::new();
 
@@ -306,7 +343,7 @@ pub async fn run_edit(
     prepared: Vec<(Vec<u8>, String)>,
     deadline: Deadline,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
-    request.poll = PollPolicy::from_settings(&state.settings);
+    request = request.with_runtime_settings(&state.settings);
     let total = request.n.clamp(1, 32) as usize;
     let mut set: JoinSet<SlotResult> = JoinSet::new();
 
@@ -442,19 +479,72 @@ async fn collect(mut set: JoinSet<SlotResult>, total: usize) -> Result<Vec<SlotO
 mod tests {
     use super::*;
 
+    fn slot_with(count: usize) -> SlotOutcome {
+        SlotOutcome {
+            images: (0..count)
+                .map(|_| gpt2apirs_generate::GeneratedImage {
+                    bytes: Vec::new(),
+                    size: 1,
+                    rel_path: String::new(),
+                    mime: "image/png",
+                    width: 1,
+                    height: 1,
+                    content_hash: String::new(),
+                })
+                .collect(),
+            text: String::new(),
+            account_id: Uuid::nil(),
+            diag: FlowDiagnostics::default(),
+        }
+    }
+
     #[test]
-    fn retry_needs_enough_budget_left() {
-        // 只剩十几秒还去换号，等于拿空预算撞 bootstrap，把真实错误盖掉
-        assert!(!retry_budget_ok(Deadline::in_secs(10.0)));
-        assert!(!retry_budget_ok(Deadline::in_secs(0.0)));
-        assert!(!retry_budget_ok(Deadline::in_secs(29.0)), "差一点就不行");
-        // 构造函数本身要花掉几微秒，所以用 31 秒验证「够一轮」这一侧
-        assert!(retry_budget_ok(Deadline::in_secs(31.0)));
-        assert!(retry_budget_ok(Deadline::in_secs(60.0)));
+    fn clamp_images_keeps_exactly_n() {
+        // n=1 却收到 2 张（上游多给）：只能回 1 张
+        let mut slots = vec![slot_with(2)];
+        assert_eq!(clamp_images(&mut slots, 1), 1);
+        assert_eq!(slots[0].images.len(), 1);
+
+        // 张数够用时一张都不能少
+        let mut slots = vec![slot_with(1), slot_with(1)];
+        assert_eq!(clamp_images(&mut slots, 2), 0);
+        assert_eq!(slots.iter().map(|s| s.images.len()).sum::<usize>(), 2);
+
+        // 跨槽位裁剪：第二个槽位整段被裁掉
+        let mut slots = vec![slot_with(1), slot_with(2)];
+        assert_eq!(clamp_images(&mut slots, 1), 2);
+        assert_eq!(slots[0].images.len(), 1);
+        assert!(slots[1].images.is_empty());
+    }
+
+    #[test]
+    fn round_budget_keeps_a_full_sse_window() {
+        // 一轮 = 握手 + 完整 SSE 窗口；只给握手时间等于注定失败的重试
+        let need = round_budget(Duration::from_secs(80));
+        assert_eq!(need, Duration::from_secs(120));
+        assert_eq!(
+            round_budget(Duration::from_secs(240)),
+            Duration::from_secs(280),
+            "SSE 上限调大后，换号门槛要跟着抬"
+        );
+    }
+
+    #[test]
+    fn retry_needs_enough_budget_for_a_whole_round() {
+        let need = round_budget(Duration::from_secs(80));
+        // 只剩十几秒就换号，等于拿空预算撞 bootstrap
+        assert!(!budget_allows_round(Deadline::in_secs(10.0), need));
+        assert!(!budget_allows_round(Deadline::in_secs(0.0), need));
+        // 以前 86 秒就允许换号 —— 那一轮根本跑不完（真实故障就是这样烧了两个号）
+        assert!(!budget_allows_round(Deadline::in_secs(86.0), need));
+        assert!(!budget_allows_round(Deadline::in_secs(119.0), need), "差一点就不行");
+        assert!(budget_allows_round(Deadline::in_secs(121.0), need));
+        assert!(budget_allows_round(Deadline::in_secs(400.0), need));
     }
 
     #[test]
     fn unlimited_deadline_always_allows_retry() {
-        assert!(retry_budget_ok(Deadline::unlimited()));
+        let need = round_budget(Duration::from_secs(80));
+        assert!(budget_allows_round(Deadline::unlimited(), need));
     }
 }
