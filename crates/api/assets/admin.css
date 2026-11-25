@@ -283,6 +283,64 @@ button.htmx-request::after,
   background: var(--danger-bg);
 }
 
+/* 账号首页：桶卡片网格 */
+.bucket-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+  margin: 0 0 8px;
+}
+
+.bucket-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  text-decoration: none;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.bucket-card:hover {
+  border-color: var(--accent, #175cd3);
+}
+
+.bucket-card--pinned {
+  background: var(--bg);
+  border-style: dashed;
+}
+
+.bucket-card__name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.bucket-card__count {
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.bucket-card__hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 空态提示要横跨整行；`:empty` 对含空白文本的 div 不成立，所以按子元素定位 */
+.bucket-grid > .empty {
+  grid-column: 1 / -1;
+  padding: 12px;
+}
+
+.section-title {
+  margin: 20px 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
 /* 日志页：批量删除那一行 */
 .bulk-actions {
   display: flex;

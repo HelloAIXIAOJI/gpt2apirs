@@ -27,6 +27,9 @@ use crate::state::AppState;
 /// 列表筛选参数。
 #[derive(Debug, Default, Deserialize)]
 pub struct Filters {
+    /// 看的哪个桶：空 = 桶总览页（首页）；`all` = 全部桶；`default` = 默认桶；其余是桶 ID。
+    #[serde(default)]
+    pub bucket: String,
     /// 状态。
     #[serde(default)]
     pub status: String,
@@ -51,9 +54,24 @@ pub struct Filters {
 }
 
 impl Filters {
+    /// 当前页看的是哪个桶：`None` = 不限桶（「全部」入口）。
+    fn bucket_id(&self) -> Option<Uuid> {
+        match self.bucket.trim() {
+            "" | "all" => None,
+            "default" => Some(gpt2apirs_storage::repo::DEFAULT_BUCKET_ID),
+            other => other.parse::<Uuid>().ok(),
+        }
+    }
+
+    /// 是否停在桶总览（首页）。
+    fn showing_overview(&self) -> bool {
+        self.bucket.trim().is_empty()
+    }
+
     fn page_prefix(&self) -> String {
         format!(
-            "?status={}&plan={}&keyword={}&page=",
+            "?bucket={}&status={}&plan={}&keyword={}&page=",
+            encode(self.bucket.trim()),
             encode(&self.status),
             encode(&self.plan),
             encode(&self.keyword)
@@ -70,6 +88,7 @@ impl Filters {
             },
             source: None,
             keyword: Some(self.keyword.trim().to_string()).filter(|value| !value.is_empty()),
+            bucket: self.bucket_id(),
             offset,
             limit,
         }
@@ -678,6 +697,8 @@ struct AccountsPage {
     page_label: String,
     /// 导入表单的桶下拉。
     buckets: Vec<BucketOption>,
+    /// 当前看的是哪个桶（显示在标题上）。
+    bucket_title: String,
 }
 
 /// 导入表单里的桶下拉项。
@@ -696,6 +717,10 @@ struct RowFragment {
 }
 
 /// `GET /accounts`
+///
+/// 不带 `bucket` 时是**账号首页**：一个个桶的卡片。
+/// 带上 `bucket=all|default|<id>` 才是该桶（或全部）的账号列表。
+/// 合并在一个路由里，是为了让「返回桶」和分页链接都不用记两套地址。
 pub async fn index(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -703,6 +728,9 @@ pub async fn index(
 ) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
+    }
+    if filters.showing_overview() {
+        return render(overview_page(&state, &filters).await);
     }
     render(page(&state, filters).await)
 }
@@ -723,6 +751,92 @@ fn bucket_label(names: &std::collections::HashMap<Uuid, String>, id: Uuid) -> St
         .get(&id)
         .cloned()
         .unwrap_or_else(|| format!("已删除({})", &id.to_string()[..8]))
+}
+
+/// 桶总览页上的一张卡片。
+pub struct BucketCard {
+    /// 进列表用的参数：`all` / `default` / 桶 ID。
+    pub slug: String,
+    /// 桶名（「全部」那张是固定文案）。
+    pub name: String,
+    /// 账号数。
+    pub accounts: i64,
+    /// 出口说明。
+    pub egress: String,
+    /// 出口地址原值（表单要回填）。
+    pub proxy_url: String,
+    /// 是否默认桶（显示徽章）。
+    pub is_default: bool,
+    /// 能否删除（空桶且不是默认桶）。
+    pub deletable: bool,
+}
+
+/// 账号首页：一个个桶。
+#[derive(Template)]
+#[template(path = "accounts/overview.html")]
+struct BucketsOverviewPage {
+    nav: Vec<nav::NavItem>,
+    /// 顶部固定的两张：全部、默认桶。
+    pinned: Vec<BucketCard>,
+    /// 其余桶。
+    others: Vec<BucketCard>,
+    flash: String,
+    error: String,
+}
+
+async fn overview_page(state: &AppState, filters: &Filters) -> BucketsOverviewPage {
+    let repo = gpt2apirs_storage::repo::BucketRepo::new(state.db.clone());
+    let (buckets, error) = match repo.list().await {
+        Ok(rows) => (rows, String::new()),
+        Err(failure) => (Vec::new(), format!("读取桶失败（{failure}）")),
+    };
+    let total_accounts = AccountRepo::new(state.db.clone())
+        .count(&AccountFilter::default())
+        .await
+        .unwrap_or(0);
+
+    let mut pinned = vec![BucketCard {
+        slug: "all".to_string(),
+        name: "全部".to_string(),
+        accounts: total_accounts,
+        egress: "所有桶的账号".to_string(),
+        proxy_url: String::new(),
+        is_default: false,
+        deletable: false,
+    }];
+    let mut others = Vec::new();
+    for row in &buckets {
+        let card = BucketCard {
+            slug: if row.is_default {
+                "default".to_string()
+            } else {
+                row.id.to_string()
+            },
+            name: row.name.clone(),
+            accounts: row.account_count,
+            egress: if row.proxy_url.trim().is_empty() {
+                "跟随全局出口".to_string()
+            } else {
+                row.proxy_url.clone()
+            },
+            proxy_url: row.proxy_url.clone(),
+            is_default: row.is_default,
+            deletable: !row.is_default && row.account_count == 0,
+        };
+        if row.is_default {
+            pinned.push(card);
+        } else {
+            others.push(card);
+        }
+    }
+
+    BucketsOverviewPage {
+        nav: nav::items("/accounts"),
+        pinned,
+        others,
+        flash: filters.flash.clone(),
+        error,
+    }
 }
 
 async fn page(state: &AppState, filters: Filters) -> AccountsPage {
@@ -769,10 +883,23 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
             name,
         })
         .collect();
+    let bucket_title = match filters.bucket.trim() {
+        "all" => "全部账号".to_string(),
+        "default" => "默认桶".to_string(),
+        "" => "全部账号".to_string(),
+        other => {
+            let names = bucket_names(state).await;
+            match other.parse::<Uuid>().ok().map(|id| bucket_label(&names, id)) {
+                Some(name) => name,
+                None => "未知桶".to_string(),
+            }
+        }
+    };
     AccountsPage {
         nav: nav::items("/accounts"),
         rows,
         buckets,
+        bucket_title,
         summary,
         flash: filters.flash.clone(),
         op: filters.op.clone(),
@@ -1288,6 +1415,7 @@ mod tests {
     #[test]
     fn filter_encodes_query_values() {
         let filters = Filters {
+            bucket: "default".to_string(),
             status: "normal".to_string(),
             plan: String::new(),
             keyword: "a b&c".to_string(),
@@ -1298,7 +1426,7 @@ mod tests {
         };
         assert_eq!(
             filters.page_prefix(),
-            "?status=normal&plan=&keyword=a%20b%26c&page="
+            "?bucket=default&status=normal&plan=&keyword=a%20b%26c&page="
         );
     }
 
@@ -1389,9 +1517,12 @@ mod tests {
                 id: gpt2apirs_storage::repo::DEFAULT_BUCKET_ID.to_string(),
                 name: "默认".to_string(),
             }],
+            bucket_title: "默认桶".to_string(),
         };
         let html = page.render().expect("渲染账号页");
-        assert!(html.contains("账号池"), "{html}");
+        // 标题现在由桶决定（合并后不再固定叫「账号池」）
+        assert!(html.contains("默认桶"), "标题应显示当前桶：{html}");
+        assert!(html.contains("返回桶"), "应能回到桶总览：{html}");
         assert!(html.contains("共 0 个账号"), "{html}");
         assert!(html.contains("没有符合条件的账号"), "{html}");
         assert!(html.contains("is-active"), "账号导航项应为当前页：{html}");

@@ -216,8 +216,8 @@ pub struct ListQuery {
     pub source: Option<String>,
     /// 关键词。
     pub keyword: Option<String>,
-    /// 代理分组过滤。
-    pub group: Option<Uuid>,
+    /// 只看某个桶：桶 ID 或 `default`。
+    pub bucket: Option<String>,
     /// 页码（从 1 开始）。
     pub page: Option<i64>,
     /// 每页数量。
@@ -261,6 +261,12 @@ pub async fn list_accounts(
         plan: query.plan.as_deref().map(Plan::parse),
         source,
         keyword: query.keyword.clone(),
+        // API 也能按桶过滤：桶 ID 或 default 别名
+        bucket: query.bucket.as_deref().and_then(|raw| match raw.trim() {
+            "" => None,
+            "default" => Some(gpt2apirs_storage::repo::DEFAULT_BUCKET_ID),
+            other => other.parse().ok(),
+        }),
         offset: (page - 1) * page_size,
         limit: page_size,
     };

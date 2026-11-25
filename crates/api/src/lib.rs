@@ -214,7 +214,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/assets/glightbox.js", get(admin::glightbox_js_asset))
         .route("/admin/assets/glightbox.css", get(admin::glightbox_css_asset))
         .route("/accounts", get(admin::accounts::index))
-        .route("/buckets", get(admin::buckets::index))
+        // 桶已并入账号首页；老书签重定向过去，别留死链
+        .route(
+            "/buckets",
+            get(|| async { axum::response::Redirect::to("/accounts") }),
+        )
         .route("/buckets/create", post(admin::buckets::create))
         .route("/buckets/{id}/rename", post(admin::buckets::rename))
         .route("/buckets/{id}/egress", post(admin::buckets::set_egress))

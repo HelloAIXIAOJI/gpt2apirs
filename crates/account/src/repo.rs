@@ -92,6 +92,8 @@ pub struct AccountFilter {
     pub source: Option<Source>,
     /// 关键词（匹配 email / 上游 account_id / token sha 前缀）。
     pub keyword: Option<String>,
+    /// 只看某个桶；`None` = 全部桶（「全部」那个入口）。
+    pub bucket: Option<Uuid>,
     /// 分页：偏移。
     pub offset: i64,
     /// 分页：数量（0 表示不限）。
@@ -820,6 +822,11 @@ fn build_filter(filter: &AccountFilter) -> (String, Vec<String>) {
     if let Some(source) = filter.source {
         binds.push(source.as_str().to_string());
         clauses.push(format!("source = ${}", binds.len()));
+    }
+    if let Some(bucket) = filter.bucket {
+        // binds 是字符串表，uuid 转文本比较即可（bucket_id 上有索引，够快）
+        binds.push(bucket.to_string());
+        clauses.push(format!("bucket_id::text = ${}", binds.len()));
     }
     if let Some(keyword) = filter.keyword.as_deref() {
         let trimmed = keyword.trim();

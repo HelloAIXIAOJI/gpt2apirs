@@ -1,9 +1,10 @@
 {% extends "shell.html" %}
 {% block title %}账号 · 管理后台{% endblock %}
 {% block content %}
-<header id="topbar"><h1>账号池</h1></header>
+<header id="topbar"><h1>{{ bucket_title }}</h1></header>
 
 <section id="accounts" class="panel">
+  <p class="muted"><a href="/accounts">← 返回桶</a></p>
   <p class="summary">{{ summary }}</p>
   {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
   {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}

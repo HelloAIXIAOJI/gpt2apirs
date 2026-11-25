@@ -47,6 +47,14 @@ struct BucketsPage {
     error: String,
 }
 
+/// 路由里的桶标识：`default` 是默认桶的别名（总览页链接用它，别把固定 ID 散到模板里）。
+fn bucket_id(raw: &str) -> Option<Uuid> {
+    match raw.trim() {
+        "default" => Some(DEFAULT_BUCKET_ID),
+        other => other.parse::<Uuid>().ok(),
+    }
+}
+
 fn render<T: Template>(template: T) -> Response {
     match template.render() {
         Ok(html) => Html(html).into_response(),
@@ -121,7 +129,7 @@ pub struct RenameForm {
 pub async fn rename(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    Path(slug): Path<String>,
     Form(form): Form<RenameForm>,
 ) -> Response {
     if !has_session(&state, &headers) {
@@ -131,6 +139,9 @@ pub async fn rename(
     if name.is_empty() {
         return render(page(&state, "桶名不能为空".to_string()).await);
     }
+    let Some(id) = bucket_id(&slug) else {
+        return render(page(&state, "桶标识无效".to_string()).await);
+    };
     match BucketRepo::new(state.db.clone()).rename(id, name).await {
         Ok(_) => render(page(&state, String::new()).await),
         Err(failure) if failure.to_string().contains("buckets_name_idx") => {
@@ -155,12 +166,15 @@ pub struct EgressForm {
 pub async fn set_egress(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    Path(slug): Path<String>,
     Form(form): Form<EgressForm>,
 ) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
+    let Some(id) = bucket_id(&slug) else {
+        return render(page(&state, "桶标识无效".to_string()).await);
+    };
     match BucketRepo::new(state.db.clone())
         .set_egress(id, "", &form.proxy_url)
         .await
@@ -174,11 +188,14 @@ pub async fn set_egress(
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Path(id): Path<Uuid>,
+    Path(slug): Path<String>,
 ) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
+    let Some(id) = bucket_id(&slug) else {
+        return render(page(&state, "桶标识无效".to_string()).await);
+    };
     if id == DEFAULT_BUCKET_ID {
         return render(page(&state, "默认桶不能删除".to_string()).await);
     }
