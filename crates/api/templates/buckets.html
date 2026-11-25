@@ -1,0 +1,57 @@
+{% extends "shell.html" %}
+{% block title %}账号桶 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>账号桶</h1></header>
+
+<section class="panel">
+  {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
+  <p class="muted">桶是「一批账号 + 一个出口」。账号只说自己在哪个桶，出口挂在桶上；API key 可以指定只用某个桶。</p>
+
+  <form class="filters" method="post" action="/buckets/create">
+    <label>新桶名<input name="name" placeholder="例如 备用池" required></label>
+    <button type="submit">新建桶</button>
+  </form>
+
+  <table class="table">
+    <thead>
+      <tr><th>桶名</th><th>账号数</th><th>出口</th><th>操作</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>
+          <form method="post" action="/buckets/{{ row.id }}/rename" style="display:flex;gap:6px;align-items:center">
+            <input name="name" value="{{ row.name }}" required style="min-width:120px">
+            <button type="submit" class="link">改名</button>
+          </form>
+          {% if row.is_default %}<span class="badge badge--normal">默认</span>{% endif %}
+        </td>
+        <td class="num">{{ row.accounts }}</td>
+        <td>
+          <form method="post" action="/buckets/{{ row.id }}/egress" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <input name="proxy_url" value="{{ row.url }}" placeholder="留空 = 跟随全局；或填 http://host:port" style="min-width:260px">
+            <button type="submit" class="link">保存</button>
+          </form>
+          {% if row.url.is_empty() %}<span class="muted">跟随全局出口</span>{% endif %}
+        </td>
+        <td class="actions">
+          {% if row.is_default %}
+          <span class="muted">默认桶不可删</span>
+          {% else if row.accounts > 0 %}
+          <span class="muted">还有 {{ row.accounts }} 个账号</span>
+          {% else %}
+          <form method="post" action="/buckets/{{ row.id }}/delete" onsubmit="return confirm('删除这个空桶？');">
+            <button type="submit" class="link link--danger">删除</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if rows.is_empty() %}
+  <p class="empty">还没有桶。至少应该有一个「默认」桶（迁移会自动建）。</p>
+  {% endif %}
+</section>
+{% endblock %}

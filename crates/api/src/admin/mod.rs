@@ -22,6 +22,7 @@ use crate::state::AppState;
 
 pub mod accounts;
 pub mod backups;
+pub mod buckets;
 pub mod conversations;
 pub mod gallery;
 pub mod pagination;

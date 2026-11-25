@@ -243,11 +243,16 @@ pub async fn edit_images(
     crate::routes::image_flow::ensure_disk_space()?;
     let deadline = default_request_deadline(&state.settings);
     let requested_n = prepared_edit.request.n;
+    // key 绑了桶就只从这个桶里选号（与文生图一致）
+    let bucket = identity
+        .as_ref()
+        .and_then(|axum::Extension(key)| key.bucket_id);
     let mut slots = run_edit(
         &state,
         prepared_edit.request,
         prepared_edit.prepared.clone(),
         deadline,
+        bucket,
     )
     .await?;
 

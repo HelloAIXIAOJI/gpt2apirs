@@ -12,6 +12,14 @@
     <summary>粘贴导入</summary>
     <form method="post" action="/accounts/import">
       <textarea name="text" rows="6" placeholder="粘贴 access_token，或账号 JSON；每行一个也可以"></textarea>
+      <label>导入到
+        <select name="bucket_id">
+          <option value="">默认桶</option>
+          {% for bucket in buckets %}
+          <option value="{{ bucket.id }}">{{ bucket.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <button type="submit">导入</button>
     </form>
   </details>
@@ -20,6 +28,14 @@
     <summary>Session JSON 导入</summary>
     <form method="post" action="/accounts/import">
       <textarea name="text" rows="6" placeholder='粘贴浏览器里 https://chatgpt.com/api/auth/session 的 JSON（含 accessToken，可能还有 refreshToken）'></textarea>
+      <label>导入到
+        <select name="bucket_id">
+          <option value="">默认桶</option>
+          {% for bucket in buckets %}
+          <option value="{{ bucket.id }}">{{ bucket.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
       <p class="muted">在已登录 ChatGPT 的浏览器里打开 https://chatgpt.com/api/auth/session ，复制整段 JSON 粘进来。这个接口通常只给 accessToken，不含长期 refresh；要 refresh token 请用 OAuth 导入。</p>
       <button type="submit">导入</button>
     </form>

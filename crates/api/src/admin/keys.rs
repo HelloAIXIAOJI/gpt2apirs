@@ -27,14 +27,24 @@ pub struct KeyRow {
     created: String,
     last_used: String,
     revoked: bool,
+    /// 绑定桶的显示名；空表示全局。
+    bucket: String,
 }
 
 impl KeyRow {
-    fn from_row(row: &ApiKeyRow) -> Self {
+    fn from_row(row: &ApiKeyRow, buckets: &std::collections::HashMap<Uuid, String>) -> Self {
+        let bucket = match row.bucket_id {
+            None => "全局".to_string(),
+            Some(id) => buckets
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("已删除({})", &id.to_string()[..8])),
+        };
         Self {
             id: row.id,
             name: row.name.clone(),
             prefix: row.prefix.clone(),
+            bucket,
             created: row.created_at.format("%Y-%m-%d %H:%M").to_string(),
             last_used: row
                 .last_used_at
@@ -61,6 +71,7 @@ impl fmt::Display for KeyRow {
         )?;
         write!(f, "<td class=\"num\">{}</td>", escape(&self.created))?;
         write!(f, "<td class=\"muted\">{}</td>", escape(&self.last_used))?;
+        write!(f, "<td>{}</td>", escape(&self.bucket))?;
         let state = if self.revoked {
             "<span class=\"badge badge--disabled\">已吊销</span>"
         } else {
@@ -70,9 +81,17 @@ impl fmt::Display for KeyRow {
         write!(f, "<td class=\"actions\">")?;
         write!(
             f,
-            "<a class=\"btn btn--ghost\" href=\"/keys/{}/edit\">改名</a>",
+            "<a class=\"btn btn--ghost\" href=\"/keys/{}/edit\">编辑</a>",
             self.id
         )?;
+        if self.revoked {
+            // 吊销只是标记失效，记录还在：能恢复就不用重新建一把、也就不会换掉明文
+            write!(
+                f,
+                "<button class=\"btn btn--ghost\" hx-post=\"/keys/{}/restore\" hx-disabled-elt=\"this\">恢复</button>",
+                self.id
+            )?;
+        }
         if !self.revoked {
             write!(
                 f,
@@ -131,9 +150,26 @@ pub async fn index(
     render(page(&state, String::new(), String::new(), pager.page).await)
 }
 
+/// 桶 ID → 桶名（列表与编辑页都要显示桶名）。
+async fn bucket_names(state: &AppState) -> std::collections::HashMap<Uuid, String> {
+    match gpt2apirs_storage::repo::BucketRepo::new(state.db.clone()).list().await {
+        Ok(rows) => rows.into_iter().map(|row| (row.id, row.name)).collect(),
+        Err(failure) => {
+            tracing::warn!(%failure, "读取桶列表失败");
+            std::collections::HashMap::new()
+        }
+    }
+}
+
 async fn page(state: &AppState, plaintext: String, error: String, page: i64) -> KeysPage {
+    let buckets = bucket_names(state).await;
     let (rows, list_error) = match state.api_keys.list().await {
-        Ok(rows) => (rows.iter().map(KeyRow::from_row).collect(), error),
+        Ok(rows) => (
+            rows.iter()
+                .map(|row| KeyRow::from_row(row, &buckets))
+                .collect(),
+            error,
+        ),
         Err(failure) => {
             let message = format!("读取失败（{failure}）");
             let combined = if error.is_empty() {
@@ -180,7 +216,8 @@ pub async fn create(
     }
     let name = form.name.trim();
     let name = if name.is_empty() { "未命名" } else { name };
-    match state.api_keys.create(name).await {
+    // 页面创建默认全局；建完可以在列表里改成具体桶。
+    match state.api_keys.create(name, None).await {
         Ok(created) => render(page(&state, created.plaintext, String::new(), 0).await),
         Err(failure) => {
             render(page(&state, String::new(), format!("创建失败：{failure}"), 0).await)
@@ -203,6 +240,22 @@ pub async fn revoke(
         Err(failure) => {
             super::toast::oob_response(&format!("吊销失败：{failure}"), "error")
         }
+    }
+}
+
+/// `POST /keys/{id}/restore` —— 恢复一把已吊销的 key。
+pub async fn restore(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    match state.api_keys.restore(id).await {
+        Ok(true) => refresh(&headers),
+        Ok(false) => super::toast::oob_response("记录不存在", "error"),
+        Err(failure) => super::toast::oob_response(&format!("恢复失败：{failure}"), "error"),
     }
 }
 
@@ -231,14 +284,29 @@ struct RenamePage {
     name: String,
     prefix: String,
     flash: String,
+    /// 可选桶（含「全局」一项，值为空串）。
+    buckets: Vec<BucketOption>,
 }
 
-/// 改名表单。
+/// 编辑页的桶下拉项。
+pub struct BucketOption {
+    /// 桶 ID；全局为空串。
+    value: String,
+    /// 显示名。
+    label: String,
+    /// 是否当前选中。
+    selected: bool,
+}
+
+/// 编辑表单。
 #[derive(Debug, Deserialize)]
 pub struct RenameForm {
     /// 新名称。
     #[serde(default)]
     pub name: String,
+    /// 绑定桶；空串 = 全局。
+    #[serde(default)]
+    pub bucket_id: String,
 }
 
 /// `GET /keys/{id}/edit`
@@ -260,12 +328,30 @@ pub async fn edit_form(
     let Some(row) = rows.into_iter().find(|row| row.id == id) else {
         return Redirect::to("/keys").into_response();
     };
+    // 下拉里第一项是「全局」：它不是一个桶，但必须可选，否则改不回全局
+    let mut buckets = vec![BucketOption {
+        value: String::new(),
+        label: "全局（不限桶）".to_string(),
+        selected: row.bucket_id.is_none(),
+    }];
+    let names = bucket_names(&state).await;
+    if let Ok(list) = gpt2apirs_storage::repo::BucketRepo::new(state.db.clone()).list().await {
+        for item in list {
+            buckets.push(BucketOption {
+                value: item.id.to_string(),
+                label: item.name.clone(),
+                selected: row.bucket_id == Some(item.id),
+            });
+        }
+    }
+    let _ = names;
     render(RenamePage {
         nav: nav::items("/keys"),
         id: row.id.to_string(),
         name: row.name,
         prefix: row.prefix,
         flash: query.flash,
+        buckets,
     })
 }
 
@@ -287,10 +373,26 @@ pub async fn edit_submit(
         ))
         .into_response();
     }
-    match state.api_keys.rename(id, name).await {
+    // 空串 = 全局；解析不出来当作「不改」，避免一个手误把 key 挪到不存在的桶
+    let bucket = form.bucket_id.trim();
+    let bucket_id = if bucket.is_empty() {
+        Some(None)
+    } else {
+        match bucket.parse::<Uuid>() {
+            Ok(value) => Some(Some(value)),
+            Err(_) => {
+                return Redirect::to(&format!(
+                    "/keys/{id}/edit?flash={}",
+                    super::accounts::encode("桶 ID 无效")
+                ))
+                .into_response()
+            }
+        }
+    };
+    match state.api_keys.update(id, Some(name), bucket_id).await {
         Ok(true) => Redirect::to("/keys").into_response(),
         Ok(false) => super::toast::oob_response("记录不存在", "error"),
-        Err(failure) => super::toast::oob_response(&format!("改名失败：{failure}"), "error"),
+        Err(failure) => super::toast::oob_response(&format!("保存失败：{failure}"), "error"),
     }
 }
 
@@ -414,6 +516,7 @@ mod tests {
             created: "2026-01-01 00:00".to_string(),
             last_used: "从未使用".to_string(),
             revoked,
+            bucket: "全局".to_string(),
         }
     }
 

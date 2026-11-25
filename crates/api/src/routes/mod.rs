@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod backup;
+pub mod buckets;
 pub mod conversations;
 pub mod admin;
 pub mod image_common;

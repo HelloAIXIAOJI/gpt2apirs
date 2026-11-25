@@ -179,13 +179,11 @@ fn from_object(map: &Map<String, Value>, access_token: String) -> NewAccount {
         source,
         quota: 0,
         quota_confirmed: false,
-        proxy: pick_string(map, &["proxy", "proxy_url", "proxyUrl"])
-            .or_else(|| {
-                map.get("proxy")
-                    .and_then(Value::as_object)
-                    .and_then(|proxy| pick_string(proxy, &["url", "server"]))
-            })
-            .unwrap_or_default(),
+        // 桶可以从 JSON 里指定（ID 或名字都认，名字由上层查成 ID）。
+        // 账号级的 proxy 已经不存了（代理归桶）：旧 JSON 里的 proxy/proxy_url
+        // 读出来也没有落点，直接忽略，不让它把「导入失败」伪装成格式问题。
+        bucket_id: pick_string(map, &["bucket_id", "bucketId"])
+            .and_then(|text| uuid::Uuid::parse_str(text.trim()).ok()),
     }
 }
 
@@ -301,11 +299,12 @@ mod tests {
     }
 
     #[test]
-    fn proxy_aliases_and_nested_object() {
+    fn legacy_proxy_fields_are_ignored() {
         let text = r#"[{"access_token":"tok-a","proxy_url":"http://127.0.0.1:7890"},{"access_token":"tok-b","proxy":{"url":"socks5://127.0.0.1:1080"}}]"#;
         let accounts = parse_json(text).expect("应解析");
-        assert_eq!(accounts[0].proxy, "http://127.0.0.1:7890");
-        assert_eq!(accounts[1].proxy, "socks5://127.0.0.1:1080");
+        // 账号级代理已经不存在了：旧 JSON 里的 proxy 字段被忽略，不报错也不算失败
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].access_token, "tok-a");
     }
 
     #[test]
@@ -331,9 +330,9 @@ mod tests {
     }
 
     #[test]
-    fn picks_proxy_when_present() {
+    fn legacy_proxy_does_not_break_import() {
         let text = r#"{"access_token":"tok","proxy":"http://127.0.0.1:7890"}"#;
-        assert_eq!(parse_json(text).unwrap()[0].proxy, "http://127.0.0.1:7890");
+        assert_eq!(parse_json(text).unwrap()[0].access_token, "tok");
     }
 
     #[test]

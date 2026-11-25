@@ -249,8 +249,8 @@ async fn upsert_absorbs_duplicate_rows_and_sums_counters() {
         let sha = gpt2apirs_account::Account::token_sha(&tok);
         sqlx::query(
 "insert into accounts (id, access_token, access_token_sha, email, plan, source, \
-                     status, quota, quota_confirmed, success_count, fail_count, created_at) \
- values ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10, now() - make_interval(days => $11))",
+                     status, quota, quota_confirmed, success_count, fail_count, created_at, bucket_id) \
+ values ($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10, now() - make_interval(days => $11), $12)",
         )
         .bind(Uuid::new_v4())
         .bind(&tok)
@@ -263,6 +263,8 @@ async fn upsert_absorbs_duplicate_rows_and_sums_counters() {
         .bind(success)
         .bind(fail)
         .bind(days_ago)
+        // 账号必须属于某个桶：直接写 SQL 的老测试也得补上，否则 NOT NULL 会拦
+        .bind(gpt2apirs_storage::repo::DEFAULT_BUCKET_ID)
         .execute(&pool)
         .await
         .expect("插入历史重复行");
@@ -423,7 +425,10 @@ async fn upsert_does_not_wipe_existing_fields() {
     assert_eq!(merged.id_token, created.id_token, "空值不应覆盖 id_token");
     assert_eq!(merged.email, created.email, "空值不应覆盖 email");
     assert_eq!(merged.plan, created.plan, "plan=unknown 不应覆盖已知套餐");
-    assert_eq!(merged.proxy, created.proxy, "空 proxy 不应覆盖已有 proxy");
+    assert_eq!(
+        merged.bucket_id, created.bucket_id,
+        "没指定桶时不应把账号挪出原来的桶"
+    );
 
     clean_test_rows(&pool).await;
 }
@@ -629,7 +634,6 @@ async fn patch_updates_only_given_fields() {
         .patch(
             created.id,
             &AccountPatch {
-                proxy: Some("http://127.0.0.1:7890".to_string()),
                 plan: Some(Plan::Pro),
                 ..Default::default()
             },
@@ -637,7 +641,6 @@ async fn patch_updates_only_given_fields() {
         .await
         .expect("更新");
 
-    assert_eq!(updated.proxy, "http://127.0.0.1:7890");
     assert_eq!(updated.plan, Plan::Pro);
     assert_eq!(updated.quota, 7, "未提供字段应保持原值");
     assert_eq!(updated.email, created.email, "未提供字段应保持原值");

@@ -72,6 +72,11 @@ pub struct SelectionFilter {
     pub exclude: HashSet<Uuid>,
     /// 只允许这一个账号（测试单个账号时用）。
     pub only: Option<Uuid>,
+    /// 只在这个桶里选；`None` = 不限桶（全局 key 走这条）。
+    ///
+    /// 桶来自 API key：key 绑了桶就只用那个桶的号，
+    /// 这样「哪个 key 走哪批号」是能预期的，而不是随机撞。
+    pub bucket: Option<Uuid>,
 }
 
 impl Default for Purpose {
@@ -110,6 +115,9 @@ impl SelectionFilter {
         }
         if let Some(source) = self.source {
             parts.push(format!("source={}", source.as_str()));
+        }
+        if let Some(bucket) = self.bucket {
+            parts.push(format!("bucket={}", &bucket.to_string()[..8]));
         }
         if !self.exclude.is_empty() {
             parts.push(format!("excluded={}", self.exclude.len()));
@@ -508,6 +516,11 @@ pub fn candidates(snapshot: &[Arc<Account>], filter: &SelectionFilter) -> Vec<Ar
                     return false;
                 }
             }
+            if let Some(bucket) = filter.bucket {
+                if account.bucket_id != bucket {
+                    return false;
+                }
+            }
             // ① 业务准入
             let business_ok = match filter.purpose {
                 Purpose::Image => account.status.selectable_for_image() && account.has_image_quota(),
@@ -575,6 +588,7 @@ mod tests {
         let exp = (now + ChronoDuration::days(30)).timestamp();
         Account {
             id: Uuid::new_v4(),
+            bucket_id: Uuid::nil(),
             access_token: format!("tok-{suffix}-{}", jwt_with_exp(exp)),
             refresh_token: Some("rt".to_string()),
             id_token: None,

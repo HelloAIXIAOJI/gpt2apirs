@@ -432,7 +432,10 @@ async fn run_edit(
         }
         return;
     }
-    match crate::routes::image_flow::run_edit(&state, request, prepared.clone(), deadline).await {
+    let bucket = key.as_ref().and_then(|key| key.bucket_id);
+    match crate::routes::image_flow::run_edit(&state, request, prepared.clone(), deadline, bucket)
+        .await
+    {
         Ok(slots) => {
             // 与同步接口一致：生成成功才落盘参考图并写清单。
             let references = crate::references::persist_all(&prepared);
@@ -507,7 +510,9 @@ async fn run(
         .clone()
         .unwrap_or_else(|| "auto".to_string());
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
-    let outcome = match crate::routes::image_flow::run_generation(&state, request, deadline).await {
+    let bucket = key.as_ref().and_then(|key| key.bucket_id);
+    let outcome =
+        match crate::routes::image_flow::run_generation(&state, request, deadline, bucket).await {
         Ok(slots) => {
             crate::routes::image_flow::record_assets(&state, &slots, &prompt, &[], key.as_ref()).await;
             let mut images = Vec::new();

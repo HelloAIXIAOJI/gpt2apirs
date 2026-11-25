@@ -54,8 +54,8 @@ pub struct NewAccount {
     pub quota: i32,
     /// 配额是否已确认。
     pub quota_confirmed: bool,
-    /// 代理。
-    pub proxy: String,
+    /// 要导入到哪个桶；`None` = 默认桶。
+    pub bucket_id: Option<Uuid>,
 }
 
 /// 部分更新。
@@ -67,8 +67,8 @@ pub struct AccountPatch {
     pub plan: Option<Plan>,
     /// 邮箱。
     pub email: Option<String>,
-    /// 代理。
-    pub proxy: Option<String>,
+    /// 换桶（账号的出口跟着桶走，所以这也是「换出口」）。
+    pub bucket_id: Option<Uuid>,
     /// 配额。
     pub quota: Option<i32>,
     /// 配额是否已确认。
@@ -230,14 +230,19 @@ impl AccountRepo {
         }
 
         // ---- 3) 全新 ----
-        let row = sqlx::query(&format!(
+        let new_id = Uuid::new_v4();
+        sqlx::query(&format!(
+            // 没指定桶就进默认桶：导入是主路径，不能因为漏传参数就报错。
+            // 不能用 returning {COLUMNS}：那里面的 proxy 是桶的子查询，
+            // INSERT 的 RETURNING 里引用目标表子查询不稳，改用「插完再查」。
             "insert into accounts ( \
                  id, access_token, access_token_sha, refresh_token, id_token, \
-                 email, upstream_account_id, plan, source, quota, quota_confirmed, proxy \
-             ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
-             returning {COLUMNS}",
+                 email, upstream_account_id, plan, source, quota, quota_confirmed, bucket_id \
+             ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, \
+                 coalesce($12, (select id from buckets where is_default limit 1))) \
+             returning id",
         ))
-        .bind(Uuid::new_v4())
+        .bind(new_id)
         .bind(access_token)
         .bind(&sha)
         .bind(input.refresh_token.as_deref())
@@ -248,9 +253,13 @@ impl AccountRepo {
         .bind(input.source.as_str())
         .bind(input.quota)
         .bind(input.quota_confirmed)
-        .bind(&input.proxy)
+        .bind(input.bucket_id)
         .fetch_one(&mut **tx)
         .await?;
+        let row = sqlx::query(&format!("select {COLUMNS} from accounts where id = $1"))
+            .bind(new_id)
+            .fetch_one(&mut **tx)
+            .await?;
         Ok(UpsertOutcome::Inserted(row_to_account(&row)))
     }
 
@@ -324,7 +333,7 @@ impl AccountRepo {
                  status          = coalesce($2, status), \
                  plan            = coalesce($3, plan), \
                  email           = coalesce($4, email), \
-                 proxy           = coalesce($5, proxy), \
+                 bucket_id       = coalesce($5, bucket_id), \
                  quota           = coalesce($6, quota), \
                  quota_confirmed = coalesce($7, quota_confirmed), \
                  quota_unlimited = coalesce($12, quota_unlimited), \
@@ -337,7 +346,7 @@ impl AccountRepo {
         .bind(patch.status.map(|s| s.as_str().to_string()))
         .bind(patch.plan.map(|p| p.as_str().to_string()))
         .bind(patch.email.clone())
-        .bind(patch.proxy.clone())
+        .bind(patch.bucket_id)
         .bind(patch.quota)
         .bind(patch.quota_confirmed)
         .bind(patch.restore_at.is_some())
@@ -615,9 +624,14 @@ const DEFAULT_LIST_LIMIT: i64 = 1000;
 const MIN_TOKEN_LOOKUP_LEN: usize = 32;
 
 /// 列清单（保持与 [`row_to_account`] 对齐）。
+/// 列清单（保持与 [`row_to_account`] 对齐）。
+///
+/// `proxy` 已经不是账号自己的列了：它从所属桶的出口算出来。
+/// 放在这里而不是调用点，是为了让「账号用哪个出口」只有一处定义。
 const COLUMNS: &str = "\
     id, access_token, refresh_token, id_token, email, upstream_account_id, \
-    plan, source, status, quota, quota_confirmed, quota_unlimited, restore_at, proxy, \
+    plan, source, status, quota, quota_confirmed, quota_unlimited, restore_at, bucket_id, \
+    coalesce((select b.proxy_url from buckets b where b.id = accounts.bucket_id), '') as proxy, \
     success_count, fail_count, invalid_count, \
     last_used_at, last_invalid_at, last_error, last_error_at, \
     last_checked_at, last_refresh_at, created_at, updated_at";
@@ -643,6 +657,7 @@ fn row_to_account(row: &PgRow) -> Account {
         quota_confirmed: row.get("quota_confirmed"),
         quota_unlimited: row.get("quota_unlimited"),
         restore_at: row.get("restore_at"),
+        bucket_id: row.get("bucket_id"),
         proxy: row.get("proxy"),
         success_count: row.get("success_count"),
         fail_count: row.get("fail_count"),
@@ -770,7 +785,7 @@ async fn merge_row(
              upstream_account_id = coalesce($8, upstream_account_id), \
              plan                = case when $9 = 'unknown' then plan else $9 end, \
              source              = $10, \
-             proxy               = case when $11 = '' then proxy else $11 end \
+             bucket_id           = coalesce($11, bucket_id) \
          where id = $1 \
          returning {COLUMNS}",
     ))
@@ -784,7 +799,7 @@ async fn merge_row(
     .bind(input.upstream_account_id.as_deref())
     .bind(input.plan.as_str())
     .bind(input.source.as_str())
-    .bind(&input.proxy)
+    .bind(input.bucket_id)
     .fetch_one(&mut **tx)
     .await?;
     Ok(row_to_account(&row))

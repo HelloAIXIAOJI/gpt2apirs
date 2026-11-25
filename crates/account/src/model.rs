@@ -194,7 +194,13 @@ pub struct Account {
     /// 限流恢复时间。
     pub restore_at: Option<DateTime<Utc>>,
 
-    /// 账号级代理（加入分组时是组地址的副本）。
+    /// 所属桶（每个账号必在某个桶里；导入时未指定就进默认桶）。
+    pub bucket_id: Uuid,
+
+    /// **生效的出口地址**，不是账号自己的字段。
+    ///
+    /// 由所属桶算出来（桶的 `proxy_url`）；空串表示跟随全局出口。
+    /// 想改出口就改桶，不要在账号上改 —— 账号级代理已经不存在了。
     pub proxy: String,
 
     /// 成功次数。
@@ -323,6 +329,7 @@ mod tests {
     fn quota_account(quota: i32, confirmed: bool, unlimited: bool) -> Account {
         Account {
             id: uuid::Uuid::new_v4(),
+            bucket_id: uuid::Uuid::nil(),
             access_token: "tok".to_string(),
             refresh_token: Some("rt".to_string()),
             id_token: None,

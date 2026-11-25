@@ -169,7 +169,11 @@ pub async fn generate(
     // 从账号池取一个账号；租约 Drop 时自动归还槽位。
     // ---- 并行 n 张 + 换号重试（见 image_flow）----
         crate::routes::image_flow::ensure_disk_space()?;
-    let mut slots = run_generation(&state, image_request, deadline).await?;
+    // key 绑了桶就只从这个桶里选号；没绑（全局）则不限桶。
+    let bucket = identity
+        .as_ref()
+        .and_then(|axum::Extension(key)| key.bucket_id);
+    let mut slots = run_generation(&state, image_request, deadline, bucket).await?;
 
     let key = identity.map(|axum::Extension(value)| value);
     // 资产表按全量记（多给的那张也进图库，数据不丢）……

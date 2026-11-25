@@ -103,6 +103,9 @@ pub struct ImportForm {
     /// 粘贴的 token / JSON 文本。
     #[serde(default)]
     pub text: String,
+    /// 导入到哪个桶；空 = 默认桶。
+    #[serde(default)]
+    pub bucket_id: String,
 }
 
 /// `POST /accounts/import`
@@ -118,11 +121,18 @@ pub async fn import_accounts(
     if text.is_empty() {
         return redirect_with_flash("/accounts", "没有内容可导入");
     }
-    let accounts = match gpt2apirs_account::parse_any(text) {
+    let mut accounts = match gpt2apirs_account::parse_any(text) {
         Ok(accounts) if !accounts.is_empty() => accounts,
         Ok(_) => return redirect_with_flash("/accounts", "没有解析出账号，请检查 access_token"),
         Err(error) => return redirect_with_flash("/accounts", &format!("解析失败：{error}")),
     };
+    // 页面选定的桶：留空就交给 SQL 的 coalesce 落到默认桶
+    let bucket = form.bucket_id.trim().parse::<Uuid>().ok();
+    if bucket.is_some() {
+        for account in &mut accounts {
+            account.bucket_id = bucket;
+        }
+    }
     // 与 API 导入共用一个入口：否则「导入后清理无效号」只在 API 那条路生效
     match crate::routes::accounts::upsert_and_prune(&state, &accounts).await {
         Ok((report, pruned)) => {
@@ -284,7 +294,7 @@ pub async fn batch(
                     status: Some(target.to_string()),
                     plan: None,
                     email: None,
-                    proxy: None,
+                    bucket_id: None,
                     quota: None,
                     quota_confirmed: None,
                 };
@@ -466,6 +476,9 @@ pub struct AccountRow {
     /// 距配额重置的倒计时（没有就是空串）。
     reset_hint: String,
     counters: String,
+    /// 所属桶名（账号归桶，桶再管出口）。
+    bucket: String,
+    /// 生效出口；空表示跟随全局。
     proxy: String,
     /// 状态原因的简短说法。
     reason: String,
@@ -483,7 +496,8 @@ pub struct AccountRow {
 }
 
 impl AccountRow {
-    fn from_account(account: &Account, now: DateTime<Utc>) -> Self {
+    /// 构造一行。`bucket_name` 由调用方按桶表解析后传入。
+    fn from_account(account: &Account, now: DateTime<Utc>, bucket_name: &str) -> Self {
         let disabled = account.status == AccountStatus::Disabled;
         // 凭据状态由 token 本身算（不落库），和 /api/accounts/{id} 用同一个投影
         let credential = gpt2apirs_account::project(
@@ -525,8 +539,10 @@ impl AccountRow {
             },
             reset_hint,
             counters: format!("{} / {}", account.success_count, account.fail_count),
+            // 桶名由调用方传进来：这里只拿得到账号，桶表要单独查一次
+            bucket: bucket_name.to_string(),
             proxy: if account.proxy.trim().is_empty() {
-                "全局出口".to_string()
+                "跟随全局".to_string()
             } else {
                 account.proxy.clone()
             },
@@ -598,7 +614,14 @@ impl fmt::Display for AccountRow {
         }
         write!(f, "</td>")?;
         write!(f, "<td class=\"num\">{}</td>", escape(&self.counters))?;
-        write!(f, "<td class=\"muted\">{}</td>", escape(&self.proxy))?;
+        // 一列同时给出「在哪个桶」和「走什么出口」：想改出口就去改桶
+        write!(
+            f,
+            "<td title=\"出口：{}\" class=\"muted\">{} · {}</td>",
+            escape(&self.proxy),
+            escape(&self.bucket),
+            escape(&self.proxy)
+        )?;
         // 状态原因：短因一列，原始错误悬停看
         write!(
             f,
@@ -653,6 +676,16 @@ struct AccountsPage {
     keyword: String,
     pager: super::pagination::PageWindow,
     page_label: String,
+    /// 导入表单的桶下拉。
+    buckets: Vec<BucketOption>,
+}
+
+/// 导入表单里的桶下拉项。
+pub struct BucketOption {
+    /// 桶 ID。
+    pub id: String,
+    /// 桶名。
+    pub name: String,
 }
 
 /// 单行片段。
@@ -674,6 +707,24 @@ pub async fn index(
     render(page(&state, filters).await)
 }
 
+/// 桶 ID → 桶名。查不到就显示短 ID，别让整页因为一张表读不到而空白。
+async fn bucket_names(state: &AppState) -> std::collections::HashMap<Uuid, String> {
+    match gpt2apirs_storage::repo::BucketRepo::new(state.db.clone()).list().await {
+        Ok(rows) => rows.into_iter().map(|row| (row.id, row.name)).collect(),
+        Err(error) => {
+            tracing::warn!(%error, "读取桶列表失败");
+            std::collections::HashMap::new()
+        }
+    }
+}
+
+fn bucket_label(names: &std::collections::HashMap<Uuid, String>, id: Uuid) -> String {
+    names
+        .get(&id)
+        .cloned()
+        .unwrap_or_else(|| format!("已删除({})", &id.to_string()[..8]))
+}
+
 async fn page(state: &AppState, filters: Filters) -> AccountsPage {
     let repo = AccountRepo::new(state.db.clone());
     let size = super::pagination::page_size(&state.settings);
@@ -683,8 +734,12 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
     let (rows, error) = match repo.list(&filter).await {
         Ok(accounts) => {
             let now = chrono::Utc::now();
+            let names = bucket_names(state).await;
             (
-                accounts.iter().map(|a| AccountRow::from_account(a, now)).collect(),
+                accounts
+                    .iter()
+                    .map(|a| AccountRow::from_account(a, now, &bucket_label(&names, a.bucket_id)))
+                    .collect(),
                 String::new(),
             )
         }
@@ -707,9 +762,17 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
             ..pager
         }
     };
+    let buckets = bucket_names(&state).await
+        .into_iter()
+        .map(|(id, name)| BucketOption {
+            id: id.to_string(),
+            name,
+        })
+        .collect();
     AccountsPage {
         nav: nav::items("/accounts"),
         rows,
+        buckets,
         summary,
         flash: filters.flash.clone(),
         op: filters.op.clone(),
@@ -740,7 +803,7 @@ pub async fn toggle_status(
         status: Some(form.status.clone()),
         plan: None,
         email: None,
-        proxy: None,
+        bucket_id: None,
         quota: None,
         quota_confirmed: None,
     };
@@ -820,7 +883,11 @@ async fn row_response(state: &Arc<AppState>, id: Uuid, message: &str, level: &st
     match repo.get_by_id(id).await {
         Ok(Some(account)) => {
             let html = RowFragment {
-                row: AccountRow::from_account(&account, chrono::Utc::now()),
+                row: AccountRow::from_account(
+                    &account,
+                    chrono::Utc::now(),
+                    &bucket_label(&bucket_names(state).await, account.bucket_id),
+                ),
             }
             .render();
             match html {
@@ -1040,9 +1107,9 @@ pub struct EditForm {
     /// 邮箱。
     #[serde(default)]
     pub email: String,
-    /// 代理串；留空表示走全局出口。
+    /// 换桶（账号的出口跟着桶走）。
     #[serde(default)]
-    pub proxy: String,
+    pub bucket_id: String,
     /// 剩余配额。
     #[serde(default)]
     pub quota: String,
@@ -1106,7 +1173,12 @@ pub async fn edit_submit(
         status: trimmed(&form.status),
         plan: trimmed(&form.plan),
         email: Some(form.email.trim().to_string()),
-        proxy: Some(form.proxy.trim().to_string()),
+        bucket_id: form
+            .bucket_id
+            .trim()
+            .parse()
+            .ok()
+            .filter(|_| !form.bucket_id.trim().is_empty()),
         quota,
         quota_confirmed: quota.map(|_| true),
     };
@@ -1138,6 +1210,7 @@ mod tests {
         let now = Utc::now();
         Account {
             id: Uuid::new_v4(),
+            bucket_id: gpt2apirs_storage::repo::DEFAULT_BUCKET_ID,
             access_token: jwt_expiring_in(token_secs),
             refresh_token: Some("rt".to_string()),
             id_token: None,
@@ -1170,7 +1243,7 @@ mod tests {
         let now = Utc::now();
 
         // 即将过期 + 不限量 + 有重置时间
-        let row = AccountRow::from_account(&account_for_row(0, true, 3600), now).to_string();
+        let row = AccountRow::from_account(&account_for_row(0, true, 3600), now, "默认").to_string();
         assert!(row.contains("AT 即将过期"), "凭据要显示到期风险：{row}");
         assert!(row.contains("RT 有效"), "{row}");
         assert!(
@@ -1182,12 +1255,12 @@ mod tests {
         // 一张不剩：语义是「已耗尽」
         let mut exhausted = account_for_row(0, false, 7200);
         exhausted.restore_at = None;
-        let row = AccountRow::from_account(&exhausted, now).to_string();
+        let row = AccountRow::from_account(&exhausted, now, "默认").to_string();
         assert!(row.contains("已耗尽"), "{row}");
         assert!(!row.contains("后重置"), "没有重置时间就别显示倒计时：{row}");
 
         // AT 过期：凭据列要说无效
-        let row = AccountRow::from_account(&account_for_row(3, false, -3600), now).to_string();
+        let row = AccountRow::from_account(&account_for_row(3, false, -3600), now, "默认").to_string();
         assert!(row.contains("AT 无效"), "{row}");
     }
 
@@ -1312,6 +1385,10 @@ mod tests {
             keyword: String::new(),
             pager: crate::admin::pagination::window(0, 1, 50, "/accounts?page="),
             page_label: String::new(),
+            buckets: vec![BucketOption {
+                id: gpt2apirs_storage::repo::DEFAULT_BUCKET_ID.to_string(),
+                name: "默认".to_string(),
+            }],
         };
         let html = page.render().expect("渲染账号页");
         assert!(html.contains("账号池"), "{html}");

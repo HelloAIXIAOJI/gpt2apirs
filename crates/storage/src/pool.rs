@@ -26,6 +26,13 @@ pub enum StorageError {
     /// 迁移失败。
     #[error("数据库迁移失败：{0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
+
+    /// 桶里还有账号，不能删。
+    #[error("桶里还有 {accounts} 个账号，先移走或删掉它们再删桶")]
+    BucketBusy {
+        /// 剩余账号数。
+        accounts: i64,
+    },
 }
 
 /// 用引导层配置构建连接池。

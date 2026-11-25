@@ -151,6 +151,8 @@ pub struct ApiKeyIdentity {
     pub id: uuid::Uuid,
     /// 展示前缀。
     pub prefix: String,
+    /// 这把 key 绑定的桶；`None` = 全局（可以选任何桶的账号）。
+    pub bucket_id: Option<uuid::Uuid>,
 }
 
 /// axum 中间件：要求 API key。
@@ -178,6 +180,7 @@ pub async fn require_api_key(
             request.extensions_mut().insert(ApiKeyIdentity {
                 id: row.id,
                 prefix: row.prefix,
+                bucket_id: row.bucket_id,
             });
             Ok(next.run(request).await)
         }

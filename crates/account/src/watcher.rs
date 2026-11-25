@@ -189,6 +189,7 @@ mod tests {
         let now = Utc::now();
         Account {
             id: Uuid::new_v4(),
+            bucket_id: Uuid::nil(),
             access_token: jwt(exp_offset),
             refresh_token: Some("rt".to_string()),
             id_token: None,

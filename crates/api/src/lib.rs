@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::middleware;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use tower_http::trace::TraceLayer;
 
 pub use error::{ApiError, ErrorFormat};
@@ -78,7 +78,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/api/keys",
             get(routes::admin::list_keys).post(routes::admin::create_key),
         )
-        .route("/api/keys/{id}", delete(routes::admin::revoke_key))
+        .route("/api/keys/{id}", patch(routes::admin::update_key).delete(routes::admin::revoke_key))
+        .route("/api/keys/{id}/restore", post(routes::admin::restore_key))
         .route(
             "/api/images",
             get(routes::images::list_images),
@@ -115,6 +116,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/proxy/probe", post(routes::proxy::probe))
         .route("/api/proxy/clearance", post(routes::proxy::clearance))
         .route("/api/proxy/ping", post(routes::proxy::ping))
+        .route("/api/buckets", get(routes::buckets::list))
+        .route("/api/buckets", post(routes::buckets::create))
+        .route(
+            "/api/buckets/{id}",
+            patch(routes::buckets::update).delete(routes::buckets::remove),
+        )
         .route("/api/logs", get(routes::logs::list_logs))
         .route("/api/conversations", get(routes::conversations::list))
         .route("/api/conversations/{id}", delete(routes::conversations::remove))
@@ -207,6 +214,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/admin/assets/glightbox.js", get(admin::glightbox_js_asset))
         .route("/admin/assets/glightbox.css", get(admin::glightbox_css_asset))
         .route("/accounts", get(admin::accounts::index))
+        .route("/buckets", get(admin::buckets::index))
+        .route("/buckets/create", post(admin::buckets::create))
+        .route("/buckets/{id}/rename", post(admin::buckets::rename))
+        .route("/buckets/{id}/egress", post(admin::buckets::set_egress))
+        .route("/buckets/{id}/delete", post(admin::buckets::delete))
         .route("/settings", get(admin::settings::index).post(admin::settings::save))
         .route("/logs", get(admin::logs::index))
         .route("/conversations", get(admin::conversations::index))
@@ -246,6 +258,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/keys", get(admin::keys::index))
         .route("/keys/create", post(admin::keys::create))
         .route("/keys/{id}/revoke", post(admin::keys::revoke))
+        .route("/keys/{id}/restore", post(admin::keys::restore))
         .route("/keys/{id}/delete", post(admin::keys::delete))
         .route("/keys/batch", post(admin::keys::batch))
         .route("/keys/{id}/edit", get(admin::keys::edit_form).post(admin::keys::edit_submit))

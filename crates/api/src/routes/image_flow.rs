@@ -124,7 +124,12 @@ fn acquire_error(error: PoolError) -> ApiError {
 /// 在池子里跑一个操作，失败时按分类换号重试。
 ///
 /// `op` 收到账号 token，返回成功值或分类错误。
-async fn with_retry<F, Fut>(state: &Arc<AppState>, deadline: Deadline, op: F) -> SlotResult
+async fn with_retry<F, Fut>(
+    state: &Arc<AppState>,
+    deadline: Deadline,
+    bucket: Option<Uuid>,
+    op: F,
+) -> SlotResult
 where
     F: Fn(String, String) -> Fut,
     Fut: std::future::Future<Output = std::result::Result<SlotOutcome, GenerateError>>,
@@ -140,6 +145,8 @@ where
         }
         let filter = SelectionFilter {
             exclude: excluded.clone(),
+            // key 绑了桶就只在这个桶里挑号：否则「哪个 key 用哪批号」说不清
+            bucket,
             ..SelectionFilter::for_image()
         };
         let lease = match state.pool.acquire(&filter, deadline).await {
@@ -216,6 +223,7 @@ pub async fn run_generation(
     state: &Arc<AppState>,
     mut request: ImageRequest,
     deadline: Deadline,
+    bucket: Option<Uuid>,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
     // SSE 窗口与兜底轮询都从设置项装配（SSE 上限不再是写死的 80 秒）。
     request = request.with_runtime_settings(&state.settings);
@@ -228,7 +236,7 @@ pub async fn run_generation(
         single.n = 1; // 每个槽位只产 1 张，张数由任务数决定
         set.spawn(async move {
             let inner = outer.clone();
-            with_retry(&outer, deadline, move |token, proxy| {
+            with_retry(&outer, deadline, bucket, move |token, proxy| {
                 let state = inner.clone();
                 let single = single.clone();
                 async move {
@@ -342,6 +350,7 @@ pub async fn run_edit(
     mut request: ImageRequest,
     prepared: Vec<(Vec<u8>, String)>,
     deadline: Deadline,
+    bucket: Option<Uuid>,
 ) -> Result<Vec<SlotOutcome>, ApiError> {
     request = request.with_runtime_settings(&state.settings);
     let total = request.n.clamp(1, 32) as usize;
@@ -354,7 +363,7 @@ pub async fn run_edit(
         single.n = 1;
         set.spawn(async move {
             let inner = outer.clone();
-            with_retry(&outer, deadline, move |token, proxy| {
+            with_retry(&outer, deadline, bucket, move |token, proxy| {
                 let state = inner.clone();
                 let single = single.clone();
                 let prepared = prepared.clone();

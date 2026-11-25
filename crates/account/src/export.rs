@@ -115,6 +115,7 @@ mod tests {
         let now = Utc::now();
         Account {
             id: Uuid::new_v4(),
+            bucket_id: Uuid::nil(),
             access_token: jwt(3600),
             refresh_token: with_refresh.then(|| "rt".to_string()),
             id_token: with_id.then(|| "id".to_string()),

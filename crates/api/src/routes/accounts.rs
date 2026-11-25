@@ -63,7 +63,9 @@ pub struct AccountView {
     pub quota_confirmed: bool,
     /// 限流恢复时间。
     pub restore_at: Option<DateTime<Utc>>,
-    /// 代理。
+    /// 所属桶（前端用 GET /api/buckets 拿名字对照）。
+    pub bucket_id: Uuid,
+    /// 生效出口（来自桶）；空 = 跟随全局。
     pub proxy: String,
     /// 成功次数。
     pub success_count: i64,
@@ -177,6 +179,7 @@ impl AccountView {
             quota: account.quota,
             quota_confirmed: account.quota_confirmed,
             restore_at: account.restore_at,
+            bucket_id: account.bucket_id,
             proxy: account.proxy,
             success_count: account.success_count,
             fail_count: account.fail_count,
@@ -345,7 +348,13 @@ pub async fn create_accounts(
         .await
         .map_err(|error| internal(format!("读取请求体失败: {error}")))?;
 
-    let new_accounts = parse_import_body(&bytes)?;
+    let (mut new_accounts, batch_bucket) = parse_import_body(&bytes)?;
+    // 顶层指定的桶对整批生效：这样「整包导进某个桶」不用逐个账号写 bucket_id
+    if let Some(bucket) = batch_bucket {
+        for account in &mut new_accounts {
+            account.bucket_id = Some(bucket);
+        }
+    }
     if new_accounts.is_empty() {
         return Err(ApiError::admin(AppError::invalid(
             "没有解析出任何账号，请检查 access_token 字段",
@@ -490,15 +499,25 @@ async fn prune_invalid_accounts(state: &Arc<AppState>, accounts: &[Account]) -> 
     }
 }
 
-fn parse_import_body(bytes: &[u8]) -> Result<Vec<gpt2apirs_account::NewAccount>, ApiError> {
+/// 解析导入体，返回（账号列表，整批指定的桶）。
+///
+/// 桶可以写在顶层（`{"bucket_id": "...", "content": "..."}`）对整批生效；
+/// 单个账号对象里的 `bucket_id` 由解析层各自认。顶层优先。
+fn parse_import_body(
+    bytes: &[u8],
+) -> Result<(Vec<gpt2apirs_account::NewAccount>, Option<Uuid>), ApiError> {
     let text = String::from_utf8_lossy(bytes).trim().to_string();
     let Ok(value) = serde_json::from_str::<Value>(&text) else {
-        // 不是 JSON：按纯文本处理
-        return parse_any(&text).map_err(|error| {
+        // 不是 JSON：按纯文本处理（纯文本没法指桶，只能进默认桶）
+        return parse_any(&text).map(|accounts| (accounts, None)).map_err(|error| {
             ApiError::admin(AppError::invalid(format!("导入内容无法解析: {error}")))
         });
     };
-    match &value {
+    let batch_bucket = ["bucket_id", "bucketId", "bucket"]
+        .iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .and_then(|raw| Uuid::parse_str(raw.trim()).ok());
+    let accounts = match &value {
         Value::String(content) => parse_any(content),
         Value::Array(_) => parse_json(&value.to_string()),
         Value::Object(map) => {
@@ -511,8 +530,8 @@ fn parse_import_body(bytes: &[u8]) -> Result<Vec<gpt2apirs_account::NewAccount>,
             }
         }
         _ => Err(gpt2apirs_account::ImportParseError::NoAccounts),
-    }
-    .map_err(|error| {
+    };
+    accounts.map(|accounts| (accounts, batch_bucket)).map_err(|error| {
         ApiError::admin(AppError::invalid(format!("导入内容无法解析: {error}")))
     })
 }
@@ -530,8 +549,8 @@ pub struct UpdateAccountRequest {
     pub plan: Option<String>,
     /// 新邮箱。
     pub email: Option<String>,
-    /// 新代理。
-    pub proxy: Option<String>,
+    /// 换桶（等于换出口）。
+    pub bucket_id: Option<Uuid>,
     /// 手动校正剩余配额。
     ///
     /// 上游配额偶尔读到不准确的 0（例如限流刚恢复），管理面需要手工纠正；
@@ -564,7 +583,7 @@ pub async fn update_account(
     }
     patch.plan = body.plan.as_deref().map(Plan::parse);
     patch.email = body.email.clone();
-    patch.proxy = body.proxy.clone();
+    patch.bucket_id = body.bucket_id;
     patch.quota = body.quota.map(|value| value.max(0));
     patch.quota_confirmed = body.quota_confirmed;
 

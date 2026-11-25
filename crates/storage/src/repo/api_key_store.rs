@@ -22,10 +22,35 @@ pub enum ApiKeyStore {
 
 impl ApiKeyStore {
     /// 新建一把 key。
-    pub async fn create(&self, name: &str) -> Result<CreatedApiKey, StorageError> {
+    pub async fn create(
+        &self,
+        name: &str,
+        bucket_id: Option<Uuid>,
+    ) -> Result<CreatedApiKey, StorageError> {
         match self {
-            Self::Postgres(repo) => repo.create(name).await,
-            Self::Memory(memory) => Ok(memory.create(name)),
+            Self::Postgres(repo) => repo.create(name, bucket_id).await,
+            Self::Memory(memory) => Ok(memory.create(name, bucket_id)),
+        }
+    }
+
+    /// 编辑名称与所属桶。
+    pub async fn update(
+        &self,
+        id: Uuid,
+        name: Option<&str>,
+        bucket_id: Option<Option<Uuid>>,
+    ) -> Result<bool, StorageError> {
+        match self {
+            Self::Postgres(repo) => repo.update(id, name, bucket_id).await,
+            Self::Memory(memory) => Ok(memory.update(id, name, bucket_id)),
+        }
+    }
+
+    /// 恢复已吊销的 key。
+    pub async fn restore(&self, id: Uuid) -> Result<bool, StorageError> {
+        match self {
+            Self::Postgres(repo) => repo.restore(id).await,
+            Self::Memory(memory) => Ok(memory.restore(id)),
         }
     }
 
@@ -130,12 +155,13 @@ impl MemoryApiKeys {
                 created_at: Utc::now(),
                 last_used_at: None,
                 revoked_at: None,
+                bucket_id: None,
             },
             digest,
         ));
     }
 
-    fn create(&self, name: &str) -> CreatedApiKey {
+    fn create(&self, name: &str, bucket_id: Option<Uuid>) -> CreatedApiKey {
         let generated = gpt2apirs_core::api_key::generate();
         let row = ApiKeyRow {
             id: Uuid::new_v4(),
@@ -144,6 +170,7 @@ impl MemoryApiKeys {
             created_at: Utc::now(),
             last_used_at: None,
             revoked_at: None,
+            bucket_id,
         };
         self.inner
             .write()
@@ -165,6 +192,33 @@ impl MemoryApiKeys {
             .collect();
         rows.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         rows
+    }
+
+    fn update(&self, id: Uuid, name: Option<&str>, bucket_id: Option<Option<Uuid>>) -> bool {
+        let mut guard = self.inner.write().expect("锁");
+        for (row, _) in guard.iter_mut() {
+            if row.id == id {
+                if let Some(name) = name {
+                    row.name = name.trim().to_string();
+                }
+                if let Some(bucket) = bucket_id {
+                    row.bucket_id = bucket;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    fn restore(&self, id: Uuid) -> bool {
+        let mut guard = self.inner.write().expect("锁");
+        for (row, _) in guard.iter_mut() {
+            if row.id == id {
+                row.revoked_at = None;
+                return true;
+            }
+        }
+        false
     }
 
     fn revoke(&self, id: Uuid) -> bool {
@@ -213,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn memory_backend_create_verify_revoke() {
         let store = store();
-        let created = store.create("测试").await.expect("创建");
+        let created = store.create("测试", None).await.expect("创建");
         let verified = store.verify(&created.plaintext).await.expect("校验");
         assert_eq!(verified.expect("应命中").name, "测试");
 

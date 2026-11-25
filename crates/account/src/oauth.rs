@@ -262,7 +262,8 @@ pub async fn finish(
         source: Source::Web,
         quota: 0,
         quota_confirmed: false,
-        proxy: String::new(),
+        // OAuth 新号进默认桶；要换桶在账号页移过去。
+        bucket_id: None,
     })
 }
 

@@ -34,7 +34,7 @@ async fn repo() -> Option<(ApiKeyRepo, sqlx::PgPool)> {
 async fn create_verify_revoke_round_trip() {
     let Some((repo, pool)) = repo().await else { return };
 
-    let created = repo.create("单测用").await.expect("创建");
+    let created = repo.create("单测用", None).await.expect("创建");
     assert!(created.plaintext.starts_with(gpt2apirs_core::api_key::KEY_PREFIX));
     assert_eq!(created.row.name, "单测用");
     assert!(created.row.revoked_at.is_none());
