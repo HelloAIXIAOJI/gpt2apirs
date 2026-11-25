@@ -19,6 +19,107 @@ import argparse, base64, hashlib, hmac, json, os, re, secrets, sys, time
 from urllib.parse import urlencode
 import urllib.request
 
+def page_notice(driver, limit=14):
+    """把页面上人眼看到的提示原样取出来（去空行、去重复行）。
+
+    上游判定账号不可用时不会给授权 code，而是直接渲染一个说明页；
+    那上面的文案就是唯一结论，丢掉它等于让人去猜。
+    """
+    try:
+        text = driver.execute_script("return document.body ? document.body.innerText : ''") or ""
+    except Exception:
+        text = ""
+    if not text.strip():
+        try:
+            from selenium.webdriver.common.by import By
+            text = driver.find_element(By.TAG_NAME, "body").text or ""
+        except Exception:
+            return []
+    lines, seen = [], set()
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+        if len(lines) >= limit:
+            break
+    return lines
+
+def page_error_code(lines, driver=None):
+    """上游把结论写在 error_code 里；有它就不用再猜。
+
+    innerText 里常常没有：错误码在「诊断信息」折叠块里，用户不点开就看不到。
+    所以再翻一遍源码 —— DOM 里有，只是没渲染成可见文字。
+    """
+    for line in lines:
+        m = re.search(r"error_code[:\s]*([A-Za-z_]+)", line)
+        if m:
+            return m.group(1)
+    if driver is not None:
+        try:
+            m = re.search(r'error_code["\\\s:>]*([A-Za-z_]{4,})', driver.page_source)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+    return None
+
+def describe_page(driver):
+    """拼一段能直接贴给人看的话：错误码 + 页面原文 + 地址。"""
+    lines = page_notice(driver)
+    try:
+        url = driver.current_url
+    except Exception:
+        url = ""
+    out = []
+    code = page_error_code(lines, driver)
+    if code:
+        out.append("上游错误码：%s" % code)
+    if lines:
+        out.append("上游页面原文：")
+        out.extend("  " + line for line in lines)
+    else:
+        out.append("上游页面没有可见文字")
+    out.append("页面：%s" % url[:180])
+    return "\n".join(out)
+
+def page_looks_final(driver):
+    """当前页是不是「上游已经给结论」的说明页。
+
+    判据是结构性的，不靠猜文案：登录流程每一页都有输入框，
+    说明页一个都没有（只剩「重试」和诊断信息）。这样封号、停用、
+    需要人工验证、地区限制……都覆盖得到。
+    """
+    lines = page_notice(driver)
+    if page_error_code(lines, driver):
+        return True
+    # 数「真的能输入的控件」：React 页面里留着 opacity:0 的旧输入框，
+    # Selenium 的 is_displayed() 认为它可见，据此判断会把说明页当成流程页。
+    try:
+        usable = driver.execute_script(
+            "const els = [...document.querySelectorAll('input,textarea')];"
+            "return els.filter(el => {"
+            "  const s = getComputedStyle(el), r = el.getBoundingClientRect();"
+            "  return el.type !== 'hidden' && s.display !== 'none' && s.visibility !== 'hidden'"
+            "    && s.opacity !== '0' && r.width > 1 && r.height > 1;"
+            "}).length;"
+        )
+    except Exception:
+        usable = 0
+    if usable:
+        return False
+    return len(lines) >= 2
+
+def die_with_page(driver, reason, tag="notice"):
+    """失败时把上游页面上的提示原样说出来。
+
+    只说「没拿到 code」等于把唯一的信息扔掉：上游若给出结论，
+    用户看一眼就知道该换号、该改密码、还是该等冷却。
+    """
+    dump_page(driver, tag)
+    die(reason + "\n" + describe_page(driver))
+
 def wait_next_totp_window():
     """等到下一个 30 秒窗口：MFA 重试时不能复用刚刚被拒的同一个码。"""
     cur = int(time.time()) // 30
@@ -232,7 +333,7 @@ def main():
             except Exception:
                 time.sleep(0.5)
         if pwd is None:
-            die("没到密码页。这个账号可能没设密码，或需要邮箱验证码；请浏览器手动登录后用 Session JSON 导入")
+            die_with_page(driver, "没到密码页（可能没设密码，或需要邮箱验证码）", "no_password_page")
 
         fill_input(driver, pwd, creds["password"]); time.sleep(0.5)
         click_continue(driver)
@@ -241,7 +342,7 @@ def main():
 
         body_text = driver.find_element(By.TAG_NAME, "body").text
         if "密码错误" in body_text or "incorrect" in body_text.lower():
-            die("密码不正确（为免触发风控不重试）")
+            die_with_page(driver, "密码不正确（为免触发风控不重试）", "bad_password")
 
         code_input = None
         for _ in range(40):
@@ -256,7 +357,7 @@ def main():
                 break
             time.sleep(0.5)
         if code_input is None:
-            die("没到两步验证页（账号可能没开 TOTP）")
+            die_with_page(driver, "没到两步验证页（账号可能没开 TOTP）", "no_totp_page")
 
         code = totp(creds["totp"])
         fill_input(driver, code_input, code); time.sleep(0.5)
@@ -267,8 +368,12 @@ def main():
         # 有些号在 TOTP 之后还会再弹一道 MFA（mfa-challenge）：再填一次即可。
         # 必须等下一个 30 秒窗口，否则填进去的还是刚用过的那 6 位，必然再被拒。
         extra_mfa = 0
-        for _ in range(90):
+        for tick in range(90):
             time.sleep(1)
+            # 卡在说明页就别干等 90 秒：前 4 秒是跳转过渡，不做判定。
+            # 命中就直接把上游原话报出去（封号、停用都是这一条路）。
+            if tick >= 4 and tick % 3 == 0 and page_looks_final(driver):
+                die_with_page(driver, "上游没给授权 code，停在了说明页", "notice_page")
             m = re.search(r"[?&]code=([^&]+)", driver.current_url)
             if m:
                 auth_code = m.group(1); break
@@ -290,8 +395,7 @@ def main():
                     print("④+ 又一道 MFA，已再提交 TOTP（%s）" % fresh, flush=True)
                 continue
         if not auth_code:
-            dump_page(driver, "mfa_or_code_failed")
-            die("没拿到授权 code，当前页面：" + driver.current_url[:120])
+            die_with_page(driver, "没拿到授权 code", "no_auth_code")
         print("⑤ 拿到授权 code，换 token…", flush=True)
 
         data = urlencode({"grant_type": "authorization_code", "client_id": CLIENT_ID,

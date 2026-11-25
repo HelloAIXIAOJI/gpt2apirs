@@ -10,6 +10,78 @@ import argparse, base64, hashlib, hmac, json, os, re, secrets, sys, time
 from urllib.parse import urlencode
 import urllib.request
 
+def page_notice(driver, limit=14):
+    """把页面上人眼看到的提示原样取出来（去空行、去重复行）。
+
+    上游判定账号不可用时不会给授权 code，而是直接渲染一个说明页；
+    那上面的文案就是唯一结论，丢掉它等于让人去猜。
+    """
+    try:
+        text = driver.execute_script("return document.body ? document.body.innerText : ''") or ""
+    except Exception:
+        text = ""
+    if not text.strip():
+        try:
+            from selenium.webdriver.common.by import By
+            text = driver.find_element(By.TAG_NAME, "body").text or ""
+        except Exception:
+            return []
+    lines, seen = [], set()
+    for raw in text.splitlines():
+        line = " ".join(raw.split())
+        if not line or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+        if len(lines) >= limit:
+            break
+    return lines
+
+def page_error_code(lines):
+    """上游把结论写在 error_code 里；有它就不用再猜。"""
+    for line in lines:
+        m = re.search(r"error_code[:\s]*([A-Za-z_]+)", line)
+        if m:
+            return m.group(1)
+    return None
+
+def describe_page(driver):
+    """拼一段能直接贴给人看的话：错误码 + 页面原文 + 地址。"""
+    lines = page_notice(driver)
+    try:
+        url = driver.current_url
+    except Exception:
+        url = ""
+    out = []
+    code = page_error_code(lines)
+    if code:
+        out.append("上游错误码：%s" % code)
+    if lines:
+        out.append("上游页面原文：")
+        out.extend("  " + line for line in lines)
+    else:
+        out.append("上游页面没有可见文字")
+    out.append("页面：%s" % url[:180])
+    return "\n".join(out)
+
+def page_looks_final(driver):
+    """当前页是不是「上游已经给结论」的说明页。
+
+    判据是结构性的，不靠猜文案：登录流程每一页都有输入框，
+    说明页一个都没有（只剩「重试」和诊断信息）。
+    """
+    lines = page_notice(driver)
+    if page_error_code(lines):
+        return True
+    try:
+        from selenium.webdriver.common.by import By
+        boxes = driver.find_elements(By.CSS_SELECTOR, "input, textarea")
+        if any(box.is_displayed() for box in boxes):
+            return False
+    except Exception:
+        return False
+    return len(lines) >= 2
+
 def fill_input(driver, element, text, retries=3):
     """往受控输入框写值并校验；send_keys 偶尔写不进去（React 水合时序），失败改用 JS 原生 setter。"""
     from selenium.webdriver.common.by import By as _By
@@ -215,13 +287,13 @@ def main():
             except Exception:
                 time.sleep(0.4)
         if pwd is None:
-            raise RuntimeError("没到密码页")
+            raise RuntimeError("没到密码页；" + describe_page(driver))
         fill_input(driver, pwd, acct["password"]); time.sleep(0.35)
         click_continue(driver)
         time.sleep(2.5)
         txt = driver.find_element(By.TAG_NAME, "body").text
         if "密码错误" in txt or "incorrect" in txt.lower():
-            raise RuntimeError("密码错误")
+            raise RuntimeError("密码错误；" + describe_page(driver))
 
         code_input = None
         for _ in range(30):
@@ -235,18 +307,21 @@ def main():
                 break
             time.sleep(0.4)
         if code_input is None:
-            raise RuntimeError("没到 TOTP 页")
+            raise RuntimeError("没到 TOTP 页；" + describe_page(driver))
         fill_input(driver, code_input, totp(acct["totp"])); time.sleep(0.35)
         click_continue(driver)
 
         auth_code = None
-        for _ in range(60):
+        for tick in range(60):
             time.sleep(0.7)
             m = re.search(r"[?&]code=([^&]+)", driver.current_url)
             if m:
                 auth_code = m.group(1); break
+            # 卡在说明页就别干等：命中就把上游原话带进 error 字段
+            if tick >= 5 and tick % 4 == 0 and page_looks_final(driver):
+                break
         if not auth_code:
-            raise RuntimeError("没拿到 code")
+            raise RuntimeError("没拿到 code；" + describe_page(driver))
         return exchange(auth_code, verifier)
 
     try:
@@ -279,7 +354,8 @@ def main():
                 print("[%d/%d] ok  %s  %.1fs  平均 %.1fs" % (idx, len(accounts), acct["email"], secs, total_secs / done), flush=True)
             except Exception as e:
                 secs = time.time() - t0
-                msg = str(e)[:120]
+                # 新加的页面原文是多行，压成一行再截：日志一行一条才看得下去
+                msg = " | ".join(str(e).splitlines())[:400]
                 if "CF" in msg or "拦截" in msg:
                     cf_fails += 1
                 fails += 1
