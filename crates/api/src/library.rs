@@ -92,7 +92,8 @@ pub async fn conversations(
         .await
         .map_err(lease_error)?;
     let client = state
-        .client_for(&lease.account().proxy)
+        // 出口统一走全局（账号已无代理字段）
+        .client_for("")
         .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
     let page = gpt2apirs_generate::account_data::list_conversations(
         &client,
@@ -119,7 +120,8 @@ pub async fn delete_conversation(
         .await
         .map_err(lease_error)?;
     let client = state
-        .client_for(&lease.account().proxy)
+        // 出口统一走全局（账号已无代理字段）
+        .client_for("")
         .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
     let removed = gpt2apirs_generate::account_data::delete_conversation(
         &client,
@@ -144,7 +146,8 @@ pub async fn memories(
         .await
         .map_err(lease_error)?;
     let client = state
-        .client_for(&lease.account().proxy)
+        // 出口统一走全局（账号已无代理字段）
+        .client_for("")
         .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
     let page = gpt2apirs_generate::account_data::list_memories(&client, lease.access_token(), deadline)
         .await
@@ -165,7 +168,8 @@ pub async fn delete_memory(
         .await
         .map_err(lease_error)?;
     let client = state
-        .client_for(&lease.account().proxy)
+        // 出口统一走全局（账号已无代理字段）
+        .client_for("")
         .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
     gpt2apirs_generate::account_data::delete_memory(
         &client,

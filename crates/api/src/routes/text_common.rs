@@ -115,8 +115,9 @@ where
         let account_id = lease.id();
         crate::call_log::note_account(account_id);
 
+        // 出口统一走全局
         let client = state
-            .client_for(lease.account().proxy.trim())
+            .client_for("")
             .map_err(|error| {
                 ApiError::openai(AppError::Internal(anyhow::anyhow!(
                     "代理客户端构建失败：{error}"

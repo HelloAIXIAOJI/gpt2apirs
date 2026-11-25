@@ -205,6 +205,25 @@ async fn page(state: &AppState, plaintext: String, error: String, page: i64) -> 
     }
 }
 
+/// 新建页（列表页只留一个按钮，表单不裸着铺在上面）。
+#[derive(Template)]
+#[template(path = "keys_new.html")]
+struct NewPage {
+    nav: Vec<nav::NavItem>,
+    flash: String,
+}
+
+/// `GET /keys/new`
+pub async fn new_form(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    render(NewPage {
+        nav: nav::items("/keys"),
+        flash: String::new(),
+    })
+}
+
 /// `POST /keys/create`
 pub async fn create(
     State(state): State<Arc<AppState>>,
@@ -215,8 +234,13 @@ pub async fn create(
         return Redirect::to("/").into_response();
     }
     let name = form.name.trim();
-    let name = if name.is_empty() { "未命名" } else { name };
-    // 页面创建默认全局；建完可以在列表里改成具体桶。
+    if name.is_empty() {
+        return render(NewPage {
+            nav: nav::items("/keys"),
+            flash: "名称不能为空".to_string(),
+        });
+    }
+    // 页面创建默认全局；建完可以在编辑页改成具体桶。
     match state.api_keys.create(name, None).await {
         Ok(created) => render(page(&state, created.plaintext, String::new(), 0).await),
         Err(failure) => {

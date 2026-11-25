@@ -31,26 +31,20 @@ pub struct CreateBucketRequest {
     pub name: String,
 }
 
-/// 修改桶的请求（只传要改的字段）。
+/// 修改桶的请求。
+///
+/// 现在只有改名：出口已经收回全局，桶不再有可配置项。
 #[derive(Debug, Deserialize, Default)]
 pub struct UpdateBucketRequest {
     /// 新名字。
     #[serde(default)]
     pub name: Option<String>,
-    /// 出口节点名；传空串 = 跟随全局。
-    #[serde(default)]
-    pub proxy_node: Option<String>,
-    /// 自定义出口地址；传空串 = 不用。
-    #[serde(default)]
-    pub proxy_url: Option<String>,
 }
 
 fn view(row: &gpt2apirs_storage::repo::BucketRow) -> Value {
     json!({
         "id": row.id,
         "name": row.name,
-        "proxy_node": row.proxy_node,
-        "proxy_url": row.proxy_url,
         "is_default": row.is_default,
         "account_count": row.account_count,
         "created_at": row.created_at,
@@ -110,16 +104,7 @@ pub async fn update(
             }
         })?;
     }
-    if request.proxy_node.is_some() || request.proxy_url.is_some() {
-        let current = repo
-            .get(id)
-            .await
-            .map_err(internal)?
-            .ok_or_else(|| bad("桶不存在", "id"))?;
-        let node = request.proxy_node.as_deref().unwrap_or(&current.proxy_node);
-        let url = request.proxy_url.as_deref().unwrap_or(&current.proxy_url);
-        repo.set_egress(id, node, url).await.map_err(internal)?;
-    }
+
     let row = repo.get(id).await.map_err(internal)?.ok_or_else(|| bad("桶不存在", "id"))?;
     Ok(Json(view(&row)))
 }

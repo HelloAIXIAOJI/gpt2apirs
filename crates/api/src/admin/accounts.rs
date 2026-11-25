@@ -495,10 +495,8 @@ pub struct AccountRow {
     /// 距配额重置的倒计时（没有就是空串）。
     reset_hint: String,
     counters: String,
-    /// 所属桶名（账号归桶，桶再管出口）。
+    /// 所属桶名。
     bucket: String,
-    /// 生效出口；空表示跟随全局。
-    proxy: String,
     /// 状态原因的简短说法。
     reason: String,
     /// 上游原始错误（悬停看）。
@@ -560,11 +558,6 @@ impl AccountRow {
             counters: format!("{} / {}", account.success_count, account.fail_count),
             // 桶名由调用方传进来：这里只拿得到账号，桶表要单独查一次
             bucket: bucket_name.to_string(),
-            proxy: if account.proxy.trim().is_empty() {
-                "跟随全局".to_string()
-            } else {
-                account.proxy.clone()
-            },
             reason: reason.to_string(),
             last_error: raw_error.to_string(),
             access_label: credential.access.label().to_string(),
@@ -633,14 +626,7 @@ impl fmt::Display for AccountRow {
         }
         write!(f, "</td>")?;
         write!(f, "<td class=\"num\">{}</td>", escape(&self.counters))?;
-        // 一列同时给出「在哪个桶」和「走什么出口」：想改出口就去改桶
-        write!(
-            f,
-            "<td title=\"出口：{}\" class=\"muted\">{} · {}</td>",
-            escape(&self.proxy),
-            escape(&self.bucket),
-            escape(&self.proxy)
-        )?;
+        write!(f, "<td class=\"muted\">{}</td>", escape(&self.bucket))?;
         // 状态原因：短因一列，原始错误悬停看
         write!(
             f,
@@ -757,29 +743,23 @@ fn bucket_label(names: &std::collections::HashMap<Uuid, String>, id: Uuid) -> St
 pub struct BucketCard {
     /// 进列表用的参数：`all` / `default` / 桶 ID。
     pub slug: String,
-    /// 桶名（「全部」那张是固定文案）。
+    /// 桶名（「全部」那行是固定文案）。
     pub name: String,
     /// 账号数。
     pub accounts: i64,
-    /// 出口说明。
-    pub egress: String,
-    /// 出口地址原值（表单要回填）。
-    pub proxy_url: String,
     /// 是否默认桶（显示徽章）。
     pub is_default: bool,
-    /// 能否删除（空桶且不是默认桶）。
-    pub deletable: bool,
+    /// 是否「全部」这个抽象桶：只能进，不能改也不能删。
+    pub is_virtual: bool,
 }
 
-/// 账号首页：一个个桶。
+/// 账号首页：一个桶列表。
 #[derive(Template)]
 #[template(path = "accounts/overview.html")]
 struct BucketsOverviewPage {
     nav: Vec<nav::NavItem>,
-    /// 顶部固定的两张：全部、默认桶。
-    pinned: Vec<BucketCard>,
-    /// 其余桶。
-    others: Vec<BucketCard>,
+    /// 全部 + 默认 + 其它，按这个顺序排（全部与默认固定在最前）。
+    rows: Vec<BucketCard>,
     flash: String,
     error: String,
 }
@@ -795,18 +775,16 @@ async fn overview_page(state: &AppState, filters: &Filters) -> BucketsOverviewPa
         .await
         .unwrap_or(0);
 
-    let mut pinned = vec![BucketCard {
+    // 「全部」是抽象桶：所有账号的聚合，固定排第一，不可改名/删除。
+    let mut rows = vec![BucketCard {
         slug: "all".to_string(),
-        name: "全部".to_string(),
+        name: "全部账号".to_string(),
         accounts: total_accounts,
-        egress: "所有桶的账号".to_string(),
-        proxy_url: String::new(),
         is_default: false,
-        deletable: false,
+        is_virtual: true,
     }];
-    let mut others = Vec::new();
     for row in &buckets {
-        let card = BucketCard {
+        rows.push(BucketCard {
             slug: if row.is_default {
                 "default".to_string()
             } else {
@@ -814,26 +792,14 @@ async fn overview_page(state: &AppState, filters: &Filters) -> BucketsOverviewPa
             },
             name: row.name.clone(),
             accounts: row.account_count,
-            egress: if row.proxy_url.trim().is_empty() {
-                "跟随全局出口".to_string()
-            } else {
-                row.proxy_url.clone()
-            },
-            proxy_url: row.proxy_url.clone(),
             is_default: row.is_default,
-            deletable: !row.is_default && row.account_count == 0,
-        };
-        if row.is_default {
-            pinned.push(card);
-        } else {
-            others.push(card);
-        }
+            is_virtual: false,
+        });
     }
 
     BucketsOverviewPage {
         nav: nav::items("/accounts"),
-        pinned,
-        others,
+        rows,
         flash: filters.flash.clone(),
         error,
     }
@@ -1221,7 +1187,8 @@ struct EditPage {
     nav: Vec<nav::NavItem>,
     id: String,
     email: String,
-    proxy: String,
+    /// 当前桶名（只读；换桶在桶页做）。
+    bucket: String,
     quota: String,
     plan: String,
     status: String,
@@ -1264,7 +1231,7 @@ pub async fn edit_form(
             nav: nav::items("/accounts"),
             id: account.id.to_string(),
             email: account.email.clone().unwrap_or_default(),
-            proxy: account.proxy.clone(),
+            bucket: bucket_label(&bucket_names(&state).await, account.bucket_id),
             quota: account.quota.to_string(),
             plan: account.plan.as_str().to_string(),
             status: account.status.as_str().to_string(),
@@ -1350,7 +1317,6 @@ mod tests {
             quota_confirmed: true,
             quota_unlimited: unlimited,
             restore_at: Some(now + chrono::Duration::minutes(45)),
-            proxy: String::new(),
             success_count: 7,
             fail_count: 1,
             invalid_count: 0,
@@ -1487,7 +1453,7 @@ mod tests {
             nav: nav::items("/accounts"),
             id: "11111111-1111-1111-1111-111111111111".to_string(),
             email: "a@b.com".to_string(),
-            proxy: "http://127.0.0.1:17899".to_string(),
+            bucket: "默认".to_string(),
             quota: "12".to_string(),
             plan: "free".to_string(),
             status: "normal".to_string(),

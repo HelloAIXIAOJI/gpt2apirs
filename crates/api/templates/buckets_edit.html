@@ -1,0 +1,31 @@
+{% extends "shell.html" %}
+{% block title %}编辑桶 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>编辑桶</h1></header>
+
+<section class="panel">
+  <p class="muted"><a href="/accounts">← 返回账号</a></p>
+  {% if !flash.is_empty() %}<p class="stat-error">{{ flash }}</p>{% endif %}
+
+  <form class="edit-form" method="post" action="/buckets/{{ slug }}/edit">
+    <label>桶名<input name="name" value="{{ name }}" required autofocus></label>
+    <div class="edit-actions">
+      <button type="submit">保存</button>
+      <a class="btn btn--ghost" href="/accounts?bucket={{ slug }}">查看这个桶的账号</a>
+    </div>
+  </form>
+
+  <p class="muted">这个桶里有 {{ accounts }} 个账号。出口统一走「代理」页的全局设置。</p>
+
+  {% if is_default %}
+  <p class="muted">默认桶不能删除：它是「没指定桶」时的落点。</p>
+  {% else if !can_delete %}
+  <p class="muted">桶里还有账号，先把它们移走或删掉才能删这个桶。</p>
+  {% else %}
+  <form method="post" action="/buckets/{{ slug }}/delete"
+        onsubmit="return confirm('删除这个空桶？');">
+    <button type="submit" class="btn btn--danger">删除这个桶</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

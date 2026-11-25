@@ -165,7 +165,8 @@ where
         let account_id = lease.id();
         crate::call_log::note_account(account_id);
         let token = lease.access_token().to_string();
-        let proxy = lease.account().proxy.trim().to_string();
+        // 出口统一走全局：账号不再带代理，proxy 恒空 → ClientFactory 用全局出口
+        let proxy = String::new();
 
         let result = op(token, proxy).await;
         match result {

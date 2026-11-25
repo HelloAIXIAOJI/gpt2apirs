@@ -14,10 +14,10 @@
   </div>
   {% endif %}
 
-  <form class="filters" method="post" action="/keys/create">
-    <label>名称<input name="name" placeholder="例如 本机脚本" required></label>
-    <button type="submit">新建密钥</button>
-  </form>
+  <div class="bucket-bar">
+    <a class="btn" href="/keys/new">新建密钥</a>
+    <span class="muted">明文只在新建后显示一次。</span>
+  </div>
 
   <form id="batch-form" method="post" action="/keys/batch" hx-post="/keys/batch" hx-swap="none">
     <div class="batch-bar">

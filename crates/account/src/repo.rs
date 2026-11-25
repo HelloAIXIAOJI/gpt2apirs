@@ -626,14 +626,11 @@ const DEFAULT_LIST_LIMIT: i64 = 1000;
 const MIN_TOKEN_LOOKUP_LEN: usize = 32;
 
 /// 列清单（保持与 [`row_to_account`] 对齐）。
-/// 列清单（保持与 [`row_to_account`] 对齐）。
 ///
-/// `proxy` 已经不是账号自己的列了：它从所属桶的出口算出来。
-/// 放在这里而不是调用点，是为了让「账号用哪个出口」只有一处定义。
+/// 账号没有出口字段：所有请求统一走代理页那一个全局出口。
 const COLUMNS: &str = "\
     id, access_token, refresh_token, id_token, email, upstream_account_id, \
     plan, source, status, quota, quota_confirmed, quota_unlimited, restore_at, bucket_id, \
-    coalesce((select b.proxy_url from buckets b where b.id = accounts.bucket_id), '') as proxy, \
     success_count, fail_count, invalid_count, \
     last_used_at, last_invalid_at, last_error, last_error_at, \
     last_checked_at, last_refresh_at, created_at, updated_at";
@@ -660,7 +657,6 @@ fn row_to_account(row: &PgRow) -> Account {
         quota_unlimited: row.get("quota_unlimited"),
         restore_at: row.get("restore_at"),
         bucket_id: row.get("bucket_id"),
-        proxy: row.get("proxy"),
         success_count: row.get("success_count"),
         fail_count: row.get("fail_count"),
         invalid_count: row.get("invalid_count"),

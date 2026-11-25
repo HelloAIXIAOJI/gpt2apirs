@@ -197,11 +197,7 @@ pub struct Account {
     /// 所属桶（每个账号必在某个桶里；导入时未指定就进默认桶）。
     pub bucket_id: Uuid,
 
-    /// **生效的出口地址**，不是账号自己的字段。
-    ///
-    /// 由所属桶算出来（桶的 `proxy_url`）；空串表示跟随全局出口。
-    /// 想改出口就改桶，不要在账号上改 —— 账号级代理已经不存在了。
-    pub proxy: String,
+
 
     /// 成功次数。
     pub success_count: i64,
@@ -342,7 +338,6 @@ mod tests {
             quota_confirmed: confirmed,
             quota_unlimited: unlimited,
             restore_at: None,
-            proxy: String::new(),
             success_count: 0,
             fail_count: 0,
             invalid_count: 0,

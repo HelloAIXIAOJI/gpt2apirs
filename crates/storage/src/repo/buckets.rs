@@ -22,10 +22,7 @@ pub struct BucketRow {
     pub id: Uuid,
     /// 名称。
     pub name: String,
-    /// 出口节点名；空 = 跟随全局。
-    pub proxy_node: String,
-    /// 自定义出口地址；空 = 不用。
-    pub proxy_url: String,
+
     /// 是否默认桶（不能删）。
     pub is_default: bool,
     /// 桶里有多少账号（删除前要判断）。
@@ -95,29 +92,6 @@ impl BucketRepo {
         Ok(result.rows_affected() > 0)
     }
 
-    /// 设置出口（节点名与自定义地址）。
-    ///
-    /// 两者互斥：设了地址就清掉节点名，设了节点名就清掉地址。
-    /// 允许都为空 = 跟随全局。
-    pub async fn set_egress(
-        &self,
-        id: Uuid,
-        proxy_node: &str,
-        proxy_url: &str,
-    ) -> Result<bool, StorageError> {
-        let (node, url) = if !proxy_url.trim().is_empty() {
-            ("".to_string(), proxy_url.trim().to_string())
-        } else {
-            (proxy_node.trim().to_string(), String::new())
-        };
-        let result = sqlx::query(SQL_SET_EGRESS)
-            .bind(id)
-            .bind(node)
-            .bind(url)
-            .execute(&self.pool)
-            .await?;
-        Ok(result.rows_affected() > 0)
-    }
 
     /// 删桶。桶里还有账号时返回 `Err(BucketBusy)`。
     pub async fn delete(&self, id: Uuid) -> Result<bool, StorageError> {
@@ -142,7 +116,7 @@ impl BucketRepo {
     }
 }
 
-const SELECT_COLUMNS: &str = "b.id, b.name, b.proxy_node, b.proxy_url, b.is_default, \
+const SELECT_COLUMNS: &str = "b.id, b.name, b.is_default, \
      (select count(*) from accounts a where a.bucket_id = b.id) as account_count, \
      b.created_at, b.updated_at";
 
@@ -157,8 +131,7 @@ fn sql_get() -> String {
 const SQL_DEFAULT_ID: &str = "select id from buckets where is_default limit 1";
 const SQL_CREATE: &str = "insert into buckets (id, name) values (gen_random_uuid(), $1) returning id";
 const SQL_RENAME: &str = "update buckets set name = $2, updated_at = now() where id = $1";
-const SQL_SET_EGRESS: &str =
-    "update buckets set proxy_node = $2, proxy_url = $3, updated_at = now() where id = $1";
+
 const SQL_DELETE: &str = "delete from buckets where id = $1 and not is_default";
 const SQL_COUNT_ACCOUNTS: &str = "select count(*) from accounts where bucket_id = $1";
 

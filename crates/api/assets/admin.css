@@ -283,6 +283,44 @@ button.htmx-request::after,
   background: var(--danger-bg);
 }
 
+/* 列表页顶部的一行按钮（新建之类的动作入口） */
+.bucket-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+/* 批量操作收进折叠块：默认不铺一屏按钮 */
+.batch-panel {
+  margin: 0 0 12px;
+}
+
+.batch-panel > summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+  user-select: none;
+}
+
+/* 桶列表：名字是可点的入口，带箭头暗示 */
+.bucket-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: inherit;
+}
+
+.bucket-link:hover .bucket-link__name {
+  color: var(--accent, #175cd3);
+  text-decoration: underline;
+}
+
+.bucket-link__name {
+  font-weight: 600;
+}
+
 /* 账号首页：桶卡片网格 */
 .bucket-grid {
   display: grid;

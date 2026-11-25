@@ -157,13 +157,26 @@ async fn accounts_page_requires_session() {
 }
 
 #[tokio::test]
-async fn accounts_page_renders_for_logged_in_admin() {
+async fn accounts_page_renders_bucket_list_for_logged_in_admin() {
     let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
     let cookie = login.cookie.expect("登录应发 cookie");
     let reply = send("GET", "/accounts", None, Some(&cookie)).await;
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
-    assert!(reply.body.contains("账号池"), "{}", reply.body);
+    // 首页是桶列表：全部分组 + 建桶入口
+    assert!(reply.body.contains("全部账号"), "{}", reply.body);
+    assert!(reply.body.contains("新建桶"), "{}", reply.body);
+    assert!(reply.body.contains("/accounts?bucket="), "{}", reply.body);
+}
+
+#[tokio::test]
+async fn accounts_in_bucket_renders_account_table() {
+    let login = send("POST", "/login", Some(&format!("key={ADMIN_KEY}")), None).await;
+    let cookie = login.cookie.expect("登录应发 cookie");
+    let reply = send("GET", "/accounts?bucket=all", None, Some(&cookie)).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    // 进桶之后才是账号表格：有筛选与返回入口
     assert!(reply.body.contains("关键词"), "{}", reply.body);
+    assert!(reply.body.contains("返回桶"), "{}", reply.body);
 }
 
 #[tokio::test]

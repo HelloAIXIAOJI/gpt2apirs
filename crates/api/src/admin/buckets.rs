@@ -1,6 +1,7 @@
-//! 账号桶页：新建、改名、设出口、删除。
+//! 桶的新建页与编辑页。
 //!
-//! 桶里还有账号时不能删（DB 用 `on delete restrict` 兜底，这里先给出人话）。
+//! 列表页只管看和进，建立/改名/删除都在这里 —— 与账号、密钥的编辑页一致。
+//! 出口已经收回全局（代理页），桶不再有可配置项，所以编辑页只有名字和删除。
 
 use std::sync::Arc;
 
@@ -9,45 +10,14 @@ use axum::Form;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use gpt2apirs_storage::repo::{BucketRepo, BucketRow, DEFAULT_BUCKET_ID};
+use gpt2apirs_storage::repo::{BucketRepo, DEFAULT_BUCKET_ID};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use super::{has_session, nav};
 use crate::state::AppState;
 
-/// 表格里的一行。
-pub struct Row {
-    id: String,
-    name: String,
-    url: String,
-    accounts: i64,
-    is_default: bool,
-}
-
-impl Row {
-    fn from(row: &BucketRow) -> Self {
-        Self {
-            id: row.id.to_string(),
-            name: row.name.clone(),
-            url: row.proxy_url.clone(),
-            accounts: row.account_count,
-            is_default: row.is_default,
-        }
-    }
-
-}
-
-/// 桶页。
-#[derive(Template)]
-#[template(path = "buckets.html")]
-struct BucketsPage {
-    nav: Vec<nav::NavItem>,
-    rows: Vec<Row>,
-    error: String,
-}
-
-/// 路由里的桶标识：`default` 是默认桶的别名（总览页链接用它，别把固定 ID 散到模板里）。
+/// 路由里的桶标识：`default` 是默认桶别名，模板不散落固定 UUID。
 fn bucket_id(raw: &str) -> Option<Uuid> {
     match raw.trim() {
         "default" => Some(DEFAULT_BUCKET_ID),
@@ -66,125 +36,153 @@ fn render<T: Template>(template: T) -> Response {
     }
 }
 
-async fn page(state: &AppState, error: String) -> BucketsPage {
-    let (rows, list_error) = match BucketRepo::new(state.db.clone()).list().await {
-        Ok(rows) => (rows.iter().map(Row::from).collect(), error),
-        Err(failure) => (Vec::new(), format!("读取桶失败（{failure}）")),
-    };
-    BucketsPage {
-        nav: nav::items("/buckets"),
-        rows,
-        error: list_error,
-    }
+fn back_to_accounts(flash: &str) -> Response {
+    Redirect::to(&format!("/accounts?flash={}", super::accounts::encode(flash))).into_response()
 }
 
-/// `GET /buckets`
-pub async fn index(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+/// 新建页。
+#[derive(Template)]
+#[template(path = "buckets_new.html")]
+struct NewPage {
+    nav: Vec<nav::NavItem>,
+    flash: String,
+}
+
+/// `GET /buckets/new`
+pub async fn new_form(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    render(page(&state, String::new()).await)
+    render(NewPage {
+        nav: nav::items("/accounts"),
+        flash: String::new(),
+    })
 }
 
-/// 新建表单。
+/// 新建/改名共用的表单。
 #[derive(Debug, Deserialize)]
-pub struct CreateForm {
+pub struct NameForm {
     /// 桶名。
     #[serde(default)]
     pub name: String,
 }
 
-/// `POST /buckets/create`
-pub async fn create(
+/// `POST /buckets/new`
+pub async fn new_submit(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Form(form): Form<CreateForm>,
+    Form(form): Form<NameForm>,
 ) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
     let name = form.name.trim();
     if name.is_empty() {
-        return render(page(&state, "桶名不能为空".to_string()).await);
+        return render(NewPage {
+            nav: nav::items("/accounts"),
+            flash: "桶名不能为空".to_string(),
+        });
     }
-    let repo = BucketRepo::new(state.db.clone());
-    match repo.create(name).await {
-        Ok(_) => render(page(&state, String::new()).await),
-        Err(failure) if failure.to_string().contains("buckets_name_idx") => {
-            render(page(&state, format!("已经有叫「{name}」的桶了")).await)
-        }
-        Err(failure) => render(page(&state, format!("新建失败：{failure}")).await),
+    match BucketRepo::new(state.db.clone()).create(name).await {
+        Ok(_) => back_to_accounts(&format!("已新建桶「{name}」")),
+        Err(failure) if failure.to_string().contains("buckets_name_idx") => render(NewPage {
+            nav: nav::items("/accounts"),
+            flash: format!("已经有叫「{name}」的桶了"),
+        }),
+        Err(failure) => render(NewPage {
+            nav: nav::items("/accounts"),
+            flash: format!("新建失败：{failure}"),
+        }),
     }
 }
 
-/// 改名表单。
-#[derive(Debug, Deserialize)]
-pub struct RenameForm {
-    /// 新名字。
-    #[serde(default)]
-    pub name: String,
+/// 编辑页。
+#[derive(Template)]
+#[template(path = "buckets_edit.html")]
+struct EditPage {
+    nav: Vec<nav::NavItem>,
+    /// 路由用的标识（`default` 或 UUID）。
+    slug: String,
+    name: String,
+    is_default: bool,
+    accounts: i64,
+    /// 能否删除：非默认桶且空。
+    can_delete: bool,
+    flash: String,
 }
 
-/// `POST /buckets/{id}/rename`
-pub async fn rename(
+async fn load_edit(state: &AppState, slug: &str, flash: String) -> Result<EditPage, Response> {
+    let Some(id) = bucket_id(slug) else {
+        return Err(back_to_accounts("桶标识无效"));
+    };
+    let row = match BucketRepo::new(state.db.clone()).get(id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return Err(back_to_accounts("桶不存在")),
+        Err(failure) => return Err(back_to_accounts(&format!("读取失败：{failure}"))),
+    };
+    Ok(EditPage {
+        nav: nav::items("/accounts"),
+        slug: slug.to_string(),
+        name: row.name,
+        is_default: row.is_default,
+        accounts: row.account_count,
+        can_delete: !row.is_default && row.account_count == 0,
+        flash,
+    })
+}
+
+/// `GET /buckets/{id}/edit`
+pub async fn edit_form(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(slug): Path<String>,
-    Form(form): Form<RenameForm>,
+    axum::extract::Query(query): axum::extract::Query<super::accounts::FlashQuery>,
 ) -> Response {
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
-    let name = form.name.trim();
-    if name.is_empty() {
-        return render(page(&state, "桶名不能为空".to_string()).await);
+    match load_edit(&state, &slug, query.flash).await {
+        Ok(page) => render(page),
+        Err(response) => response,
+    }
+}
+
+/// `POST /buckets/{id}/edit`
+pub async fn edit_submit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    Form(form): Form<NameForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
     }
     let Some(id) = bucket_id(&slug) else {
-        return render(page(&state, "桶标识无效".to_string()).await);
+        return back_to_accounts("桶标识无效");
     };
+    let name = form.name.trim();
+    if name.is_empty() {
+        return Redirect::to(&format!("/buckets/{slug}/edit?flash={}", super::accounts::encode("桶名不能为空")))
+            .into_response();
+    }
     match BucketRepo::new(state.db.clone()).rename(id, name).await {
-        Ok(_) => render(page(&state, String::new()).await),
+        Ok(_) => back_to_accounts(&format!("已改名为「{name}」")),
         Err(failure) if failure.to_string().contains("buckets_name_idx") => {
-            render(page(&state, format!("已经有叫「{name}」的桶了")).await)
+            Redirect::to(&format!(
+                "/buckets/{slug}/edit?flash={}",
+                super::accounts::encode(&format!("已经有叫「{name}」的桶了"))
+            ))
+            .into_response()
         }
-        Err(failure) => render(page(&state, format!("改名失败：{failure}")).await),
+        Err(failure) => Redirect::to(&format!(
+            "/buckets/{slug}/edit?flash={}",
+            super::accounts::encode(&format!("改名失败：{failure}"))
+        ))
+        .into_response(),
     }
 }
 
-/// 出口表单：节点名与自定义地址二选一。
-#[derive(Debug, Deserialize)]
-pub struct EgressForm {
-    /// 出口地址；空 = 跟随全局出口。
-    ///
-    /// 订阅节点是按「全局一个代理核」设计的，做不到每桶各选一个节点
-    /// （那需要每桶起一个核进程），所以这里只收地址。
-    #[serde(default)]
-    pub proxy_url: String,
-}
-
-/// `POST /buckets/{id}/egress`
-pub async fn set_egress(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Path(slug): Path<String>,
-    Form(form): Form<EgressForm>,
-) -> Response {
-    if !has_session(&state, &headers) {
-        return Redirect::to("/").into_response();
-    }
-    let Some(id) = bucket_id(&slug) else {
-        return render(page(&state, "桶标识无效".to_string()).await);
-    };
-    match BucketRepo::new(state.db.clone())
-        .set_egress(id, "", &form.proxy_url)
-        .await
-    {
-        Ok(_) => render(page(&state, String::new()).await),
-        Err(failure) => render(page(&state, format!("保存出口失败：{failure}")).await),
-    }
-}
-
-/// `POST /buckets/{id}/delete`
+/// `POST /buckets/{id}/delete` —— 只能从编辑页提交。
 pub async fn delete(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -194,20 +192,17 @@ pub async fn delete(
         return Redirect::to("/").into_response();
     }
     let Some(id) = bucket_id(&slug) else {
-        return render(page(&state, "桶标识无效".to_string()).await);
+        return back_to_accounts("桶标识无效");
     };
     if id == DEFAULT_BUCKET_ID {
-        return render(page(&state, "默认桶不能删除".to_string()).await);
+        return back_to_accounts("默认桶不能删除");
     }
     match BucketRepo::new(state.db.clone()).delete(id).await {
-        Ok(_) => render(page(&state, String::new()).await),
-        Err(gpt2apirs_storage::pool::StorageError::BucketBusy { accounts }) => render(
-            page(
-                &state,
-                format!("这个桶里还有 {accounts} 个账号：先移到别的桶或删掉，才能删桶"),
-            )
-            .await,
+        Ok(true) => back_to_accounts("桶已删除"),
+        Ok(false) => back_to_accounts("桶不存在"),
+        Err(gpt2apirs_storage::pool::StorageError::BucketBusy { accounts }) => back_to_accounts(
+            &format!("这个桶里还有 {accounts} 个账号：先移走或删掉，才能删桶"),
         ),
-        Err(failure) => render(page(&state, format!("删除失败：{failure}")).await),
+        Err(failure) => back_to_accounts(&format!("删除失败：{failure}")),
     }
 }

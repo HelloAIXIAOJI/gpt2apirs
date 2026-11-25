@@ -7,84 +7,30 @@
   {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
   {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
 
-  <div class="bucket-grid">
-    {% for card in pinned %}
-    <a class="bucket-card bucket-card--pinned" href="/accounts?bucket={{ card.slug }}">
-      <span class="bucket-card__name">{{ card.name }}</span>
-      <span class="bucket-card__count">{{ card.accounts }}</span>
-      <span class="bucket-card__hint">{{ card.egress }}</span>
-    </a>
-    {% endfor %}
+  <div class="bucket-bar">
+    <a class="btn" href="/buckets/new">新建桶</a>
+    <span class="muted">桶只做分组；出口统一在「代理」页设置。</span>
   </div>
 
-  <h2 class="section-title">其它桶</h2>
-  <div class="bucket-grid">
-    {% for card in others %}
-    <a class="bucket-card" href="/accounts?bucket={{ card.slug }}">
-      <span class="bucket-card__name">{{ card.name }}</span>
-      <span class="bucket-card__count">{{ card.accounts }}</span>
-      <span class="bucket-card__hint">{{ card.egress }}</span>
-    </a>
-    {% endfor %}
-    {% if others.is_empty() %}
-    <p class="empty">还没有其它桶。在下面新建一个，再往里导账号。</p>
-    {% endif %}
-  </div>
-
-  <h2 class="section-title">新建桶</h2>
-  <form class="filters" method="post" action="/buckets/create">
-    <label>桶名<input name="name" placeholder="例如 备用池" required></label>
-    <button type="submit">新建</button>
-    <span class="muted">默认桶不能删除；桶里还有账号时也不能删。</span>
-  </form>
-
-  <h2 class="section-title">桶设置</h2>
-  <table class="table">
-    <thead><tr><th>桶名</th><th>账号数</th><th>出口</th><th>操作</th></tr></thead>
+  <table class="table bucket-table">
+    <thead>
+      <tr><th>桶</th><th class="num">账号数</th><th class="num">操作</th></tr>
+    </thead>
     <tbody>
-      {% for card in pinned %}
-      {% if card.slug != "all" %}
-      <tr>
+      {% for row in rows %}
+      <tr class="bucket-row">
         <td>
-          <form method="post" action="/buckets/{{ card.slug }}/rename" style="display:flex;gap:6px;align-items:center">
-            <input name="name" value="{{ card.name }}" required style="min-width:120px">
-            <button type="submit" class="link">改名</button>
-          </form>
-          <span class="badge badge--normal">默认</span>
+          <a class="bucket-link" href="/accounts?bucket={{ row.slug }}">
+            <span class="bucket-link__name">{{ row.name }}</span>
+            {% if row.is_default %}<span class="badge badge--normal">默认</span>{% endif %}
+
+          </a>
         </td>
-        <td class="num">{{ card.accounts }}</td>
-        <td>
-          <form method="post" action="/buckets/{{ card.slug }}/egress" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <input name="proxy_url" value="{{ card.proxy_url }}" placeholder="留空 = 跟随全局；或填 http://host:port" style="min-width:260px">
-            <button type="submit" class="link">保存</button>
-          </form>
-        </td>
-        <td class="muted">默认桶不可删</td>
-      </tr>
-      {% endif %}
-      {% endfor %}
-      {% for card in others %}
-      <tr>
-        <td>
-          <form method="post" action="/buckets/{{ card.slug }}/rename" style="display:flex;gap:6px;align-items:center">
-            <input name="name" value="{{ card.name }}" required style="min-width:120px">
-            <button type="submit" class="link">改名</button>
-          </form>
-        </td>
-        <td class="num">{{ card.accounts }}</td>
-        <td>
-          <form method="post" action="/buckets/{{ card.slug }}/egress" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <input name="proxy_url" value="{{ card.proxy_url }}" placeholder="留空 = 跟随全局；或填 http://host:port" style="min-width:260px">
-            <button type="submit" class="link">保存</button>
-          </form>
-        </td>
-        <td class="actions">
-          {% if card.deletable %}
-          <form method="post" action="/buckets/{{ card.slug }}/delete" onsubmit="return confirm('删除这个空桶？');">
-            <button type="submit" class="link link--danger">删除</button>
-          </form>
-          {% else %}
-          <span class="muted">还有 {{ card.accounts }} 个账号</span>
+        <td class="num">{{ row.accounts }}</td>
+        <td class="actions" style="justify-content:flex-end">
+          <a class="btn btn--ghost" href="/accounts?bucket={{ row.slug }}">查看账号 →</a>
+          {% if !row.is_virtual %}
+          <a class="btn btn--ghost" href="/buckets/{{ row.slug }}/edit">编辑</a>
           {% endif %}
         </td>
       </tr>

@@ -65,8 +65,7 @@ pub struct AccountView {
     pub restore_at: Option<DateTime<Utc>>,
     /// 所属桶（前端用 GET /api/buckets 拿名字对照）。
     pub bucket_id: Uuid,
-    /// 生效出口（来自桶）；空 = 跟随全局。
-    pub proxy: String,
+
     /// 成功次数。
     pub success_count: i64,
     /// 失败次数。
@@ -180,7 +179,6 @@ impl AccountView {
             quota_confirmed: account.quota_confirmed,
             restore_at: account.restore_at,
             bucket_id: account.bucket_id,
-            proxy: account.proxy,
             success_count: account.success_count,
             fail_count: account.fail_count,
             invalid_count: account.invalid_count,
@@ -458,7 +456,7 @@ async fn prune_invalid_accounts(state: &Arc<AppState>, accounts: &[Account]) -> 
             let state = state.clone();
             let account = account.clone();
             set.spawn(async move {
-                let client = match state.client_for(&account.proxy) {
+                let client = match state.client_for("") {
                     Ok(client) => client,
                     Err(error) => {
                         tracing::warn!(%error, account = %account.id, "建客户端失败，跳过校验");
@@ -838,7 +836,7 @@ pub async fn test_account(
     image_request.upstream_model = gpt2apirs_generate::models::upstream_model_for(&model).to_string();
 
     let started = std::time::Instant::now();
-    let client = state.client_for(&lease.account().proxy).map_err(internal)?;
+    let client = state.client_for("").map_err(internal)?;
     let outcome = generate_images(&client, lease.access_token(), &image_request, deadline).await;
     let elapsed_ms = started.elapsed().as_millis() as i64;
     // 空图视为失败：见 v1_images 的同名注释

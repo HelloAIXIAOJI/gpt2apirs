@@ -219,9 +219,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/buckets",
             get(|| async { axum::response::Redirect::to("/accounts") }),
         )
-        .route("/buckets/create", post(admin::buckets::create))
-        .route("/buckets/{id}/rename", post(admin::buckets::rename))
-        .route("/buckets/{id}/egress", post(admin::buckets::set_egress))
+        .route("/buckets/new", get(admin::buckets::new_form).post(admin::buckets::new_submit))
+        .route(
+            "/buckets/{id}/edit",
+            get(admin::buckets::edit_form).post(admin::buckets::edit_submit),
+        )
         .route("/buckets/{id}/delete", post(admin::buckets::delete))
         .route("/settings", get(admin::settings::index).post(admin::settings::save))
         .route("/logs", get(admin::logs::index))
@@ -260,6 +262,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/proxy/clearance", post(admin::proxy::clearance))
         .route("/proxy/ping.json", post(admin::proxy::ping_json))
         .route("/keys", get(admin::keys::index))
+        .route("/keys/new", get(admin::keys::new_form))
         .route("/keys/create", post(admin::keys::create))
         .route("/keys/{id}/revoke", post(admin::keys::revoke))
         .route("/keys/{id}/restore", post(admin::keys::restore))

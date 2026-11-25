@@ -1,0 +1,18 @@
+{% extends "shell.html" %}
+{% block title %}新建桶 · 管理后台{% endblock %}
+{% block content %}
+<header id="topbar"><h1>新建桶</h1></header>
+
+<section class="panel">
+  <p class="muted"><a href="/accounts">← 返回账号</a></p>
+  {% if !flash.is_empty() %}<p class="stat-error">{{ flash }}</p>{% endif %}
+  <form class="edit-form" method="post" action="/buckets/new">
+    <label>桶名<input name="name" placeholder="例如 备用池" required autofocus></label>
+    <div class="edit-actions">
+      <button type="submit">新建</button>
+      <a class="btn btn--ghost" href="/accounts">取消</a>
+    </div>
+  </form>
+  <p class="muted">桶只做分组，不管出口；出口在「代理」页统一设置。</p>
+</section>
+{% endblock %}

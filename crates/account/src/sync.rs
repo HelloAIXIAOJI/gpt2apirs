@@ -49,7 +49,8 @@ pub async fn sync_account(
             reason: format!("账号 {account_id} 不存在"),
         })?;
 
-    let client = pool.client(&account.proxy)?;
+    // 出口统一走全局：账号不再带代理
+    let client = pool.client("")?;
     let remote = match fetch_remote_info(
         &client,
         &account.access_token,
@@ -134,9 +135,7 @@ pub async fn refresh_account_token(
         return Err(RefreshError::Terminal("没有 refresh_token".to_string()));
     };
 
-    let client = pool
-        .client(&account.proxy)
-        .map_err(|error| RefreshError::Retryable(error.to_string()))?;
+    let client = pool.client("").map_err(|error| RefreshError::Retryable(error.to_string()))?;
     let outcome = refresh_tokens(&client, &refresh_token, deadline).await?;
 
     let updated = pool
@@ -349,7 +348,6 @@ mod tests {
             quota_confirmed: true,
             quota_unlimited: false,
             restore_at: None,
-            proxy: String::new(),
             success_count: 0,
             fail_count: 0,
             invalid_count: 0,

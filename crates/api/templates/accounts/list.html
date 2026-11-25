@@ -80,6 +80,8 @@
   </form>
 
   <form id="batch-form" method="post" action="/accounts/batch">
+    <details class="batch-panel">
+      <summary>批量操作（先勾选下面的账号）</summary>
     <div class="batch-bar">
       <label class="scope">作用域
         <select name="scope" hx-get="/accounts/bulk/preview" hx-target="#scope-hint" hx-swap="outerHTML" hx-include="#batch-form">
@@ -101,13 +103,14 @@
       <button class="btn btn--danger" type="submit" name="action" value="remove_abnormal" onclick="return confirm('确定移除当前筛选里状态为异常的账号？')">移除异常账号</button>
       <button class="btn btn--danger" type="submit" name="action" value="delete" onclick="return confirm('确定删除目标账号？')">删除</button>
     </div>
+    </details>
 
     <table class="table">
       <thead>
         <tr>
           <th class="pick"><input type="checkbox" onclick="document.querySelectorAll('#batch-form input[name=ids]').forEach((box) => box.checked = this.checked)"></th>
           <th>账号</th><th>状态</th><th>套餐</th><th>凭据</th><th>配额</th>
-          <th>成功 / 失败</th><th>出口</th><th title="上游原始错误悬停查看">状态原因</th><th>操作</th>
+          <th>成功 / 失败</th><th>桶</th><th title="上游原始错误悬停查看">状态原因</th><th>操作</th>
         </tr>
       </thead>
       <tbody id="accounts-body">
