@@ -7,6 +7,8 @@
   {% if deleted > 0 %}<p class="muted">已删除 {{ deleted }} 条记忆。</p>{% endif %}
   {% if !error.is_empty() %}<p class="stat-error">{{ error }}</p>{% endif %}
 
+  {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
+
   <form class="filters" method="get" action="/memories">
     <label>账号
       <select name="account" onchange="this.form.submit()">
@@ -18,6 +20,25 @@
     <button type="submit">查看</button>
     <span class="muted">已用 {{ used }} / {{ capacity }} token（{{ used_percent }}%）{% if !account_label.is_empty() %} · {{ account_label }}{% endif %}</span>
   </form>
+
+  <div class="memory-controls">
+    <span class="muted">记忆功能：
+      {% if enabled == "on" %}<strong>已开启</strong>
+      {% else if enabled == "off" %}<strong>已关闭</strong>
+      {% else %}<span title="上游没有返回这个开关的状态">未知</span>{% endif %}
+    </span>
+    <form method="post" action="/memories/setting" class="inline-form">
+      <input type="hidden" name="account" value="{{ account }}">
+      <input type="hidden" name="enabled" value="{% if enabled == "on" %}off{% else %}on{% endif %}">
+      <button type="submit" class="btn btn--ghost">{{ toggle_label }}</button>
+    </form>
+    <form method="post" action="/memories/clear" class="inline-form"
+          onsubmit="return confirm('清空这个账号已保存的全部记忆？开关状态不变，清掉之后无法恢复。');">
+      <input type="hidden" name="account" value="{{ account }}">
+      <button type="submit" class="btn btn--danger">清空已保存记忆</button>
+    </form>
+  </div>
+  <p class="muted">关闭记忆只是不再新存；要现在就把存下的清掉，用右边那个按钮。</p>
 
   <form method="post" action="/memories/delete"
         onsubmit="return confirm('删除选中的记忆？删掉后官网对话里也不会再用到这些记忆。');">

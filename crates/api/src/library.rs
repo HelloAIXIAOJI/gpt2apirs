@@ -155,6 +155,80 @@ pub async fn memories(
     Ok((page, lease.id()))
 }
 
+/// 读这个账号的记忆总开关。`None` = 上游没给，未知（不是「关着」）。
+pub async fn memory_enabled(
+    state: &Arc<AppState>,
+    account: Option<Uuid>,
+) -> Result<(Option<bool>, Uuid), ApiError> {
+    let deadline = Deadline::in_secs(READ_TIMEOUT_SECS);
+    let lease = state
+        .pool
+        .acquire(&filter_for(account), deadline)
+        .await
+        .map_err(lease_error)?;
+    let client = state
+        .client_for("")
+        .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
+    let enabled = gpt2apirs_generate::account_data::memory_enabled(
+        &client,
+        lease.access_token(),
+        deadline,
+    )
+    .await
+    .map_err(upstream_error)?;
+    Ok((enabled, lease.id()))
+}
+
+/// 改记忆总开关（不清已有记忆）。
+pub async fn set_memory_enabled(
+    state: &Arc<AppState>,
+    account: Option<Uuid>,
+    enabled: bool,
+) -> Result<Uuid, ApiError> {
+    let deadline = Deadline::in_secs(READ_TIMEOUT_SECS);
+    let lease = state
+        .pool
+        .acquire(&filter_for(account), deadline)
+        .await
+        .map_err(lease_error)?;
+    let client = state
+        .client_for("")
+        .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
+    gpt2apirs_generate::account_data::set_memory_enabled(
+        &client,
+        lease.access_token(),
+        enabled,
+        deadline,
+    )
+    .await
+    .map_err(upstream_error)?;
+    Ok(lease.id())
+}
+
+/// 清空这个账号已保存的记忆。
+pub async fn clear_memories(
+    state: &Arc<AppState>,
+    account: Option<Uuid>,
+) -> Result<Uuid, ApiError> {
+    let deadline = Deadline::in_secs(READ_TIMEOUT_SECS);
+    let lease = state
+        .pool
+        .acquire(&filter_for(account), deadline)
+        .await
+        .map_err(lease_error)?;
+    let client = state
+        .client_for("")
+        .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
+    gpt2apirs_generate::account_data::clear_saved_memories(
+        &client,
+        lease.access_token(),
+        deadline,
+    )
+    .await
+    .map_err(upstream_error)?;
+    Ok(lease.id())
+}
+
 /// 删一条记忆。
 pub async fn delete_memory(
     state: &Arc<AppState>,

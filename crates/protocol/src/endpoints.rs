@@ -118,6 +118,17 @@ pub fn conversations_page(offset: i64, limit: i64) -> String {
 /// 已保存的记忆（GET 列列表）。
 pub const MEMORIES: &str = "/backend-api/memories";
 
+/// 账号级设置：记忆总开关（`m3m`）就在这个响应里。
+pub const USER_SETTINGS: &str = "/backend-api/settings/user";
+
+/// 清空已保存的记忆（不动开关）。
+pub const MEMORY_CLEAR: &str = "/backend-api/settings/clear_account_user_memory";
+
+/// 改记忆开关。上游要 PATCH，参数全在 query 里。
+pub fn memory_setting(enabled: bool) -> String {
+    format!("/backend-api/settings/account_user_setting?feature=m3m&value={enabled}")
+}
+
 /// 删除一条记忆。
 pub fn memory_delete(memory_id: &str) -> String {
     format!("/backend-api/memories/{memory_id}")

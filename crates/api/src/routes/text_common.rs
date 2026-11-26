@@ -249,7 +249,7 @@ pub async fn run_text(
         state.settings.get_i64("chat_cache_ttl_secs").max(0) as u64,
     );
     // 带图时不走缓存：缓存键只看文本，命中会把「图里是什么」答成上一次的纯文本结果
-    let key = crate::routes::text_cache::cache_key(requested_model, messages);
+    let key = crate::routes::text_cache::cache_key(requested_model, thinking_effort, messages);
     // 带工具时不缓存：缓存键只有模型 + 消息，同一句话配不同工具会串；
     // 而且工具调用是这一轮的指令，不该被上一次的结果顶掉。
     if tool_prompt.is_none()

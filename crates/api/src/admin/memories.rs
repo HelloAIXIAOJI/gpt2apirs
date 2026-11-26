@@ -19,6 +19,9 @@ use crate::state::AppState;
 /// 页面参数。
 #[derive(Debug, Deserialize, Default)]
 pub struct Filters {
+    /// 上一次操作的提示（开关 / 清空的结果）。
+    #[serde(default)]
+    pub flash: String,
     /// 账号。
     #[serde(default)]
     pub account: Option<Uuid>,
@@ -61,6 +64,12 @@ struct MemoriesPage {
     used: i64,
     capacity: i64,
     used_percent: u32,
+    /// 记忆总开关：`on` / `off` / `unknown`（读不到，不等于关着）。
+    enabled: String,
+    /// 开关 / 清空的结果提示。
+    flash: String,
+    /// 开关按钮的文案（下一步动作）。
+    toggle_label: String,
 }
 
 /// `GET /memories`
@@ -113,6 +122,17 @@ pub async fn index(
         })
         .collect();
 
+    // 开关状态要多打一次上游（settings/user）；失败不影响记忆列表本身
+    let (enabled, toggle_label) = match account {
+        Some(_) => match crate::library::memory_enabled(&state, account).await {
+            Ok((Some(true), _)) => ("on".to_string(), "关闭记忆".to_string()),
+            Ok((Some(false), _)) => ("off".to_string(), "开启记忆".to_string()),
+            Ok((None, _)) => ("unknown".to_string(), "开启记忆".to_string()),
+            Err(_) => ("unknown".to_string(), "开启记忆".to_string()),
+        },
+        None => ("unknown".to_string(), "开启记忆".to_string()),
+    };
+
     render(MemoriesPage {
         nav: nav::items("/memories"),
         entries,
@@ -124,6 +144,9 @@ pub async fn index(
         used,
         capacity,
         used_percent,
+        enabled,
+        toggle_label,
+        flash: filters.flash.clone(),
     })
 }
 
@@ -136,6 +159,75 @@ pub struct DeleteForm {
     /// 要删的记忆（单条一个，越多条越省事）。
     #[serde(default)]
     pub id: Vec<String>,
+}
+
+/// 开关记忆的表单。
+#[derive(Debug, Deserialize)]
+pub struct MemoryToggleForm {
+    /// 账号。
+    #[serde(default)]
+    pub account: Option<Uuid>,
+    /// 目标状态：`on` / `off`。
+    #[serde(default)]
+    pub enabled: String,
+}
+
+/// `POST /memories/setting` —— 开 / 关记忆总开关。
+pub async fn toggle(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<MemoryToggleForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let want = form.enabled.trim() == "on";
+    let flash = match crate::library::set_memory_enabled(&state, form.account, want).await {
+        Ok(_) => format!("记忆已{}", if want { "开启" } else { "关闭" }),
+        Err(failure) => format!("设置失败：{}", failure.error),
+    };
+    redirect_back(form.account, &flash)
+}
+
+/// 清空已保存记忆的表单。
+#[derive(Debug, Deserialize)]
+pub struct ClearForm {
+    /// 账号。
+    #[serde(default)]
+    pub account: Option<Uuid>,
+}
+
+/// `POST /memories/clear` —— 清空这个账号已保存的记忆（不动开关）。
+pub async fn clear(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<ClearForm>,
+) -> Response {
+    if !has_session(&state, &headers) {
+        return Redirect::to("/").into_response();
+    }
+    let flash = match crate::library::clear_memories(&state, form.account).await {
+        Ok(_) => "已清空保存的记忆".to_string(),
+        Err(failure) => format!("清空失败：{}", failure.error),
+    };
+    redirect_back(form.account, &flash)
+}
+
+/// 回到记忆页并带上提示。
+fn redirect_back(account: Option<Uuid>, flash: &str) -> Response {
+    let mut encoded = String::new();
+    for ch in flash.chars() {
+        match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => encoded.push(ch),
+            other => {
+                for byte in other.to_string().bytes() {
+                    encoded.push_str(&format!("%{byte:02X}"));
+                }
+            }
+        }
+    }
+    let account = account.map(|id| format!("&account={id}")).unwrap_or_default();
+    Redirect::to(&format!("/memories?flash={encoded}{account}")).into_response()
 }
 
 /// `POST /memories/delete` —— 单条与多选共用。

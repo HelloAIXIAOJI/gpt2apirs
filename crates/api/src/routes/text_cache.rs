@@ -25,10 +25,20 @@ fn store() -> &'static Mutex<HashMap<u64, Entry>> {
 }
 
 /// 计算缓存键。
-pub fn cache_key(model: &str, messages: &[(String, String)]) -> u64 {
+/// 缓存键。
+///
+/// 必须带 `effort`：同一句话先请求 `low`、再请求 `high`，
+/// 不带就会命中第一次的缓存，把「思考强度」这个参数吞掉。
+/// （同类事故：verikun #427 —— 它的缓存键缺协议分区，chat 请求拿到了 responses 的结果。）
+///
+/// **不加**协议分区：我们缓存的是内部 `TextResult`，不是包装好的响应体，
+/// 三个端点共用同一份缓存是对的；加了反而让同一句话在三个端点各存一份。
+pub fn cache_key(model: &str, effort: Option<&str>, messages: &[(String, String)]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     model.hash(&mut hasher);
+    // None 与 "" 要区分开：一个是不传，一个是传了空串（归一化后其实一样，但别混）
+    effort.unwrap_or("\u{0}").hash(&mut hasher);
     for (role, text) in messages {
         role.hash(&mut hasher);
         text.hash(&mut hasher);
@@ -115,7 +125,7 @@ mod tests {
     }
 
     fn key_of(scope: &str) -> u64 {
-        cache_key(scope, &[("user".to_string(), "你好".to_string())])
+        cache_key(scope, None, &[("user".to_string(), "你好".to_string())])
     }
 
     #[test]
@@ -137,11 +147,29 @@ mod tests {
 
     #[test]
     fn different_inputs_do_not_collide() {
-        let a = cache_key("m", &[("user".to_string(), "A".to_string())]);
-        let b = cache_key("m", &[("user".to_string(), "B".to_string())]);
-        let c = cache_key("m2", &[("user".to_string(), "A".to_string())]);
+        let a = cache_key("m", None, &[("user".to_string(), "A".to_string())]);
+        let b = cache_key("m", None, &[("user".to_string(), "B".to_string())]);
+        let c = cache_key("m2", None, &[("user".to_string(), "A".to_string())]);
         assert_ne!(a, b);
         assert_ne!(a, c, "模型不同也不应命中同一条");
+    }
+
+    /// 同一个提示词，思考强度不同就不能共用缓存。
+    ///
+    /// 这条是照 verikun #427 的教训写的：缓存键少一个维度，参数就被吞掉。
+    #[test]
+    fn effort_separates_cache_entries() {
+        let msgs = [("user".to_string(), "同一个问题".to_string())];
+        let low = cache_key("text", Some("low"), &msgs);
+        let high = cache_key("text", Some("high"), &msgs);
+        let none = cache_key("text", None, &msgs);
+        assert_ne!(low, high, "low 与 high 必须分开");
+        assert_ne!(low, none, "不传 effort 也要和传了的分开");
+        assert_eq!(
+            low,
+            cache_key("text", Some("low"), &msgs),
+            "同样的输入必须稳定命中同一条"
+        );
     }
 
     #[test]

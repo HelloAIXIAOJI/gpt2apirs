@@ -10,7 +10,9 @@ use gpt2apirs_core::Deadline;
 use gpt2apirs_http::{Client, DEFAULT_USER_AGENT, api_headers};
 use gpt2apirs_protocol::conversations::{ConversationPage, parse_page};
 use gpt2apirs_protocol::endpoints;
-use gpt2apirs_protocol::memories::{MemoryPage, parse as parse_memories};
+use gpt2apirs_protocol::memories::{
+    MemoryPage, parse as parse_memories, parse_memory_enabled,
+};
 use serde_json::Value;
 
 /// 单次请求的上限：列表/删除都不该慢，慢了就是上游在卡我们。
@@ -48,6 +50,15 @@ async fn get_json(client: &Client, token: &str, path: &str, deadline: Deadline) 
     }
     serde_json::from_str(&response.body)
         .with_context(|| format!("{} 响应不是 JSON", target_path(path)))
+}
+
+async fn patch(client: &Client, token: &str, path: &str, body: Option<&str>, deadline: Deadline) -> Result<u16> {
+    let url = endpoints::url(path);
+    let response = client
+        .patch_text(&url, &headers(token, path), body, Some(budget(deadline)))
+        .await
+        .with_context(|| format!("PATCH {} 失败", target_path(path)))?;
+    Ok(response.status)
 }
 
 async fn delete(client: &Client, token: &str, path: &str, deadline: Deadline) -> Result<u16> {
@@ -119,6 +130,34 @@ pub async fn delete_memory(
         200..=299 => Ok(()),
         404 => Ok(()),
         status => bail!("删除记忆返回 {status}"),
+    }
+}
+
+/// 读账号的记忆总开关。`None` = 读不到（未知），不是「关着」。
+pub async fn memory_enabled(client: &Client, token: &str, deadline: Deadline) -> Result<Option<bool>> {
+    let body = get_json(client, token, endpoints::USER_SETTINGS, deadline).await?;
+    Ok(parse_memory_enabled(&body))
+}
+
+/// 改记忆总开关。已保存的记忆不受影响。
+pub async fn set_memory_enabled(
+    client: &Client,
+    token: &str,
+    enabled: bool,
+    deadline: Deadline,
+) -> Result<()> {
+    let path = endpoints::memory_setting(enabled);
+    match patch(client, token, &path, Some("{}"), deadline).await? {
+        200..=299 => Ok(()),
+        status => bail!("设置记忆开关返回 {status}"),
+    }
+}
+
+/// 清空这个账号已保存的记忆（不动开关）。
+pub async fn clear_saved_memories(client: &Client, token: &str, deadline: Deadline) -> Result<()> {
+    match delete(client, token, endpoints::MEMORY_CLEAR, deadline).await? {
+        200..=299 => Ok(()),
+        status => bail!("清空记忆返回 {status}"),
     }
 }
 

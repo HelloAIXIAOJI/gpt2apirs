@@ -55,6 +55,51 @@ pub fn parse(body: &Value) -> MemoryPage {
     }
 }
 
+/// 从 `GET /backend-api/settings/user` 的响应里取记忆开关。
+///
+/// 上游把它藏在嵌套 JSON 的 `m3m` 键里，层级不稳（有时 `m3m: true`，
+/// 有时 `m3m: {enabled: true}`），所以按「找键 → 递归找值」处理。
+/// 返回 `None` 表示**读不到**（未知），不是「关着」—— 这两者不能混。
+pub fn parse_memory_enabled(body: &Value) -> Option<bool> {
+    fn walk(value: &Value, depth: usize) -> Option<bool> {
+        if depth > 8 {
+            return None;
+        }
+        match value {
+            Value::Object(map) => {
+                for (key, item) in map {
+                    if key.eq_ignore_ascii_case("m3m")
+                        && let Some(found) = as_bool(item)
+                    {
+                        return Some(found);
+                    }
+                }
+                map.values().find_map(|item| walk(item, depth + 1))
+            }
+            Value::Array(items) => items.iter().find_map(|item| walk(item, depth + 1)),
+            _ => None,
+        }
+    }
+    walk(body, 0)
+}
+
+/// 把几种写法归一成布尔：`true` / `"true"` / `{enabled:true}` / `{value:"false"}`。
+fn as_bool(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(flag) => Some(*flag),
+        Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
+        Value::Object(map) => ["enabled", "is_enabled", "value"]
+            .iter()
+            .filter_map(|key| map.get(*key))
+            .find_map(as_bool),
+        _ => None,
+    }
+}
+
 fn parse_entry(row: &Value) -> Option<MemoryEntry> {
     let content = ["content", "memory", "text", "value"]
         .iter()
@@ -81,6 +126,32 @@ fn int_field(body: &Value, key: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_switch_is_found_in_nested_settings() {
+        // 上游把开关藏在 settings/user 的嵌套结构里，层级不稳
+        let flat = serde_json::json!({ "m3m": true });
+        assert_eq!(parse_memory_enabled(&flat), Some(true));
+
+        let nested = serde_json::json!({
+            "features": { "memory": { "m3m": { "enabled": false } } }
+        });
+        assert_eq!(parse_memory_enabled(&nested), Some(false));
+
+        let as_string = serde_json::json!({ "a": [{ "m3m": "true" }] });
+        assert_eq!(parse_memory_enabled(&as_string), Some(true));
+    }
+
+    #[test]
+    fn missing_switch_is_unknown_not_false() {
+        // 读不到 ≠ 关着：页面要能区分「未知」和「已关闭」
+        let body = serde_json::json!({ "settings": { "theme": "dark" } });
+        assert_eq!(parse_memory_enabled(&body), None);
+        assert_eq!(parse_memory_enabled(&Value::Null), None);
+        // 值是看不懂的写法，也不能当成 false
+        let weird = serde_json::json!({ "m3m": { "mode": "auto" } });
+        assert_eq!(parse_memory_enabled(&weird), None);
+    }
 
     #[test]
     fn parses_real_empty_response() {

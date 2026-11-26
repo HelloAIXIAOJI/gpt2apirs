@@ -11,6 +11,8 @@
 - 加入：工具调用。新增模型 `text_tool`，`/v1/chat/completions`、`/v1/messages`、`/v1/responses` 三个端点（含流式）都支持；`text` 收到 tools 会明确报错，不静默忽略。
   - 实测：`tool_choice: required` 稳定可用（能拿到标准 tool_calls）；`auto` 基本不触发——上游模型自带联网，遇到它能答的会直接答，遇到它做不到的会解释而不是委托。要可靠请用 `required`。
   - 工具结果回填：客户端把执行结果发回来（`role: tool` / `tool_result` / `function_call_output`）会被折进上游消息，多轮闭环可用。
+- 加入：记忆开关——记忆页能看到这个账号的记忆功能是开还是关，可以一键开/关、也能一次清空所有已保存的记忆（关开关不会动已存的内容，两个动作分开）。
+- 修复：文本结果缓存的 key 只带模型和消息，没带思考强度——同一个问题先请求低强度、再请求高强度会命中前一次的缓存。现在分开了，并补了「不同强度不共用缓存」的测试。
 - 加入：流式支持 `stream_options: {"include_usage": true}` —— 按 OpenAI 的格式把用量放在最后一个 `choices: []` 的空块里，finish 块不再重复给。不传则保持原来的行为（usage 跟在 finish 块里）。
 
 ### 0.1.5
