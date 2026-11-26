@@ -113,15 +113,38 @@ async fn rejects_empty_messages() {
 
 #[tokio::test]
 async fn rejects_unknown_role() {
-    let body = json!({"messages": [{"role": "tool", "content": "x"}]});
+    // `tool` 现在是合法角色（工具结果回填），换个真的不存在的
+    let body = json!({"messages": [{"role": "developer", "content": "x"}]});
     let (status, response) = post(body, Some(TEST_KEY)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(
         response["error"]["message"]
             .as_str()
             .unwrap_or("")
-            .contains("tool"),
+            .contains("developer"),
         "{response}"
+    );
+}
+
+/// `role: tool` 必须被接受：客户端拿到 tool_calls 之后，第二轮就是这么发的。
+#[tokio::test]
+async fn accepts_tool_role_for_round_two() {
+    let body = json!({
+        "model": "text_tool",
+        "messages": [
+            {"role": "user", "content": "查订单数"},
+            {"role": "assistant", "content": null,
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "run_sql", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "42"}
+        ]
+    });
+    let (status, response) = post(body, Some(TEST_KEY)).await;
+    // 账号池为空 → 503；关键是**没有**因为角色被拒（那会是 400）
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "tool 角色应被接受，走到取号：{response}"
     );
 }
 

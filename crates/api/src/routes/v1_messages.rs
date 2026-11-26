@@ -99,6 +99,21 @@ fn block_content(
                     "image_url" => {
                         images.push(anthropic_image_source(part, param)?);
                     }
+                    // 工具结果要回填给模型：上游没有工具概念，只能转成一段说明文字。
+                    // 不处理就等于把工具返回值扔掉，多轮从此断掉。
+                    "tool_result" => {
+                        let id = part
+                            .get("tool_use_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim();
+                        let body = tool_result_text(part.get("content"));
+                        if id.is_empty() {
+                            out.push_str(&format!("\nTool result:\n{body}\n"));
+                        } else {
+                            out.push_str(&format!("\nTool result ({id}):\n{body}\n"));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -108,6 +123,20 @@ fn block_content(
             format!("content 类型不支持：{other}"),
             param,
         ))),
+    }
+}
+
+/// 工具结果的内容：字符串，或 `[{type:text,text}]`。
+fn tool_result_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(other) => other.to_string(),
+        None => String::new(),
     }
 }
 

@@ -92,6 +92,27 @@ fn messages_from_input(input: &Value, instructions: Option<&str>) -> Result<Vec<
                     if let Some(role) = item.get("role").and_then(Value::as_str) {
                         let text = collect_content(item.get("content").unwrap_or(&Value::Null))?;
                         push(role.to_string(), text, &mut messages);
+                    } else if item.get("type").and_then(Value::as_str) == Some("function_call_output") {
+                        // 工具结果回填：上游没有工具概念，转成一段 user 说明，
+                        // 否则客户端的第二轮（带工具结果）在这里被静默丢掉。
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim();
+                        let output = item
+                            .get("output")
+                            .map(|value| match value {
+                                Value::String(text) => text.clone(),
+                                other => other.to_string(),
+                            })
+                            .unwrap_or_default();
+                        let text = if call_id.is_empty() {
+                            format!("Tool result:\n{output}")
+                        } else {
+                            format!("Tool result ({call_id}):\n{output}")
+                        };
+                    push("user".to_string(), text, &mut messages);
                     } else if is_content_part(item) {
                         if let Some(part) = part_text(item) {
                             push("user".to_string(), part, &mut messages);

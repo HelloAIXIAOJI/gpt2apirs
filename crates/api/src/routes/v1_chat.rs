@@ -24,10 +24,13 @@ use crate::state::AppState;
 /// 一条聊天消息。
 #[derive(Debug, Deserialize)]
 pub struct ChatMessage {
-    /// 角色：`system` / `user` / `assistant`。
+    /// 角色：`system` / `user` / `assistant` / `tool`。
     pub role: String,
     /// 内容：字符串，或 `[{"type":"text","text":"..."}]`。
     pub content: Value,
+    /// `role: tool` 时表示这是哪个调用的结果（编码进正文，上游不认字段）。
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
 }
 
 /// `POST /v1/chat/completions` 的请求体。
@@ -218,6 +221,9 @@ fn image_source_from_string(
 fn normalize_role(role: &str) -> Result<String, ApiError> {
     let normalized = role.trim().to_ascii_lowercase();
     match normalized.as_str() {
+        // `tool` 的结果要回填给模型：上游没有工具概念，只能当成一条 user 说明。
+        // 不转成 user 就没法多轮——客户端第二轮必然发 role=tool。
+        "tool" => Ok("user".to_string()),
         "system" | "user" | "assistant" => Ok(normalized),
         other => Err(ApiError::openai(AppError::invalid_param(
             format!("不支持的角色 {other:?}；只接受 system / user / assistant"),
@@ -276,7 +282,19 @@ pub async fn chat_completions(
     for message in &request.messages {
         let role = normalize_role(&message.role)?;
         let parsed = message_content(message)?;
-        messages.push((role, parsed.text));
+        let is_tool_result = message.role.trim().eq_ignore_ascii_case("tool");
+        let text = if is_tool_result {
+            // 带上 call_id，模型才知道这是哪次调用的结果
+            let id = message.tool_call_id.as_deref().unwrap_or("").trim();
+            if id.is_empty() {
+                format!("Tool result:\n{}", parsed.text)
+            } else {
+                format!("Tool result ({id}):\n{}", parsed.text)
+            }
+        } else {
+            parsed.text
+        };
+        messages.push((role, text));
         images.extend(parsed.images);
     }
     let has_content = messages.iter().any(|(_, text)| !text.trim().is_empty());
