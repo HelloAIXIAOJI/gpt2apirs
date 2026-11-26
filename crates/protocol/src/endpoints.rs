@@ -93,8 +93,7 @@ pub fn attachment_download(conversation_id: &str, attachment_id: &str) -> String
     format!("/backend-api/conversation/{conversation_id}/attachment/{attachment_id}/download")
 }
 
-/// 会话详情。
-/// 会话详情。
+/// 会话详情（含消息树）。
 ///
 /// 注意是**复数** `conversations` 且必须带 `num_turns`：
 /// 光用 `/backend-api/conversation/{id}` 会 404（实测）。
@@ -102,6 +101,9 @@ pub fn conversation_detail(conversation_id: &str) -> String {
     format!("/backend-api/conversations/{conversation_id}?num_turns=10&include_has_versions=true")
 }
 
+/// 会话的单数路径（附件下载等地方用它拼子路径）。
+///
+/// 直接 GET 这个路径会 404 —— 要拿详情请用 [`conversation_detail`]。
 pub fn conversation(conversation_id: &str) -> String {
     format!("/backend-api/conversation/{conversation_id}")
 }
