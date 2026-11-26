@@ -89,18 +89,31 @@ OpenAI 与 Anthropic 双协议兼容，文本支持流式输出。
 
 ## API
 
-对外提供两个模型名：`text` 与 `image`。
+对外提供三个模型名：`text`、`text_tool`（带工具调用）与 `image`。
 
 | 接口 | 说明 |
 |---|---|
-| `POST /v1/chat/completions` | 文本对话 |
+| `POST /v1/chat/completions` | 文本对话（流式可选 `stream_options.include_usage`） |
 | `POST /v1/responses` | Responses 格式 |
 | `POST /v1/messages` | Anthropic 格式 |
 | `POST /v1/messages/count_tokens` | token 计数 |
 | `POST /v1/images/generations` | 文生图 |
 | `POST /v1/images/edits` | 图生图 |
+| `POST /v1/audio/speech` | 文本转语音 |
+| `POST /v1/audio/transcriptions` | 语音转文字（multipart 上传，只回纯文本） |
 | `POST /v1/search` | 联网检索 |
 | `GET /v1/models` | 模型列表 |
+
+### 音色
+
+`/v1/audio/speech` 的 `voice` 认两套命名 —— 官网九个与 OpenAI 九个，上游是同一套后端，我们原样透传不做映射：
+
+- 官网：`juniper` `maple` `cove` `breeze` `orbit` `glimmer` `ember` `fathom` `vale`
+- OpenAI：`alloy` `ash` `coral` `echo` `fable` `onyx` `nova` `sage` `shimmer`
+
+不传默认 `cove`。传错名字会返回 400，`error.message` 里带着完整名单 —— 记不住就让接口报一次错。
+
+`response_format` 支持 `mp3`（默认）/ `opus` / `aac` / `flac` / `wav`。
 
 ## 配置
 
