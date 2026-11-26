@@ -4,9 +4,10 @@
 <header id="topbar"><h1>编辑账号</h1></header>
 
 <section class="panel">
-  <p class="muted"><a href="/accounts">← 返回账号</a></p>
+  <p class="muted"><a href="{{ back }}">← 返回账号</a></p>
   {% if !flash.is_empty() %}<p class="flash">{{ flash }}</p>{% endif %}
   <form class="edit-form" method="post" action="/accounts/{{ id }}/edit">
+    <input type="hidden" name="bucket" value="{{ bucket_slug }}">
     <label>邮箱<input name="email" value="{{ email }}" placeholder="可留空"></label>
     <label>所属桶<input value="{{ bucket }}" readonly title="换桶请到账号页的桶列表操作"></label>
     <label>配额<input name="quota" value="{{ quota }}" inputmode="numeric"></label>

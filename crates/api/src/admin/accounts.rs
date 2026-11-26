@@ -114,6 +114,9 @@ pub struct FlashQuery {
     /// 一次性提示。
     #[serde(default)]
     pub flash: String,
+    /// 当前所在的桶（编辑页返回时要用）。
+    #[serde(default)]
+    pub bucket: String,
 }
 
 /// 导入表单。
@@ -125,6 +128,9 @@ pub struct ImportForm {
     /// 导入到哪个桶；空 = 默认桶。
     #[serde(default)]
     pub bucket_id: String,
+    /// 发起导入时所在的桶（返回列表用；空 = 桶总览）。
+    #[serde(default)]
+    pub bucket: String,
 }
 
 /// `POST /accounts/import`
@@ -137,19 +143,20 @@ pub async fn import_accounts(
         return Redirect::to("/").into_response();
     }
     let text = form.text.trim();
+    let back = accounts_base(&form.bucket);
     if text.is_empty() {
-        return redirect_with_flash("/accounts", "没有内容可导入");
+        return redirect_with_flash(&back, "没有内容可导入");
     }
     let mut accounts = match gpt2apirs_account::parse_any(text) {
         Ok(accounts) if !accounts.is_empty() => accounts,
-        Ok(_) => return redirect_with_flash("/accounts", "没有解析出账号，请检查 access_token"),
-        Err(error) => return redirect_with_flash("/accounts", &format!("解析失败：{error}")),
+        Ok(_) => return redirect_with_flash(&back, "没有解析出账号，请检查 access_token"),
+        Err(error) => return redirect_with_flash(&back, &format!("解析失败：{error}")),
     };
-    // 页面选定的桶：留空就交给 SQL 的 coalesce 落到默认桶
-    let bucket = form.bucket_id.trim().parse::<Uuid>().ok();
-    if bucket.is_some() {
+    // 页面选定的目标桶：留空就交给 SQL 的 coalesce 落到默认桶
+    let target_bucket = form.bucket_id.trim().parse::<Uuid>().ok();
+    if target_bucket.is_some() {
         for account in &mut accounts {
-            account.bucket_id = bucket;
+            account.bucket_id = target_bucket;
         }
     }
     // 与 API 导入共用一个入口：否则「导入后清理无效号」只在 API 那条路生效
@@ -164,9 +171,9 @@ pub async fn import_accounts(
             if pruned > 0 {
                 message.push_str(&format!("，已清理无效号 {pruned} 个"));
             }
-            redirect_with_flash("/accounts", &message)
+            redirect_with_flash(&back, &message)
         }
-        Err(error) => redirect_with_flash("/accounts", &format!("写入失败：{}", error.error)),
+        Err(error) => redirect_with_flash(&back, &format!("写入失败：{}", error.error)),
     }
 }
 
@@ -190,6 +197,9 @@ pub struct BatchForm {
     /// 当前筛选：关键词。
     #[serde(default)]
     pub keyword: String,
+    /// 当前所在的桶（返回列表时要带回去；空 = 桶总览）。
+    #[serde(default)]
+    pub bucket: String,
 }
 
 impl BatchForm {
@@ -269,13 +279,14 @@ pub async fn batch(
     if form.scope.is_empty() {
         form.scope = "selected".to_string();
     }
+    let back = accounts_base(&form.bucket);
     let forced_status = (form.action == "delete" && form.status == "abnormal").then_some("abnormal");
     let ids = match scope_ids(&state, &form, forced_status).await {
         Ok(ids) => ids,
-        Err(error) => return redirect_with_flash("/accounts", &format!("解析作用域失败：{error}")),
+        Err(error) => return redirect_with_flash(&back, &format!("解析作用域失败：{error}")),
     };
     if ids.is_empty() && matches!(form.action.as_str(), "delete" | "enable" | "disable" | "export") {
-        return redirect_with_flash("/accounts", "没有符合条件的目标账号");
+        return redirect_with_flash(&back, "没有符合条件的目标账号");
     }
     match form.action.as_str() {
         "sync" => match crate::routes::accounts::sync_accounts(
@@ -284,9 +295,14 @@ pub async fn batch(
         )
         .await
         {
-            Ok(batch) => Redirect::to(&format!("/accounts?op={}", batch.operation_id)).into_response(),
+            Ok(batch) => Redirect::to(&with_param(
+                &back,
+                "op",
+                &batch.operation_id.to_string(),
+            ))
+            .into_response(),
             Err(error) => redirect_with_flash(
-                "/accounts",
+                &back,
                 &format!("同步失败：{}", error_message(&error)),
             ),
         },
@@ -296,9 +312,14 @@ pub async fn batch(
         )
         .await
         {
-            Ok(batch) => Redirect::to(&format!("/accounts?op={}", batch.operation_id)).into_response(),
+            Ok(batch) => Redirect::to(&with_param(
+                &back,
+                "op",
+                &batch.operation_id.to_string(),
+            ))
+            .into_response(),
             Err(error) => redirect_with_flash(
-                "/accounts",
+                &back,
                 &format!("刷新失败：{}", error_message(&error)),
             ),
         },
@@ -328,7 +349,7 @@ pub async fn batch(
                 }
             }
             redirect_with_flash(
-                "/accounts",
+                &back,
                 &format!("批量{label}完成：成功 {done} 个，失败 {failed} 个"),
             )
         }
@@ -340,15 +361,15 @@ pub async fn batch(
         {
             Ok(value) => {
                 let removed = value.0.get("removed").and_then(|v| v.as_u64()).unwrap_or(0);
-                redirect_with_flash("/accounts", &format!("已删除 {removed} 个账号"))
+                redirect_with_flash(&back, &format!("已删除 {removed} 个账号"))
             }
             Err(error) => redirect_with_flash(
-                "/accounts",
+                &back,
                 &format!("删除失败：{}", error_message(&error)),
             ),
         },
         "export" => export_attachment(&state, ids).await,
-        other => redirect_with_flash("/accounts", &format!("未知动作 {other}")),
+        other => redirect_with_flash(&back, &format!("未知动作 {other}")),
     }
 }
 
@@ -396,6 +417,7 @@ fn batch_form(body: &str) -> BatchForm {
         status: String::new(),
         plan: String::new(),
         keyword: String::new(),
+        bucket: String::new(),
     };
     for (key, value) in super::parse_form_pairs(body) {
         match key.as_str() {
@@ -409,6 +431,7 @@ fn batch_form(body: &str) -> BatchForm {
             "status" => form.status = value,
             "plan" => form.plan = value,
             "keyword" => form.keyword = value,
+            "bucket" => form.bucket = value,
             _ => {}
         }
     }
@@ -473,6 +496,25 @@ pub async fn bulk_preview(
 }
 
 /// 跳回列表并带一条提示。
+/// 列表页的地址（带当前桶）。
+///
+/// 所有 handler 的「回到账号列表」都必须走这里 —— 各处手拼 `/accounts`
+/// 就会把用户从桶里弹回总览页（曾经踩过：批量同步一按就跳回桶列表）。
+fn accounts_base(bucket: &str) -> String {
+    let bucket = bucket.trim();
+    if bucket.is_empty() {
+        "/accounts".to_string()
+    } else {
+        format!("/accounts?bucket={}", encode(bucket))
+    }
+}
+
+/// 在 base 后面追加一个查询参数（自动选 `?` 还是 `&`）。
+fn with_param(base: &str, name: &str, value: &str) -> String {
+    let separator = if base.contains('?') { '&' } else { '?' };
+    format!("{base}{separator}{name}={value}")
+}
+
 fn redirect_with_flash(base: &str, message: &str) -> Response {
     let encoded = encode(message);
     let separator = if base.contains('?') { '&' } else { '?' };
@@ -497,6 +539,8 @@ pub struct AccountRow {
     counters: String,
     /// 所属桶名。
     bucket: String,
+    /// 当前列表所在的桶标识（编辑链接要带回去）。
+    bucket_slug: String,
     /// 状态原因的简短说法。
     reason: String,
     /// 上游原始错误（悬停看）。
@@ -514,7 +558,12 @@ pub struct AccountRow {
 
 impl AccountRow {
     /// 构造一行。`bucket_name` 由调用方按桶表解析后传入。
-    fn from_account(account: &Account, now: DateTime<Utc>, bucket_name: &str) -> Self {
+    fn from_account(
+        account: &Account,
+        now: DateTime<Utc>,
+        bucket_name: &str,
+        bucket_slug: &str,
+    ) -> Self {
         let disabled = account.status == AccountStatus::Disabled;
         // 凭据状态由 token 本身算（不落库），和 /api/accounts/{id} 用同一个投影
         let credential = gpt2apirs_account::project(
@@ -558,6 +607,7 @@ impl AccountRow {
             counters: format!("{} / {}", account.success_count, account.fail_count),
             // 桶名由调用方传进来：这里只拿得到账号，桶表要单独查一次
             bucket: bucket_name.to_string(),
+            bucket_slug: bucket_slug.to_string(),
             reason: reason.to_string(),
             last_error: raw_error.to_string(),
             access_label: credential.access.label().to_string(),
@@ -659,8 +709,9 @@ impl fmt::Display for AccountRow {
         )?;
         write!(
             f,
-            "<a class=\"btn btn--ghost\" href=\"/accounts/{}/edit\">编辑</a>",
-            self.id
+            "<a class=\"btn btn--ghost\" href=\"/accounts/{}/edit?bucket={}\">编辑</a>",
+            self.id,
+            escape(&self.bucket_slug)
         )?;
         write!(f, "</td></tr>")
     }
@@ -685,6 +736,11 @@ struct AccountsPage {
     buckets: Vec<BucketOption>,
     /// 当前看的是哪个桶（显示在标题上）。
     bucket_title: String,
+    /// 当前桶的标识（`all` / `default` / UUID / 空=总览）。
+    ///
+    /// 模板里所有表单都要带上它当隐藏字段 —— 否则提交后 handler 不知道
+    /// 用户在哪，会把人弹回桶总览（曾经踩过）。
+    bucket_slug: String,
 }
 
 /// 导入表单里的桶下拉项。
@@ -818,7 +874,14 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
             (
                 accounts
                     .iter()
-                    .map(|a| AccountRow::from_account(a, now, &bucket_label(&names, a.bucket_id)))
+                    .map(|a| {
+            AccountRow::from_account(
+                a,
+                now,
+                &bucket_label(&names, a.bucket_id),
+                &filters.bucket,
+            )
+        })
                     .collect(),
                 String::new(),
             )
@@ -866,6 +929,7 @@ async fn page(state: &AppState, filters: Filters) -> AccountsPage {
         rows,
         buckets,
         bucket_title,
+        bucket_slug: filters.bucket.clone(),
         summary,
         flash: filters.flash.clone(),
         op: filters.op.clone(),
@@ -980,6 +1044,8 @@ async fn row_response(state: &Arc<AppState>, id: Uuid, message: &str, level: &st
                     &account,
                     chrono::Utc::now(),
                     &bucket_label(&bucket_names(state).await, account.bucket_id),
+                    // 单行片段刷新时不知道用户在哪一页、哪个桶，返回链接退回总览即可
+                    "",
                 ),
             }
             .render();
@@ -1145,6 +1211,9 @@ pub struct OAuthFinishForm {
     /// 回调地址或裸 code。
     #[serde(default)]
     pub callback: String,
+    /// 发起授权时所在的桶（返回列表用）。
+    #[serde(default)]
+    pub bucket: String,
 }
 
 /// `POST /accounts/oauth/finish`
@@ -1156,13 +1225,14 @@ pub async fn oauth_finish_form(
     if !has_session(&state, &headers) {
         return Redirect::to("/").into_response();
     }
+    let back = accounts_base(&form.bucket);
     let callback = form.callback.trim().to_string();
     if callback.is_empty() {
-        return redirect_with_flash("/accounts", "请粘贴回调地址或 code");
+        return redirect_with_flash(&back, "请粘贴回调地址或 code");
     }
     let session_id = match form.session_id.trim().parse::<Uuid>() {
         Ok(value) => value,
-        Err(_) => return redirect_with_flash("/accounts", "会话 ID 不合法，请重新发起授权"),
+        Err(_) => return redirect_with_flash(&back, "会话 ID 不合法，请重新发起授权"),
     };
     let request = crate::routes::accounts::OAuthFinishRequest {
         session_id,
@@ -1171,10 +1241,10 @@ pub async fn oauth_finish_form(
     match crate::routes::accounts::oauth_finish(State(state.clone()), axum::Json(request)).await {
         Ok(response) => {
             let _ = state.pool.reload().await;
-            redirect_with_flash("/accounts", &format!("OAuth 导入完成：新增 {} 个", response.added))
+            redirect_with_flash(&back, &format!("OAuth 导入完成：新增 {} 个", response.added))
         }
         Err(error) => redirect_with_flash(
-            "/accounts",
+            &back,
             &format!("OAuth 导入失败：{}", error_message(&error)),
         ),
     }
@@ -1189,6 +1259,10 @@ struct EditPage {
     email: String,
     /// 当前桶名（只读；换桶在桶页做）。
     bucket: String,
+    /// 停留用的桶标识（保存后回到这里）。
+    bucket_slug: String,
+    /// 「返回账号」的去处（带桶）。
+    back: String,
     quota: String,
     plan: String,
     status: String,
@@ -1213,6 +1287,9 @@ pub struct EditForm {
     /// 状态。
     #[serde(default)]
     pub status: String,
+    /// 从哪个桶进来的（保存后回到那里）。
+    #[serde(default)]
+    pub bucket: String,
 }
 
 /// `GET /accounts/{id}/edit`
@@ -1232,6 +1309,8 @@ pub async fn edit_form(
             id: account.id.to_string(),
             email: account.email.clone().unwrap_or_default(),
             bucket: bucket_label(&bucket_names(&state).await, account.bucket_id),
+            bucket_slug: query.bucket.clone(),
+            back: accounts_base(&query.bucket),
             quota: account.quota.to_string(),
             plan: account.plan.as_str().to_string(),
             status: account.status.as_str().to_string(),
@@ -1255,6 +1334,7 @@ pub async fn edit_submit(
     let trimmed = |value: &str| -> Option<String> {
         Some(value.trim().to_string()).filter(|value| !value.is_empty())
     };
+    let back = accounts_base(&form.bucket);
     let quota = match form.quota.trim() {
         "" => None,
         raw => match raw.parse::<i32>() {
@@ -1277,7 +1357,7 @@ pub async fn edit_submit(
         quota_confirmed: quota.map(|_| true),
     };
     match crate::routes::accounts::update_account(State(state.clone()), axum::Json(request)).await {
-        Ok(_) => redirect_with_flash("/accounts", "账号已更新"),
+        Ok(_) => redirect_with_flash(&back, "账号已更新"),
         Err(error) => redirect_with_flash(&format!("/accounts/{id}/edit"), &format!("保存失败：{}", error_message(&error))),
     }
 }
@@ -1336,7 +1416,7 @@ mod tests {
         let now = Utc::now();
 
         // 即将过期 + 不限量 + 有重置时间
-        let row = AccountRow::from_account(&account_for_row(0, true, 3600), now, "默认").to_string();
+        let row = AccountRow::from_account(&account_for_row(0, true, 3600), now, "默认", "").to_string();
         assert!(row.contains("AT 即将过期"), "凭据要显示到期风险：{row}");
         assert!(row.contains("RT 有效"), "{row}");
         assert!(
@@ -1348,12 +1428,12 @@ mod tests {
         // 一张不剩：语义是「已耗尽」
         let mut exhausted = account_for_row(0, false, 7200);
         exhausted.restore_at = None;
-        let row = AccountRow::from_account(&exhausted, now, "默认").to_string();
+        let row = AccountRow::from_account(&exhausted, now, "默认", "").to_string();
         assert!(row.contains("已耗尽"), "{row}");
         assert!(!row.contains("后重置"), "没有重置时间就别显示倒计时：{row}");
 
         // AT 过期：凭据列要说无效
-        let row = AccountRow::from_account(&account_for_row(3, false, -3600), now, "默认").to_string();
+        let row = AccountRow::from_account(&account_for_row(3, false, -3600), now, "默认", "").to_string();
         assert!(row.contains("AT 无效"), "{row}");
     }
 
@@ -1454,6 +1534,8 @@ mod tests {
             id: "11111111-1111-1111-1111-111111111111".to_string(),
             email: "a@b.com".to_string(),
             bucket: "默认".to_string(),
+            bucket_slug: "default".to_string(),
+            back: "/accounts?bucket=default".to_string(),
             quota: "12".to_string(),
             plan: "free".to_string(),
             status: "normal".to_string(),
@@ -1484,6 +1566,7 @@ mod tests {
                 name: "默认".to_string(),
             }],
             bucket_title: "默认桶".to_string(),
+            bucket_slug: "default".to_string(),
         };
         let html = page.render().expect("渲染账号页");
         // 标题现在由桶决定（合并后不再固定叫「账号池」）

@@ -12,6 +12,7 @@
   <details class="import">
     <summary>粘贴导入</summary>
     <form method="post" action="/accounts/import">
+      <input type="hidden" name="bucket" value="{{ bucket_slug }}">
       <textarea name="text" rows="6" placeholder="粘贴 access_token，或账号 JSON；每行一个也可以"></textarea>
       <label>导入到
         <select name="bucket_id">
@@ -28,6 +29,7 @@
   <details class="import">
     <summary>Session JSON 导入</summary>
     <form method="post" action="/accounts/import">
+      <input type="hidden" name="bucket" value="{{ bucket_slug }}">
       <textarea name="text" rows="6" placeholder='粘贴浏览器里 https://chatgpt.com/api/auth/session 的 JSON（含 accessToken，可能还有 refreshToken）'></textarea>
       <label>导入到
         <select name="bucket_id">
@@ -45,6 +47,7 @@
   <details class="import">
     <summary>OAuth 导入</summary>
     <form method="post" action="/accounts/oauth/start">
+      <input type="hidden" name="bucket" value="{{ bucket_slug }}">
       <input name="email_hint" placeholder="邮箱（可选，用于预填登录）">
       <button type="submit">开始授权</button>
     </form>
@@ -57,6 +60,7 @@
   {% endif %}
 
   <form class="filters" method="get" action="/accounts">
+    <input type="hidden" name="bucket" value="{{ bucket_slug }}">
     <label>关键词<input name="keyword" value="{{ keyword }}" placeholder="邮箱 / 上游 ID / token 前缀"></label>
     <label>状态
       <select name="status">
@@ -76,7 +80,7 @@
       </select>
     </label>
     <button type="submit">筛选</button>
-    <a class="btn btn--ghost" href="/accounts">重置</a>
+    <a class="btn btn--ghost" href="/accounts{% if !bucket_slug.is_empty() %}?bucket={{ bucket_slug }}{% endif %}">重置</a>
   </form>
 
   <form id="batch-form" method="post" action="/accounts/batch">
@@ -94,6 +98,7 @@
       <input type="hidden" name="status" value="{{ status }}">
       <input type="hidden" name="plan" value="{{ plan }}">
       <input type="hidden" name="keyword" value="{{ keyword }}">
+      <input type="hidden" name="bucket" value="{{ bucket_slug }}">
       <button class="btn btn--ghost" type="submit" name="action" value="sync">同步</button>
       <button class="btn btn--ghost" type="submit" name="action" value="sync_all">查询全部额度</button>
       <button class="btn btn--ghost" type="submit" name="action" value="refresh">刷新令牌</button>
