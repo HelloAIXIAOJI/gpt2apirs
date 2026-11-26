@@ -10,6 +10,7 @@
 - 调整：桶的新建、改名、删除各自独立页面，密钥新建也改成独立页面；账号的批量操作收进折叠块，列表页不再平铺表单。
 - 加入：工具调用。新增模型 `text_tool`，`/v1/chat/completions`、`/v1/messages`、`/v1/responses` 三个端点（含流式）都支持；`text` 收到 tools 会明确报错，不静默忽略。
   - 实测：`tool_choice: required` 稳定可用（能拿到标准 tool_calls）；`auto` 基本不触发——上游模型自带联网，遇到它能答的会直接答，遇到它做不到的会解释而不是委托。要可靠请用 `required`。
+  - 工具结果回填：客户端把执行结果发回来（`role: tool` / `tool_result` / `function_call_output`）会被折进上游消息，多轮闭环可用。
 
 ### 0.1.5
 
