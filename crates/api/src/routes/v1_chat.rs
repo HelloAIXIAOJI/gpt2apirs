@@ -47,6 +47,9 @@ pub struct ChatCompletionRequest {
     /// 是否流式。
     #[serde(default)]
     pub stream: Option<bool>,
+    /// 流式选项：`{"include_usage": true}` 时按 OpenAI 的格式单独发一个 usage 块。
+    #[serde(default)]
+    pub stream_options: Option<Value>,
     /// 工具列表。只有 `model: text_tool` 接受；`text` 收到就报错。
     #[serde(default)]
     pub tools: Option<Value>,
@@ -65,6 +68,20 @@ pub struct ChatCompletionRequest {
     /// `reasoning: { effort: "low" }` 这种嵌套写法。
     #[serde(default)]
     pub reasoning: Option<Value>,
+}
+
+/// 客户端是否要求「单独的 usage 块」。
+///
+/// OpenAI 官方的流式把用量放在**最后一个 `choices: []` 的空块**里，
+/// 而且要显式 `stream_options: {include_usage: true}` 才发。
+/// 我们默认是塞进 finish 块（多给不会让标准客户端出错），
+/// 但严格按规范写的客户端只认那个空块 —— 它要就照它的来。
+fn wants_usage_chunk(options: &Option<Value>) -> bool {
+    options
+        .as_ref()
+        .and_then(|value| value.get("include_usage"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// 从三种写法里取思考强度，原样透传给上游。
@@ -348,6 +365,7 @@ pub async fn chat_completions(
     };
 
     let effort = resolve_thinking_effort(&request);
+    let include_usage = wants_usage_chunk(&request.stream_options);
 
     if request.stream.unwrap_or(false) {
         // ---- 真流式：上游每吐一段就转发一段 ----
@@ -364,9 +382,11 @@ pub async fn chat_completions(
         // 带工具时不走「边收边吐」：工具调用要等全文才能解析，
         // 提前吐出的正文里可能混着 <tool_calls> 标签，客户端会看到裸标签。
         if tool_prompt.is_some() {
-            return Ok(build_tool_stream(handle, &requested_model).into_response());
+            return Ok(
+                build_tool_stream(handle, &requested_model, include_usage).into_response(),
+            );
         }
-        return Ok(build_live_stream(handle, &requested_model).into_response());
+        return Ok(build_live_stream(handle, &requested_model, include_usage).into_response());
     }
 
     // ---- 取号  生成  记账（与其他文本端点共用）----
@@ -449,7 +469,7 @@ fn build_usage(messages: &[(String, String)], reply: &str, model: &str) -> Value
     })
 }
 
-fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Response {
+fn build_live_stream(handle: StreamHandle, model: &str, include_usage: bool) -> axum::response::Response {
     use axum::response::sse::{Event, Sse};
     use futures_util::StreamExt;
 
@@ -526,21 +546,36 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
             .map(|guard| guard.text.clone())
             .unwrap_or_default();
         let usage = build_usage(&tail_messages, &text, &tail_model);
+        // 要了独立 usage 块就不在 finish 块里重复给：官方实现就是这么分的，
+        // 两边都给会让按规范解析的客户端重复记账。
+        let finish_usage = if include_usage {
+            None
+        } else {
+            Some(usage.clone())
+        };
         let mut payload: Value = serde_json::from_str(&chunk_payload(
             &tail_id,
             &tail_model,
             created,
             json!({}),
             json!("stop"),
-            Some(usage),
+            finish_usage,
         ))
         .unwrap_or_else(|_| json!({}));
         if let Some(error) = tail_errors.lock().ok().and_then(|guard| guard.clone()) {
             // OpenAI 的流里没有「错误块」的标准位置，这里用扩展字段说明
             payload["error"] = json!({ "message": error, "type": "upstream_error" });
         }
-        Ok::<_, std::convert::Infallible>(Event::default().data(payload.to_string()))
-    });
+        let mut events = vec![Event::default().data(payload.to_string())];
+        if include_usage {
+            // 官方格式：`choices` 为空的独立块，只放 usage
+            events.push(Event::default().data(
+                usage_chunk_payload(&tail_id, &tail_model, created, usage),
+            ));
+        }
+        futures_util::stream::iter(events.into_iter().map(Ok::<_, std::convert::Infallible>))
+    })
+    .flatten();
 
     // 4) [DONE]
     let done = futures_util::stream::once(async {
@@ -557,7 +592,7 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
 /// 为什么不边收边吐：工具调用要看到完整输出才能解析；提前把正文发出去，
 /// 客户端会收到 `<tool_calls>` 裸标签。代价是首字延迟等于总生成时间，
 /// 这是模拟工具调用的必然取舍。
-fn build_tool_stream(handle: StreamHandle, model: &str) -> axum::response::Response {
+fn build_tool_stream(handle: StreamHandle, model: &str, include_usage: bool) -> axum::response::Response {
     use axum::response::sse::{Event, Sse};
     use futures_util::StreamExt;
 
@@ -629,14 +664,24 @@ fn build_tool_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
             ))));
         }
         let finish = if calls.is_empty() { "stop" } else { "tool_calls" };
+        let finish_usage = if include_usage {
+            None
+        } else {
+            Some(usage.clone())
+        };
         events.push(Ok(Event::default().data(chunk_payload(
             &tail_id,
             &tail_model,
             created,
             json!({}),
             json!(finish),
-            Some(usage),
+            finish_usage,
         ))));
+        if include_usage {
+            events.push(Ok(Event::default().data(usage_chunk_payload(
+                &tail_id, &tail_model, created, usage,
+            ))));
+        }
         futures_util::stream::iter(events)
     })
     .flatten();
@@ -648,6 +693,19 @@ fn build_tool_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     Sse::new(head.chain(drain).chain(tail).chain(done))
         .keep_alive(super::sse_keep_alive())
         .into_response()
+}
+
+/// 独立的 usage 块：`choices` 为空数组，只有 `usage`（OpenAI 官方的流式格式）。
+fn usage_chunk_payload(completion_id: &str, model: &str, created: i64, usage: Value) -> String {
+    json!({
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [],
+        "usage": usage,
+    })
+    .to_string()
 }
 
 fn chunk_payload(
@@ -685,7 +743,7 @@ mod keepalive_tests {
     #[tokio::test]
     async fn idle_stream_emits_keep_alive_comments() {
         let (sender, handle) = crate::routes::test_support::channel_handle();
-        let mut body = build_live_stream(handle, "text").into_body().into_data_stream();
+        let mut body = build_live_stream(handle, "text", false).into_body().into_data_stream();
 
         // 第一块是 role 块，立刻就得到
         let first = tokio::time::timeout(Duration::from_secs(1), body.next())
@@ -713,7 +771,7 @@ mod keepalive_tests {
     async fn streaming_deltas_do_not_trigger_keep_alive() {
         let (sender, handle) = crate::routes::test_support::channel_handle();
         sender.send(Ok(gpt2apirs_protocol::text_stream::Delta::Text("第一段".to_string()))).await.ok();
-        let mut body = build_live_stream(handle, "text").into_body().into_data_stream();
+        let mut body = build_live_stream(handle, "text", false).into_body().into_data_stream();
 
         let first = tokio::time::timeout(Duration::from_secs(1), body.next())
             .await
@@ -758,7 +816,7 @@ mod reasoning_tests {
             .await
             .ok();
 
-        let mut body = build_live_stream(handle, "text").into_body().into_data_stream();
+        let mut body = build_live_stream(handle, "text", false).into_body().into_data_stream();
 
         let first = tokio::time::timeout(Duration::from_secs(1), body.next())
             .await
@@ -819,5 +877,60 @@ mod reasoning_tests {
             resolve_thinking_effort(&base(r#"{"messages":[{"role":"user","content":"hi"}]}"#)),
             None
         );
+    }
+
+    #[test]
+    fn include_usage_flag_is_read_from_stream_options() {
+        let parse = |json: &str| -> ChatCompletionRequest {
+            serde_json::from_str(json).expect("请求体应可解析")
+        };
+        let on = parse(
+            r#"{"messages":[{"role":"user","content":"hi"}],"stream_options":{"include_usage":true}}"#,
+        );
+        assert!(wants_usage_chunk(&on.stream_options));
+        let off = parse(
+            r#"{"messages":[{"role":"user","content":"hi"}],"stream_options":{"include_usage":false}}"#,
+        );
+        assert!(!wants_usage_chunk(&off.stream_options));
+        // 不传 = 老行为：usage 塞在 finish 块里
+        let none = parse(r#"{"messages":[{"role":"user","content":"hi"}]}"#);
+        assert!(!wants_usage_chunk(&none.stream_options));
+    }
+
+    /// 要了独立 usage 块：finish 块不再带 usage，后面单独来一个 `choices: []` 的。
+    #[tokio::test]
+    async fn usage_chunk_is_sent_when_requested() {
+        let (sender, handle) = crate::routes::test_support::channel_handle();
+        sender
+            .send(Ok(gpt2apirs_protocol::text_stream::Delta::Text(
+                "答案".to_string(),
+            )))
+            .await
+            .ok();
+        drop(sender);
+
+        let mut body = build_live_stream(handle, "text", true)
+            .into_body()
+            .into_data_stream();
+        let mut chunks: Vec<String> = Vec::new();
+        // next() 给的是 Result<Bytes, _>，得剥两层
+        while let Ok(Some(Ok(chunk))) =
+            tokio::time::timeout(Duration::from_secs(1), body.next()).await
+        {
+            chunks.push(String::from_utf8_lossy(&chunk).to_string());
+        }
+        let text = chunks.join("");
+        let finish = chunks
+            .iter()
+            .find(|c| c.contains("finish_reason\":\"stop"))
+            .expect("应有 finish 块");
+        assert!(!finish.contains("\"usage\""), "要了独立块就别在 finish 里重复给：{finish}");
+        let usage = chunks
+            .iter()
+            .find(|c| c.contains("\"usage\""))
+            .expect("应有独立 usage 块");
+        assert!(usage.contains("\"choices\":[]"), "usage 块的 choices 必须是空数组：{usage}");
+        assert!(usage.contains("total_tokens"), "{usage}");
+        assert!(text.contains("[DONE]"), "usage 块要在 [DONE] 之前");
     }
 }
