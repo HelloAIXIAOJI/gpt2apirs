@@ -94,6 +94,14 @@ pub fn attachment_download(conversation_id: &str, attachment_id: &str) -> String
 }
 
 /// 会话详情。
+/// 会话详情。
+///
+/// 注意是**复数** `conversations` 且必须带 `num_turns`：
+/// 光用 `/backend-api/conversation/{id}` 会 404（实测）。
+pub fn conversation_detail(conversation_id: &str) -> String {
+    format!("/backend-api/conversations/{conversation_id}?num_turns=10&include_has_versions=true")
+}
+
 pub fn conversation(conversation_id: &str) -> String {
     format!("/backend-api/conversation/{conversation_id}")
 }
@@ -117,6 +125,16 @@ pub fn conversations_page(offset: i64, limit: i64) -> String {
 
 /// 已保存的记忆（GET 列列表）。
 pub const MEMORIES: &str = "/backend-api/memories";
+
+/// 语音转写：multipart 上传音频，返回 `{text}`。
+pub const TRANSCRIBE: &str = "/backend-api/transcribe";
+
+/// 语音合成。**只能合成已存在的消息**，所以要带 conversation_id + message_id。
+pub fn synthesize(conversation_id: &str, message_id: &str, voice: &str, format: &str) -> String {
+    format!(
+        "/backend-api/synthesize?conversation_id={conversation_id}&message_id={message_id}&voice={voice}&format={format}"
+    )
+}
 
 /// 账号级设置：记忆总开关（`m3m`）就在这个响应里。
 pub const USER_SETTINGS: &str = "/backend-api/settings/user";

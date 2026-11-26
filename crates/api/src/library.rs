@@ -16,6 +16,9 @@ use crate::state::AppState;
 /// 一次读取的总时限：这些接口都是「看一眼官网」，不该占着账号太久。
 const READ_TIMEOUT_SECS: f64 = 25.0;
 
+/// 语音要走两跳（复述 + 合成），给的时间长一些。
+const SPEECH_TIMEOUT_SECS: f64 = 180.0;
+
 fn unavailable(message: impl Into<String>, code: &str) -> ApiError {
     ApiError::admin(AppError::ServiceUnavailable {
         message: message.into(),
@@ -254,4 +257,64 @@ pub async fn delete_memory(
     .await
     .map_err(upstream_error)?;
     Ok(lease.id())
+}
+
+/// 文本转语音（两跳：先复述成消息，再合成）。
+///
+/// 顺带把中间那轮对话删掉 —— 否则每次 TTS 都会在账号里留一条
+/// 「请原样输出下面这段文字」的垃圾会话，把会话页刷满。
+pub async fn speak(
+    state: &Arc<AppState>,
+    text: &str,
+    voice: &str,
+    format: &str,
+) -> Result<(Vec<u8>, String), ApiError> {
+    let deadline = Deadline::in_secs(SPEECH_TIMEOUT_SECS);
+    let lease = state
+        .pool
+        .acquire(&filter_for(None), deadline)
+        .await
+        .map_err(lease_error)?;
+    let client = state
+        .client_for("")
+        .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
+    // 中间那轮复述对话由 speech::speak 自己回收（成功失败都删）
+    gpt2apirs_generate::speech::speak(
+        &client,
+        lease.access_token(),
+        text,
+        voice,
+        format,
+        deadline,
+    )
+    .await
+    .map_err(upstream_error)
+}
+
+/// 语音转文字。
+pub async fn transcribe(
+    state: &Arc<AppState>,
+    filename: &str,
+    content_type: &str,
+    data: &[u8],
+) -> Result<String, ApiError> {
+    let deadline = Deadline::in_secs(SPEECH_TIMEOUT_SECS);
+    let lease = state
+        .pool
+        .acquire(&filter_for(None), deadline)
+        .await
+        .map_err(lease_error)?;
+    let client = state
+        .client_for("")
+        .map_err(|error| ApiError::admin(AppError::Internal(anyhow::anyhow!("{error}"))))?;
+    gpt2apirs_generate::speech::transcribe(
+        &client,
+        lease.access_token(),
+        filename,
+        content_type,
+        data,
+        deadline,
+    )
+    .await
+    .map_err(upstream_error)
 }

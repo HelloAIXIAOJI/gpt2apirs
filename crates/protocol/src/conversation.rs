@@ -153,10 +153,16 @@ pub fn build_conversation_payload(
 /// 文本要 `history_and_training_disabled: true`；图片要 `X-Conduit-Token`。
 ///
 /// 另外文本链路**不走** `conversation/prepare`。
-pub fn build_text_conversation_payload(prompt: &str, model: &str) -> Value {
+/// `persist` = 这条对话要不要留在账号里。
+///
+/// 默认 `false`（临时对话，`history_and_training_disabled: true`）；
+/// 语音合成那一跳必须给 `true` —— 上游只能合成**已落库**的消息，
+/// 临时对话查详情直接 404。
+pub fn build_text_conversation_payload(prompt: &str, model: &str, persist: bool) -> Value {
     build_text_conversation_payload_messages(
         &[("user".to_string(), prompt.to_string())],
         model,
+        persist,
     )
 }
 
@@ -167,8 +173,9 @@ pub fn build_text_conversation_payload(prompt: &str, model: &str) -> Value {
 pub fn build_text_conversation_payload_messages(
     messages: &[(String, String)],
     model: &str,
+    persist: bool,
 ) -> Value {
-    build_text_conversation_payload_with_images(messages, &[], model)
+    build_text_conversation_payload_with_images(messages, &[], model, persist)
 }
 
 /// 带图片的文本会话请求体。
@@ -180,6 +187,7 @@ pub fn build_text_conversation_payload_with_images(
     messages: &[(String, String)],
     images: &[ImageReference],
     model: &str,
+    persist: bool,
 ) -> Value {
     let last_user = messages
         .iter()
@@ -208,11 +216,11 @@ pub fn build_text_conversation_payload_with_images(
             })
         })
         .collect();
-    build_text_envelope(model, converted)
+    build_text_envelope(model, converted, persist)
 }
 
 /// 文本会话的信封字段：消息体由调用方给，这里只补公共字段。
-fn build_text_envelope(model: &str, messages: Vec<Value>) -> Value {
+fn build_text_envelope(model: &str, messages: Vec<Value>, persist: bool) -> Value {
     json!({
         "action": "next",
         "messages": messages,
@@ -224,7 +232,7 @@ fn build_text_envelope(model: &str, messages: Vec<Value>) -> Value {
         "force_paragen_model_slug": "",
         "force_rate_limit": false,
         "force_use_sse": true,
-        "history_and_training_disabled": true,
+        "history_and_training_disabled": !persist,
         "reset_rate_limits": false,
         "suggestions": [],
         "supported_encodings": [],
@@ -374,7 +382,7 @@ mod tests {
 
     #[test]
     fn text_payload_has_no_image_hints() {
-        let payload = build_text_conversation_payload("你好", "gpt-5-5");
+        let payload = build_text_conversation_payload("你好", "gpt-5-5", false);
         assert_eq!(
             payload["system_hints"].as_array().map(Vec::len),
             Some(0),
@@ -390,8 +398,8 @@ mod tests {
 
     #[test]
     fn text_payload_ids_differ_per_call() {
-        let a = build_text_conversation_payload("x", "m");
-        let b = build_text_conversation_payload("x", "m");
+        let a = build_text_conversation_payload("x", "m", false);
+        let b = build_text_conversation_payload("x", "m", true);
         assert_ne!(a["parent_message_id"], b["parent_message_id"]);
         assert_ne!(a["websocket_request_id"], b["websocket_request_id"]);
     }
@@ -424,7 +432,7 @@ mod tests {
             ("system".to_string(), "你是助手".to_string()),
             ("user".to_string(), "你好".to_string()),
         ];
-        let payload = build_text_conversation_payload_with_images(&messages, &[], "gpt-5-5");
+        let payload = build_text_conversation_payload_with_images(&messages, &[], "gpt-5-5", false);
         for index in 0..2 {
             assert_eq!(payload["messages"][index]["content"]["content_type"], "text");
             assert_eq!(payload["messages"][index]["content"]["parts"].as_array().map(Vec::len), Some(1));
@@ -441,7 +449,7 @@ mod tests {
             ("user".to_string(), "这张图里是什么".to_string()),
         ];
         let payload =
-            build_text_conversation_payload_with_images(&messages, &[sample_ref()], "gpt-5-5");
+            build_text_conversation_payload_with_images(&messages, &[sample_ref()], "gpt-5-5", false);
 
         // 前两条保持纯文本
         assert_eq!(payload["messages"][0]["content"]["content_type"], "text");
@@ -463,7 +471,7 @@ mod tests {
     fn images_without_user_message_are_ignored() {
         let messages = vec![("system".to_string(), "只有系统提示".to_string())];
         let payload =
-            build_text_conversation_payload_with_images(&messages, &[sample_ref()], "gpt-5-5");
+            build_text_conversation_payload_with_images(&messages, &[sample_ref()], "gpt-5-5", false);
         assert_eq!(payload["messages"][0]["content"]["content_type"], "text");
         assert!(payload["messages"][0]["metadata"].get("attachments").is_none());
     }

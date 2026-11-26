@@ -37,6 +37,11 @@ pub struct TextRequest {
     history: Vec<String>,
     /// 多轮消息（非空时优先于 `prompt`）。
     pub messages: Vec<(String, String)>,
+    /// 这条对话要不要留在账号里。
+    ///
+    /// 默认 `false`：文本端点都是临时对话（不落库、不进历史）。
+    /// 语音合成那一跳必须 `true` —— 上游只能合成已落库的消息。
+    pub persist: bool,
     /// 已上传到上游的参考图（挂在最后一条 user 消息上）。
     pub images: Vec<gpt2apirs_protocol::conversation::ImageReference>,
 }
@@ -50,6 +55,7 @@ impl TextRequest {
             upstream_model: "gpt-5-5".to_string(),
             user_agent: DEFAULT_USER_AGENT.to_string(),
             thinking_effort: None,
+            persist: false,
             history: Vec::new(),
             messages: Vec::new(),
             images: Vec::new(),
@@ -63,6 +69,12 @@ impl TextRequest {
     pub fn with_messages(mut self, messages: Vec<(String, String)>) -> Self {
         self.history = gpt2apirs_protocol::text_stream::assistant_history(&messages);
         self.messages = messages;
+        self
+    }
+
+    /// 让这条对话留在账号里（语音合成要用）。
+    pub fn with_persist(mut self) -> Self {
+        self.persist = true;
         self
     }
 
@@ -189,12 +201,17 @@ pub async fn generate_text(
 /// 不做归一化 —— 参考实现里把 `"none"` 归一成空串，等于没传，是个坑。
 fn conversation_payload(request: &TextRequest) -> serde_json::Value {
     let mut payload = if request.messages.is_empty() {
-        build_text_conversation_payload(&request.prompt, &request.upstream_model)
+        build_text_conversation_payload(
+            &request.prompt,
+            &request.upstream_model,
+            request.persist,
+        )
     } else {
         build_text_conversation_payload_with_images(
             &request.messages,
             &request.images,
             &request.upstream_model,
+            request.persist,
         )
     };
     if let Some(effort) = request

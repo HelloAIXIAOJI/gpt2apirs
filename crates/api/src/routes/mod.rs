@@ -20,6 +20,7 @@ pub mod text_cache;
 #[cfg(test)]
 pub mod test_support;
 pub mod text_common;
+pub mod v1_audio;
 pub mod v1_chat;
 pub mod v1_image_edits;
 pub mod v1_messages;

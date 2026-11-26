@@ -64,6 +64,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(routes::v1_messages::count_tokens),
         )
         .route("/v1/search", post(routes::v1_search::search))
+        .route("/v1/audio/speech", post(routes::v1_audio::speech))
+        .route("/v1/audio/transcriptions", post(routes::v1_audio::transcriptions))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,

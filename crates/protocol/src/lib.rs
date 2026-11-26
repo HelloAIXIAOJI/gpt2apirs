@@ -13,6 +13,7 @@ pub mod conversations;
 pub mod download;
 pub mod endpoints;
 pub mod memories;
+pub mod speech;
 pub mod pow;
 pub mod pow_config;
 pub mod search;

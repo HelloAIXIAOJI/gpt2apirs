@@ -243,6 +243,36 @@ mod imp {
             Ok(TextResponse { status, body: text })
         }
 
+        /// POST 原始字节（自定义 Content-Type），返回文本。
+        ///
+        /// 语音转写要 multipart 上传，塞不进 `post_form`（只收 urlencoded）；
+        /// 它回来的又是 JSON，所以按文本收。合成拿音频字节走 `get_bytes`。
+        pub async fn post_raw(
+            &self,
+            url: &str,
+            headers: &[(&str, String)],
+            content_type: &str,
+            body: Vec<u8>,
+            timeout: Option<Duration>,
+        ) -> Result<TextResponse> {
+            let mut request = self.inner.post(url);
+            if let Some(limit) = timeout {
+                request = request.timeout(limit);
+            }
+            for (name, value) in headers {
+                request = request.header(*name, value.clone());
+            }
+            let response = request
+                .header("content-type", content_type)
+                .body(body)
+                .send()
+                .await
+                .with_context(|| format!("POST {url} 失败"))?;
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            Ok(TextResponse { status, body })
+        }
+
         /// POST 表单（`application/x-www-form-urlencoded`），返回文本。
         ///
         /// OAuth 的 token 端点只接受表单，不接受 JSON。
@@ -466,6 +496,18 @@ mod imp {
 
         /// 总是失败。
         pub async fn get_bytes(&self, _url: &str, _h: &[(&str, String)], _t: Option<Duration>) -> Result<BytesResponse> {
+            bail!("gpt2apirs-http 未启用 tls feature")
+        }
+
+        /// 总是失败。
+        pub async fn post_raw(
+            &self,
+            _url: &str,
+            _h: &[(&str, String)],
+            _ct: &str,
+            _b: Vec<u8>,
+            _t: Option<Duration>,
+        ) -> Result<TextResponse> {
             bail!("gpt2apirs-http 未启用 tls feature")
         }
 

@@ -10,6 +10,7 @@ pub mod format;
 pub mod inputs;
 pub mod mask;
 pub mod search;
+pub mod speech;
 pub mod text;
 pub mod models;
 pub mod upload;
