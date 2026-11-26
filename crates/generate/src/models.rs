@@ -34,11 +34,24 @@ pub const NOT_YET_SUPPORTED_MODELS: &[&str] = &[
 /// 文本模型对外名（默认即 `text`）。
 pub const DEFAULT_TEXT_MODEL: &str = EXPOSED_TEXT_MODEL;
 
+/// 带工具调用的文本模型名。
+///
+/// 为什么要单独一个名字：工具调用是**模拟**的（上游不认 tools，只能在提示词里教、
+/// 再从输出里解析），可靠性有上限。混进 `text` 会让不需要工具的调用方也吃到
+/// 注入的说明和可能跑偏的输出格式；独立命名等于让调用方显式选择这条路。
+/// 顺带把结果缓存也隔开了（缓存键含模型名）。
+pub const EXPOSED_TEXT_TOOL_MODEL: &str = "text_tool";
+
+/// 这个模型名是否允许工具调用。
+pub fn is_tool_model(model: &str) -> bool {
+    model.trim() == EXPOSED_TEXT_TOOL_MODEL
+}
+
 /// 文本模型的对外名。
 ///
 /// 上游只有一条文本链路，这些名字只是对外标签；不在表里的名字照样透传，
 /// 所以这里只列**我们愿意背书**的名字。
-pub const TEXT_MODELS: &[&str] = &[DEFAULT_TEXT_MODEL];
+pub const TEXT_MODELS: &[&str] = &[DEFAULT_TEXT_MODEL, EXPOSED_TEXT_TOOL_MODEL];
 
 /// 模型用途。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +89,10 @@ pub const MODEL_CATALOG: &[ModelInfo] = &[
     },
     ModelInfo {
         id: DEFAULT_TEXT_MODEL,
+        kind: ModelKind::Text,
+    },
+    ModelInfo {
+        id: EXPOSED_TEXT_TOOL_MODEL,
         kind: ModelKind::Text,
     },
 ];
@@ -137,6 +154,16 @@ mod tests {
     fn empty_model_is_treated_as_default() {
         assert!(is_supported_image(""));
         assert!(is_supported_image("   "));
+    }
+
+    #[test]
+    fn tool_model_is_listed_and_recognised() {
+        // 目录里必须有它，否则 /v1/models 看不到；只有它允许工具调用
+        assert!(find(EXPOSED_TEXT_TOOL_MODEL).is_some(), "text_tool 应在目录里");
+        assert!(is_tool_model(EXPOSED_TEXT_TOOL_MODEL));
+        assert!(!is_tool_model(DEFAULT_TEXT_MODEL), "text 不允许工具调用");
+        assert!(!is_tool_model("gpt-4o"), "别的名字更不行");
+        assert!(!is_supported_image(EXPOSED_TEXT_TOOL_MODEL), "它不是图片模型");
     }
 
     #[test]

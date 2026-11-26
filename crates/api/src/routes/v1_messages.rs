@@ -43,9 +43,12 @@ pub struct MessagesRequest {
     /// 是否流式。
     #[serde(default)]
     pub stream: Option<bool>,
-    /// 工具（**不支持**）。
+    /// 工具（只有 `model: text_tool` 接受）。
     #[serde(default)]
     pub tools: Option<Value>,
+    /// 工具选择策略。
+    #[serde(default)]
+    pub tool_choice: Option<Value>,
 }
 
 /// `POST /v1/messages/count_tokens` 的请求体。
@@ -211,11 +214,6 @@ pub async fn create_message(
     State(state): State<Arc<AppState>>,
     Json(request): Json<MessagesRequest>,
 ) -> Result<Response, ApiError> {
-    if crate::routes::text_common::has_tools(&request.tools) {
-        return Err(ApiError::anthropic(
-            crate::routes::text_common::tools_not_supported("anthropic.tools"),
-        ));
-    }
     if request.max_tokens <= 0 {
         return Err(anthropic_error(gpt2apirs_core::AppError::invalid_param(
             "max_tokens 必须为正整数",
@@ -240,14 +238,55 @@ pub async fn create_message(
     let model = resolve_model(request.model.as_deref());
     let deadline = default_request_deadline(&state.settings);
 
+    // ---- 工具调用（只有 text_tool 允许）----
+    let tools = crate::tool_call::parse_tools(request.tools.as_ref().unwrap_or(&Value::Null));
+    if !tools.is_empty() && !gpt2apirs_generate::models::is_tool_model(&model) {
+        return Err(ApiError::anthropic(gpt2apirs_core::AppError::InvalidRequest {
+            message: format!(
+                "模型 {model} 不支持工具调用；要用请把 model 改成 {}",
+                gpt2apirs_generate::models::EXPOSED_TEXT_TOOL_MODEL
+            ),
+            param: Some("tools".to_string()),
+            code: Some("tools_not_supported".to_string()),
+        }));
+    }
+    let tool_prompt = if tools.is_empty() {
+        None
+    } else {
+        Some(crate::tool_call::build_tool_prompt(
+            &tools,
+            crate::tool_call::requires_tool_call(request.tool_choice.as_ref().unwrap_or(&Value::Null)),
+        ))
+    };
+
     // 真流式：命中时直接返回 SSE，不走「先跑完再切块」
     if request.stream.unwrap_or(false) {
-        let handle =
-        start_text_stream(&state, messages.clone(), images.clone(), &model, deadline, None).await?;
+        let handle = start_text_stream(
+            &state,
+            messages.clone(),
+            images.clone(),
+            &model,
+            deadline,
+            None,
+            tool_prompt.as_deref(),
+        )
+        .await?;
+        if tool_prompt.is_some() {
+            return Ok(build_tool_stream(handle, &model).into_response());
+        }
         return Ok(build_live_stream(handle, &model).into_response());
     }
 
-    let outcome = run_text(&state, &messages, &images, &model, deadline, None).await?;
+    let outcome = run_text(
+        &state,
+        &messages,
+        &images,
+        &model,
+        deadline,
+        None,
+        tool_prompt.as_deref(),
+    )
+    .await?;
 
     let input_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
     let output_tokens = gpt2apirs_core::tokens::count_text_tokens(&outcome.result.text, &model);
@@ -263,13 +302,29 @@ pub async fn create_message(
         "anthropic messages 生成完成"
     );
 
+    // ---- 工具调用：解析失败就当普通文本 ----
+    let (clean_text, calls) = if tool_prompt.is_some() {
+        crate::tool_call::parse_tool_calls(&outcome.result.text)
+    } else {
+        (outcome.result.text.clone(), Vec::new())
+    };
+    let mut content: Vec<Value> = Vec::new();
+    if !clean_text.trim().is_empty() {
+        content.push(json!({ "type": "text", "text": clean_text }));
+    }
+    content.extend(crate::tool_call::anthropic_tool_uses(&calls));
+    if content.is_empty() {
+        content.push(json!({ "type": "text", "text": "" }));
+    }
+    let stop_reason = if calls.is_empty() { "end_turn" } else { "tool_use" };
+
     Ok(Json(json!({
         "id": message_id,
         "type": "message",
         "role": "assistant",
         "model": model,
-        "content": [{ "type": "text", "text": outcome.result.text }],
-        "stop_reason": "end_turn",
+        "content": content,
+        "stop_reason": stop_reason,
         "stop_sequence": null,
         "usage": { "input_tokens": input_tokens, "output_tokens": output_tokens },
     }))
@@ -414,6 +469,111 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
 }
 
 /// 组一条 SSE 事件：Anthropic 用 `event:` 字段区分类型。
+/// 带工具时的流式（Anthropic 格式）：全文出来再解析，按 content block 发。
+///
+/// 文本块与工具块分开：`tool_use` 的入参用 `input_json_delta` 一次性发完。
+fn build_tool_stream(handle: StreamHandle, model: &str) -> axum::response::Response {
+    use axum::response::sse::Sse;
+    use futures_util::StreamExt;
+    use std::convert::Infallible;
+
+    let message_id = format!("msg_{}", Uuid::new_v4().simple());
+    let model = model.to_string();
+    let snapshot = handle.snapshot.clone();
+    let billing = handle.billing_messages.clone();
+    let input_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&billing, &model);
+
+    let head_message_id = message_id.clone();
+    let head_model = model.clone();
+    let head = futures_util::stream::once(async move {
+        Ok::<_, Infallible>(sse_event(
+            "message_start",
+            json!({
+                "message": {
+                    "id": head_message_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "model": head_model,
+                    "content": [],
+                    "stop_reason": Value::Null,
+                    "stop_sequence": Value::Null,
+                    "usage": { "input_tokens": input_tokens, "output_tokens": 0 },
+                },
+            }),
+        ))
+    });
+
+    let drain = handle
+        .deltas
+        .filter_map(|_| async { None::<Result<_, Infallible>> });
+
+    let tail = futures_util::stream::once(async move {
+        let text = snapshot
+            .lock()
+            .map(|guard| guard.text.clone())
+            .unwrap_or_default();
+        let (clean, calls) = crate::tool_call::parse_tool_calls(&text);
+        let output_tokens = gpt2apirs_core::tokens::count_text_tokens(&text, &model);
+
+        let mut events: Vec<Result<_, Infallible>> = Vec::new();
+        let mut index = 0usize;
+        if !clean.trim().is_empty() {
+            events.push(Ok(sse_event(
+                "content_block_start",
+                json!({ "index": index, "content_block": { "type": "text", "text": "" } }),
+            )));
+            events.push(Ok(sse_event(
+                "content_block_delta",
+                json!({ "index": index, "delta": { "type": "text_delta", "text": clean } }),
+            )));
+            events.push(Ok(sse_event(
+                "content_block_stop",
+                json!({ "index": index }),
+            )));
+            index += 1;
+        }
+        for block in crate::tool_call::anthropic_tool_uses(&calls) {
+            let id = block["id"].clone();
+            let name = block["name"].clone();
+            let input = block["input"].to_string();
+            events.push(Ok(sse_event(
+                "content_block_start",
+                json!({
+                    "index": index,
+                    "content_block": { "type": "tool_use", "id": id, "name": name, "input": {} },
+                }),
+            )));
+            events.push(Ok(sse_event(
+                "content_block_delta",
+                json!({
+                    "index": index,
+                    "delta": { "type": "input_json_delta", "partial_json": input },
+                }),
+            )));
+            events.push(Ok(sse_event(
+                "content_block_stop",
+                json!({ "index": index }),
+            )));
+            index += 1;
+        }
+        let stop_reason = if calls.is_empty() { "end_turn" } else { "tool_use" };
+        events.push(Ok(sse_event(
+            "message_delta",
+            json!({
+                "delta": { "stop_reason": stop_reason, "stop_sequence": Value::Null },
+                "usage": { "output_tokens": output_tokens },
+            }),
+        )));
+        events.push(Ok(sse_event("message_stop", json!({}))));
+        futures_util::stream::iter(events)
+    })
+    .flatten();
+
+    Sse::new(head.chain(drain).chain(tail))
+        .keep_alive(super::sse_keep_alive())
+        .into_response()
+}
+
 fn sse_event(kind: &str, mut payload: Value) -> axum::response::sse::Event {
     if let Value::Object(map) = &mut payload {
         map.insert("type".to_string(), json!(kind));

@@ -44,9 +44,12 @@ pub struct ChatCompletionRequest {
     /// 是否流式。
     #[serde(default)]
     pub stream: Option<bool>,
-    /// 工具列表（**不支持**，非空即拒）。
+    /// 工具列表。只有 `model: text_tool` 接受；`text` 收到就报错。
     #[serde(default)]
     pub tools: Option<Value>,
+    /// 工具选择策略：`auto` / `required`，或指定某个函数（要求必须调）。
+    #[serde(default)]
+    pub tool_choice: Option<Value>,
     /// 输出模态（只支持 `text`；要图片请走生图端点）。
     #[serde(default)]
     pub modalities: Option<Value>,
@@ -259,11 +262,6 @@ pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> Result<Response, ApiError> {
-    if crate::routes::text_common::has_tools(&request.tools) {
-        return Err(ApiError::openai(
-            crate::routes::text_common::tools_not_supported("chat.tools"),
-        ));
-    }
     ensure_text_modalities(&request.modalities)?;
     if request.messages.is_empty() {
         return Err(ApiError::openai(AppError::invalid_param(
@@ -304,6 +302,33 @@ pub async fn chat_completions(
         .unwrap_or_else(|| gpt2apirs_generate::models::DEFAULT_TEXT_MODEL.to_string());
     let deadline = gpt2apirs_generate::default_request_deadline(&state.settings);
 
+    // ---- 工具调用（只有 text_tool 允许）----
+    // `text` 收到 tools 必须报错而不是静默忽略：客户端会一直等一个永远不来的
+    // tool_calls，最后要么超时，要么把普通文本当成工具结果解析。
+    let tools = crate::tool_call::parse_tools(
+        request.tools.as_ref().unwrap_or(&Value::Null),
+    );
+    if !tools.is_empty() && !gpt2apirs_generate::models::is_tool_model(&requested_model) {
+        return Err(ApiError::openai(AppError::InvalidRequest {
+            message: format!(
+                "模型 {requested_model} 不支持工具调用；要用请把 model 改成 {}",
+                gpt2apirs_generate::models::EXPOSED_TEXT_TOOL_MODEL
+            ),
+            param: Some("tools".to_string()),
+            code: Some("tools_not_supported".to_string()),
+        }));
+    }
+    let tool_prompt = if !tools.is_empty() {
+        Some(crate::tool_call::build_tool_prompt(
+            &tools,
+            crate::tool_call::requires_tool_call(
+                request.tool_choice.as_ref().unwrap_or(&Value::Null),
+            ),
+        ))
+    } else {
+        None
+    };
+
     let effort = resolve_thinking_effort(&request);
 
     if request.stream.unwrap_or(false) {
@@ -315,8 +340,14 @@ pub async fn chat_completions(
             &requested_model,
             deadline,
             effort.as_deref(),
+            tool_prompt.as_deref(),
         )
         .await?;
+        // 带工具时不走「边收边吐」：工具调用要等全文才能解析，
+        // 提前吐出的正文里可能混着 <tool_calls> 标签，客户端会看到裸标签。
+        if tool_prompt.is_some() {
+            return Ok(build_tool_stream(handle, &requested_model).into_response());
+        }
         return Ok(build_live_stream(handle, &requested_model).into_response());
     }
 
@@ -328,6 +359,7 @@ pub async fn chat_completions(
         &requested_model,
         deadline,
         effort.as_deref(),
+        tool_prompt.as_deref(),
     )
     .await?;
     let result = &outcome.result;
@@ -348,11 +380,32 @@ pub async fn chat_completions(
         "文本生成完成"
     );
 
-    let mut message = json!({ "role": "assistant", "content": result.text });
+    // ---- 工具调用：解析失败就当普通文本（绝不因为「没按格式写」而报错）----
+    let (clean_text, calls) = if tool_prompt.is_some() {
+        crate::tool_call::parse_tool_calls(&result.text)
+    } else {
+        (result.text.clone(), Vec::new())
+    };
+    let mut message = if calls.is_empty() {
+        json!({ "role": "assistant", "content": clean_text })
+    } else {
+        // 有工具调用时正文可能为空：OpenAI 允许 content 为 null
+        let content = if clean_text.trim().is_empty() {
+            Value::Null
+        } else {
+            json!(clean_text)
+        };
+        json!({
+            "role": "assistant",
+            "content": content,
+            "tool_calls": crate::tool_call::openai_tool_calls(&calls),
+        })
+    };
     if !result.reasoning.trim().is_empty() {
         // 思考内容单列一个字段：客户端想看就显示，不看也不会混进正文
         message["reasoning_content"] = json!(result.reasoning);
     }
+    let finish_reason = if calls.is_empty() { "stop" } else { "tool_calls" };
 
     Ok(Json(json!({
         "id": completion_id,
@@ -362,7 +415,7 @@ pub async fn chat_completions(
         "choices": [{
             "index": 0,
             "message": message,
-            "finish_reason": "stop",
+            "finish_reason": finish_reason,
         }],
         "usage": usage,
     }))
@@ -477,6 +530,104 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     });
 
     Sse::new(head.chain(body).chain(tail).chain(done))
+        .keep_alive(super::sse_keep_alive())
+        .into_response()
+}
+
+/// 带工具时的流式：等全文生成完再解析，再按 OpenAI 的流格式吐出去。
+///
+/// 为什么不边收边吐：工具调用要看到完整输出才能解析；提前把正文发出去，
+/// 客户端会收到 `<tool_calls>` 裸标签。代价是首字延迟等于总生成时间，
+/// 这是模拟工具调用的必然取舍。
+fn build_tool_stream(handle: StreamHandle, model: &str) -> axum::response::Response {
+    use axum::response::sse::{Event, Sse};
+    use futures_util::StreamExt;
+
+    let completion_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
+    let created = chrono::Utc::now().timestamp();
+    let model = model.to_string();
+    let snapshot = handle.snapshot.clone();
+    let billing = handle.billing_messages.clone();
+
+    let head_id = completion_id.clone();
+    let head_model = model.clone();
+    let head = futures_util::stream::once(async move {
+        Ok::<_, std::convert::Infallible>(Event::default().data(chunk_payload(
+            &head_id,
+            &head_model,
+            created,
+            json!({ "role": "assistant", "content": "" }),
+            Value::Null,
+            None,
+        )))
+    });
+
+    // 增量必须被消费：槽位与记账挂在流上，不驱动就等于请求没结束；正文不往外发
+    let drain = handle
+        .deltas
+        .filter_map(|_| async { None::<Result<Event, std::convert::Infallible>> });
+
+    let tail_id = completion_id.clone();
+    let tail_model = model.clone();
+    let tail = futures_util::stream::once(async move {
+        let text = snapshot
+            .lock()
+            .map(|guard| guard.text.clone())
+            .unwrap_or_default();
+        let (clean, calls) = crate::tool_call::parse_tool_calls(&text);
+        let usage = build_usage(&billing, &text, &tail_model);
+        let mut events: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
+        if !clean.trim().is_empty() {
+            events.push(Ok(Event::default().data(chunk_payload(
+                &tail_id,
+                &tail_model,
+                created,
+                json!({ "content": clean }),
+                Value::Null,
+                None,
+            ))));
+        }
+        if !calls.is_empty() {
+            // arguments 一次发完整（OpenAI 允许分片，一次发也合法）
+            let deltas: Vec<Value> = calls
+                .iter()
+                .enumerate()
+                .map(|(index, call)| {
+                    json!({
+                        "index": index,
+                        "id": format!("call_{}", Uuid::new_v4().simple()),
+                        "type": "function",
+                        "function": { "name": call.name, "arguments": call.arguments_json() },
+                    })
+                })
+                .collect();
+            events.push(Ok(Event::default().data(chunk_payload(
+                &tail_id,
+                &tail_model,
+                created,
+                json!({ "tool_calls": deltas }),
+                Value::Null,
+                None,
+            ))));
+        }
+        let finish = if calls.is_empty() { "stop" } else { "tool_calls" };
+        events.push(Ok(Event::default().data(chunk_payload(
+            &tail_id,
+            &tail_model,
+            created,
+            json!({}),
+            json!(finish),
+            Some(usage),
+        ))));
+        futures_util::stream::iter(events)
+    })
+    .flatten();
+
+    let done = futures_util::stream::once(async {
+        Ok::<_, std::convert::Infallible>(Event::default().data("[DONE]"))
+    });
+
+    Sse::new(head.chain(drain).chain(tail).chain(done))
         .keep_alive(super::sse_keep_alive())
         .into_response()
 }

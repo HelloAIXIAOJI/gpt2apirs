@@ -24,6 +24,7 @@ pub mod session;
 pub mod state;
 pub mod static_files;
 pub mod thumbnails;
+pub mod tool_call;
 pub mod system;
 
 use std::sync::Arc;

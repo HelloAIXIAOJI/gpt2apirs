@@ -37,6 +37,25 @@ pub fn dispatch_messages(
     (dispatch, billing)
 }
 
+/// 把工具说明作为一条独立的 system 消息放在最前。
+///
+/// 为什么不拼进 user 消息：实测拼进 user 时模型把它当成「用户的话」，
+/// 而网页版模型自带联网，会直接自己查完就回答，连 `tool_choice: required` 都不理会。
+/// 独立 system 消息的权重不同，是目前试下来唯一可能压过内置能力的写法。
+fn inject_tools(messages: &mut Vec<(String, String)>, prompt: &str) {
+    if prompt.trim().is_empty() {
+        return;
+    }
+    messages.insert(0, ("system".to_string(), prompt.to_string()));
+}
+
+/// 预填给模型的 assistant 开头。
+///
+/// 实测：只在提示词里要求「输出这个 XML」没用 —— 上游模型自带联网，
+/// 会自己查完就回答（连 `tool_choice: required` 都不理会）。
+/// 把它已经「开口」的内容塞进上下文，续写才肯照着格式走。
+
+
 /// 池层失败转对外错误。
 ///
 /// 「池里没号」必须和「上游失败」分开：前者是运维该去导号，后者是上游问题。
@@ -213,10 +232,16 @@ pub async fn run_text(
     requested_model: &str,
     deadline: Deadline,
     thinking_effort: Option<&str>,
+    // 工具说明（`text_tool` 才有）：拼进上游消息，但不计入计费口径。
+    tool_prompt: Option<&str>,
 ) -> Result<TextOutcome, ApiError> {
     // ---- 富文本策略：只改发给上游的内容；usage 由端点用原始消息单独算 ----
     let policy = rich_text_policy(state);
     let (dispatch, _billing) = dispatch_messages(policy, messages.to_vec());
+    let mut dispatch = dispatch;
+    if let Some(prompt) = tool_prompt {
+        inject_tools(&mut dispatch, prompt);
+    }
     let messages = &dispatch[..];
 
     // ---- 缓存（只对非流式生效；流式不走这里）----
@@ -225,7 +250,12 @@ pub async fn run_text(
     );
     // 带图时不走缓存：缓存键只看文本，命中会把「图里是什么」答成上一次的纯文本结果
     let key = crate::routes::text_cache::cache_key(requested_model, messages);
-    if images.is_empty() && let Some(cached) = crate::routes::text_cache::get(key, ttl) {
+    // 带工具时不缓存：缓存键只有模型 + 消息，同一句话配不同工具会串；
+    // 而且工具调用是这一轮的指令，不该被上一次的结果顶掉。
+    if tool_prompt.is_none()
+        && images.is_empty()
+        && let Some(cached) = crate::routes::text_cache::get(key, ttl)
+    {
         tracing::info!(model = %requested_model, "命中文本缓存");
         return Ok(TextOutcome {
             cached: true,
@@ -265,6 +295,7 @@ pub async fn run_text(
     let _ = state.pool.mark_text_result(account_id, true).await;
     drop(lease);
 
+
     // 输出侧：剥掉模型坚持要发的自闭合富文本组件
     if policy.strip() {
         let stripped = crate::routes::rich_text::strip_rich_text(&result.text);
@@ -289,8 +320,10 @@ pub async fn run_text(
         );
     }
 
-    // 只缓存成功且非空的回复
-    crate::routes::text_cache::put(key, &result, ttl);
+    // 只缓存成功且非空的回复（带工具的不进缓存，见上面的 tool_prompt 判断）
+    if tool_prompt.is_none() {
+        crate::routes::text_cache::put(key, &result, ttl);
+    }
 
     Ok(TextOutcome {
         cached: false,
@@ -386,12 +419,18 @@ pub async fn start_text_stream(
     requested_model: &str,
     deadline: Deadline,
     thinking_effort: Option<&str>,
+    // 工具说明（`text_tool` 才有）。
+    tool_prompt: Option<&str>,
 ) -> Result<StreamHandle, ApiError> {
     use futures_util::StreamExt;
 
     // ---- 富文本策略（流式同样注入 guard，输出侧用增量剥离器）----
     let policy = rich_text_policy(state);
     let (dispatch, billing) = dispatch_messages(policy, messages);
+    let mut dispatch = dispatch;
+    if let Some(prompt) = tool_prompt {
+        inject_tools(&mut dispatch, prompt);
+    }
 
     let mut request = TextRequest::new(String::new())
         .with_messages(dispatch)

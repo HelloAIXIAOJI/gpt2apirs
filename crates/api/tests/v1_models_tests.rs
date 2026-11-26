@@ -87,7 +87,7 @@ async fn requires_api_key() {
 }
 
 #[tokio::test]
-async fn lists_both_text_and_image_models() {
+async fn lists_text_image_and_tool_models() {
     let (status, body) = get("/v1/models", Some(API_KEY), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["object"], "list");
@@ -95,7 +95,11 @@ async fn lists_both_text_and_image_models() {
     let ids = ids(&body);
     assert!(ids.contains(&"image".to_string()), "应列出图片模型：{ids:?}");
     assert!(ids.contains(&"text".to_string()), "应列出文本模型：{ids:?}");
-    assert_eq!(ids.len(), 2, "只暴露 text 与 image 两个模型：{ids:?}");
+    assert!(
+        ids.contains(&"text_tool".to_string()),
+        "应列出带工具调用的文本模型：{ids:?}"
+    );
+    assert_eq!(ids.len(), 3, "暴露 image / text / text_tool 三个：{ids:?}");
 }
 
 #[tokio::test]

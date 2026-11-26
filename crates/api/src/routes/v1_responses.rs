@@ -28,9 +28,12 @@ pub struct ResponsesRequest {
     /// 是否流式。
     #[serde(default)]
     pub stream: Option<bool>,
-    /// 工具列表（**不支持**，出现即拒）。
+    /// 工具列表（只有 `model: text_tool` 接受）。
     #[serde(default)]
     pub tools: Option<Value>,
+    /// 工具选择策略。
+    #[serde(default)]
+    pub tool_choice: Option<Value>,
     /// `max_output_tokens`：接受但忽略。
     #[serde(default)]
     pub max_output_tokens: Option<i64>,
@@ -189,11 +192,6 @@ pub async fn create_response(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ResponsesRequest>,
 ) -> Result<Response, ApiError> {
-    if crate::routes::text_common::has_tools(&request.tools) {
-        return Err(ApiError::openai(
-            crate::routes::text_common::tools_not_supported("responses.tools"),
-        ));
-    }
 
     let messages = messages_from_input(&request.input, request.instructions.as_deref())?;
     if messages.iter().all(|(_, text)| text.trim().is_empty()) {
@@ -206,14 +204,55 @@ pub async fn create_response(
     let model = resolve_model(request.model.as_deref());
     let deadline = default_request_deadline(&state.settings);
 
+    // ---- 工具调用（只有 text_tool 允许）----
+    let tools = crate::tool_call::parse_tools(request.tools.as_ref().unwrap_or(&Value::Null));
+    if !tools.is_empty() && !gpt2apirs_generate::models::is_tool_model(&model) {
+        return Err(ApiError::openai(gpt2apirs_core::AppError::InvalidRequest {
+            message: format!(
+                "模型 {model} 不支持工具调用；要用请把 model 改成 {}",
+                gpt2apirs_generate::models::EXPOSED_TEXT_TOOL_MODEL
+            ),
+            param: Some("tools".to_string()),
+            code: Some("tools_not_supported".to_string()),
+        }));
+    }
+    let tool_prompt = if tools.is_empty() {
+        None
+    } else {
+        Some(crate::tool_call::build_tool_prompt(
+            &tools,
+            crate::tool_call::requires_tool_call(request.tool_choice.as_ref().unwrap_or(&Value::Null)),
+        ))
+    };
+
     // 真流式：命中时直接返回 SSE，不走「先跑完再切块」
     if request.stream.unwrap_or(false) {
-        let handle =
-        start_text_stream(&state, messages.clone(), Vec::new(), &model, deadline, None).await?;
+        let handle = start_text_stream(
+            &state,
+            messages.clone(),
+            Vec::new(),
+            &model,
+            deadline,
+            None,
+            tool_prompt.as_deref(),
+        )
+        .await?;
+        if tool_prompt.is_some() {
+            return Ok(build_tool_stream(handle, &model).into_response());
+        }
         return Ok(build_live_stream(handle, &model).into_response());
     }
 
-    let outcome = run_text(&state, &messages, &[], &model, deadline, None).await?;
+    let outcome = run_text(
+        &state,
+        &messages,
+        &[],
+        &model,
+        deadline,
+        None,
+        tool_prompt.as_deref(),
+    )
+    .await?;
 
     let prompt_tokens = gpt2apirs_core::tokens::count_message_text_tokens(&messages, &model);
     let completion_tokens = gpt2apirs_core::tokens::count_text_tokens(&outcome.result.text, &model);
@@ -232,12 +271,28 @@ pub async fn create_response(
         "responses 生成完成"
     );
 
+    // ---- 工具调用：解析失败就当普通文本 ----
+    let (clean_text, calls) = if tool_prompt.is_some() {
+        crate::tool_call::parse_tool_calls(&outcome.result.text)
+    } else {
+        (outcome.result.text.clone(), Vec::new())
+    };
+    let mut output: Vec<Value> = Vec::new();
+    if !clean_text.trim().is_empty() {
+        output.push(output_item(&item_id, &clean_text, "completed"));
+    }
+    output.extend(crate::tool_call::responses_function_calls(&calls));
+    if output.is_empty() {
+        // 模型什么都没说也没调工具：给一个空 message，别让客户端拿到空 output
+        output.push(output_item(&item_id, "", "completed"));
+    }
+
     Ok(Json(response_envelope(
         &response_id,
         &model,
         created,
         "completed",
-        json!([output_item(&item_id, &outcome.result.text, "completed")]),
+        json!(output),
         Some(usage),
     ))
     .into_response())
@@ -363,6 +418,93 @@ fn build_live_stream(handle: StreamHandle, model: &str) -> axum::response::Respo
     .flatten();
 
     Sse::new(head.chain(body).chain(tail))
+        .keep_alive(super::sse_keep_alive())
+        .into_response()
+}
+
+/// 带工具时的流式（Responses 格式）：等全文出来再解析，然后发 function_call 项。
+///
+/// 与 chat 那边同理：工具调用必须看完整输出才能解析，
+/// 提前发 output_text.delta 会把 `<tool_calls>` 裸标签发出去。
+fn build_tool_stream(handle: StreamHandle, model: &str) -> axum::response::Response {
+    use axum::response::sse::Sse;
+    use futures_util::StreamExt;
+    use std::convert::Infallible;
+
+    let response_id = format!("resp_{}", Uuid::new_v4().simple());
+    let created = chrono::Utc::now().timestamp();
+    let model = model.to_string();
+    let snapshot = handle.snapshot.clone();
+    let billing = handle.billing_messages.clone();
+
+    let head_id = response_id.clone();
+    let head_model = model.clone();
+    let head = futures_util::stream::once(async move {
+        Ok::<_, Infallible>(sse_event(
+            "response.created",
+            json!({
+                "response": response_envelope(
+                    &head_id, &head_model, created, "in_progress", json!([]), None,
+                ),
+            }),
+        ))
+    });
+
+    // 必须驱动增量流（槽位与记账挂在上面），但不往外发
+    let drain = handle
+        .deltas
+        .filter_map(|_| async { None::<Result<_, Infallible>> });
+
+    let tail_response_id = response_id.clone();
+    let tail_model = model.clone();
+    let tail = futures_util::stream::once(async move {
+        let text = snapshot
+            .lock()
+            .map(|guard| guard.text.clone())
+            .unwrap_or_default();
+        let (clean, calls) = crate::tool_call::parse_tool_calls(&text);
+        let (prompt, completion) =
+            crate::routes::text_common::token_counts(&billing, &text, &tail_model);
+
+        let mut items: Vec<Value> = Vec::new();
+        if !clean.trim().is_empty() {
+            items.push(output_item(
+                &format!("msg_{}", Uuid::new_v4().simple()),
+                &clean,
+                "completed",
+            ));
+        }
+        items.extend(crate::tool_call::responses_function_calls(&calls));
+
+        let mut events: Vec<Result<_, Infallible>> = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            events.push(Ok(sse_event(
+                "response.output_item.added",
+                json!({ "output_index": index, "item": item }),
+            )));
+            events.push(Ok(sse_event(
+                "response.output_item.done",
+                json!({ "output_index": index, "item": item }),
+            )));
+        }
+        events.push(Ok(sse_event(
+            "response.completed",
+            json!({
+                "response": response_envelope(
+                    &tail_response_id,
+                    &tail_model,
+                    created,
+                    "completed",
+                    json!(items),
+                    Some(usage_payload(prompt, completion)),
+                ),
+            }),
+        )));
+        futures_util::stream::iter(events)
+    })
+    .flatten();
+
+    Sse::new(head.chain(drain).chain(tail))
         .keep_alive(super::sse_keep_alive())
         .into_response()
 }
